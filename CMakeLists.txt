@@ -1,7 +1,9 @@
 cmake_minimum_required(VERSION 3.5)
 project(czspas)
 
-include (cmake/ucm.cmake)
+include(cmake/ucm.cmake)
+include(cmake/utils.cmake)
+
 
 set_property( GLOBAL PROPERTY USE_FOLDERS ON )
 
