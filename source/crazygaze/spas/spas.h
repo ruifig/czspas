@@ -30,7 +30,6 @@
 	#include <WS2tcpip.h>
 	#include <strsafe.h>
 	#include <mstcpip.h>
-	#pragma comment(lib, "Ws2_32.lib")
 
 #ifdef __MINGW32__
 	// Bits and pieces missing in MingGW

@@ -1,8 +1,6 @@
 cmake_minimum_required(VERSION 3.5)
 project(UnitTest++)
 
-include(../cmake/utils.cmake)
-
 ucm_add_dirs("UnitTest++/" TO UNITTESTPP_SRC)
 
 if (WIN32)

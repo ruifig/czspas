@@ -1,11 +1,10 @@
 cmake_minimum_required(VERSION 3.5)
 project(tests)
 
-include(../cmake/utils.cmake)
-
 ucm_add_files(
 	"tests.cpp"
 	"tests_spas.cpp"
+	"Semaphore.h"
 	TO TESTS_SRC
 	)
 
@@ -22,4 +21,3 @@ message( "CMAKE_CXX_FLAGS_RELWITHDEBINFO = " ${CMAKE_CXX_FLAGS_RELWITHDEBINFO})
 add_executable(tests ${TESTS_SRC})
 cz_set_postfix()
 target_link_libraries(tests czspas UnitTest++)
-cz_add_commonlibs()
