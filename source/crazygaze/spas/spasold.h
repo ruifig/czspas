@@ -75,7 +75,7 @@
 
 namespace cz
 {
-namespace spas
+namespace spasold
 {
 
 // To work around the Windows vs Linux shenanigans with strncpy/strcpy/strlcpy, etc.
@@ -126,6 +126,48 @@ struct TCPSocketDefaultLog
 		if (!(expr)) TCPFATAL(#expr)
 #endif
 
+template <class T, class MTX=std::mutex>
+class Monitor
+{
+private:
+	mutable T m_t;
+	mutable MTX m_mtx;
+
+public:
+	using Type = T;
+	Monitor() {}
+	Monitor(T t_) : m_t(std::move(t_)) {}
+	template <typename F>
+	auto operator()(F f) const -> decltype(f(m_t))
+	{
+		std::lock_guard<std::mutex> hold{ m_mtx };
+		return f(m_t);
+	}
+};
+
+/*! Utility buffer struct
+Simply ties together shared raw buffer pointer and its size
+This makes it for shorter code when passing it around in lambdas such as for
+receiving and sending data.
+*/
+struct TCPBuffer
+{
+	TCPBuffer(int size) : size(size)
+	{
+		// Allocate with custom deleter
+		buf = std::shared_ptr<char>(new char[size], [](char* p) { delete[] p;});
+	}
+	char* ptr() { return buf.get(); }
+	const char* ptr() const { return buf.get(); }
+
+	void zero()
+	{
+		memset(ptr(), 0, size);
+	}
+
+	std::shared_ptr<char> buf;
+	int size;
+};
 
 struct TCPError
 {
@@ -216,6 +258,19 @@ namespace details
 	using IsTransferHandler = std::enable_if_t<check_signature<H, void(const TCPError&, int)>::value>;
 	template<typename H>
 	using IsSimpleHandler = std::enable_if_t<check_signature<H, void()>::value>;
+
+	template<typename F>
+	struct ScopeGuard
+	{
+		ScopeGuard(F f) : m_f(std::move(f)) {}
+		~ScopeGuard() { m_f(); }
+		F m_f;
+	};
+	template<typename F>
+	ScopeGuard<F> scopeGuard(F f)
+	{
+		return ScopeGuard<F>(std::move(f));
+	}
 
     class ErrorWrapper
 	{
@@ -425,6 +480,50 @@ namespace details
 	};
 #endif
 
+	template<typename T>
+	class Callstack
+	{
+	public:
+		class Context
+		{
+		public:
+			Context(T* val)
+				: m_val(val)
+				, m_next(Callstack<T>::ms_top)
+			{
+				Callstack<T>::ms_top = this;
+			}
+			~Context()
+			{
+				Callstack<T>::ms_top = m_next;
+			}
+			T* getValue()
+			{
+				return m_val;
+			}
+		private:
+			friend Callstack;
+			T* m_val;
+			Context* m_next;
+		};
+
+		static bool contains(T* val)
+		{
+			auto p = ms_top;
+			while (p)
+			{
+				if (p->getValue() == val)
+					return true;
+				p = p->m_next;
+			}
+			return false;
+		}
+	private:
+		static thread_local Context* ms_top;
+	};
+	template <typename T>
+	thread_local typename Callstack<T>::Context* Callstack<T>::ms_top = nullptr;
+
 	class TCPServiceData;
 	//////////////////////////////////////////////////////////////////////////
 	// TCPBaseSocket
@@ -435,6 +534,7 @@ namespace details
 		TCPBaseSocket() {}
 		virtual ~TCPBaseSocket()
 		{
+			//releaseHandle();
 		}
 
 		bool isValid() const
@@ -446,6 +546,14 @@ namespace details
 
 		TCPBaseSocket(const TCPBaseSocket&) = delete;
 		void operator=(const TCPBaseSocket&) = delete;
+
+		/*
+		void releaseHandle()
+		{
+			details::utils::closeSocket(m_s);
+			m_s = CZRPC_INVALID_SOCKET;
+		}
+		*/
 
 		friend TCPServiceData;
 		friend TCPService;
@@ -463,6 +571,10 @@ namespace details
 		{
 		}
 
+		bool tickingInThisThread()
+		{
+			return Callstack<TCPServiceData>::contains(this);
+		}
 
 	protected:
 
@@ -1525,5 +1637,5 @@ protected:
 
 };
 
-} // namespace spas
+} // namespace spasold
 } // namespace cz
