@@ -4,6 +4,7 @@ project(tests)
 ucm_add_files(
 	"tests.cpp"
 	"tests_spas.cpp"
+	"tests_spasold.cpp"
 	"Semaphore.h"
 	TO TESTS_SRC
 	)

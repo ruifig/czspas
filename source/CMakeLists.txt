@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.5)
 project(czspas)
 
+ucm_add_files("crazygaze/spas/spasold.h" TO CZSPAS_SRC)
 ucm_add_files("crazygaze/spas/spas.h" TO CZSPAS_SRC)
 
 add_library(czspas INTERFACE)
