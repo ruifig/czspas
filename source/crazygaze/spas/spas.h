@@ -33,9 +33,9 @@
 
 #ifdef __MINGW32__
 	// Bits and pieces missing in MingGW
-    #ifndef SIO_LOOPBACK_FAST_PATH
-        #define SIO_LOOPBACK_FAST_PATH              _WSAIOW(IOC_VENDOR,16)
-    #endif
+	#ifndef SIO_LOOPBACK_FAST_PATH
+		#define SIO_LOOPBACK_FAST_PATH              _WSAIOW(IOC_VENDOR,16)
+	#endif
 #endif
 
 #elif __linux__
@@ -68,9 +68,9 @@
 #endif
 
 #ifdef _WIN32
-    #define CZSPAS_DEBUG_BREAK __debugbreak
+	#define CZSPAS_DEBUG_BREAK __debugbreak
 #else
-    #define CZSPAS_DEBUG_BREAK __builtin_trap
+	#define CZSPAS_DEBUG_BREAK __builtin_trap
 #endif
 
 namespace cz
@@ -125,7 +125,6 @@ struct TCPSocketDefaultLog
 	#define TCPASSERT(expr) \
 		if (!(expr)) TCPFATAL(#expr)
 #endif
-
 
 struct TCPError
 {
@@ -199,25 +198,44 @@ using TransferHandler = std::function<void(const TCPError& ec, int bytesTransfer
 
 namespace details
 {
+	template <class T, class MTX=std::mutex>
+	class Monitor
+	{
+	private:
+		mutable T m_t;
+		mutable MTX m_mtx;
+
+	public:
+		using Type = T;
+		Monitor() {}
+		Monitor(T t_) : m_t(std::move(t_)) {}
+		template <typename F>
+		auto operator()(F f) const -> decltype(f(m_t))
+		{
+			std::lock_guard<std::mutex> hold{ m_mtx };
+			return f(m_t);
+		}
+	};
+
 	// Checks if a specified "Func" type is callable and with the specified signature
 	template <typename, typename, typename = void>
 	struct check_signature : std::false_type {};
 
-    template <typename Func, typename Ret, typename... Args>
-    struct check_signature<
-        Func, Ret(Args...),
-        typename std::enable_if_t<
-            std::is_convertible<decltype(std::declval<Func>()(std::declval<Args>()...)), Ret>::value, void>>
-        : std::true_type
-    {
-    };
+	template <typename Func, typename Ret, typename... Args>
+	struct check_signature<
+		Func, Ret(Args...),
+		typename std::enable_if_t<
+			std::is_convertible<decltype(std::declval<Func>()(std::declval<Args>()...)), Ret>::value, void>>
+		: std::true_type
+	{
+	};
 
 	template<typename H>
 	using IsTransferHandler = std::enable_if_t<check_signature<H, void(const TCPError&, int)>::value>;
 	template<typename H>
 	using IsSimpleHandler = std::enable_if_t<check_signature<H, void()>::value>;
 
-    class ErrorWrapper
+	class ErrorWrapper
 	{
 	public:
 #if CZRPC_WINSOCK
@@ -425,7 +443,7 @@ namespace details
 	};
 #endif
 
-	class TCPServiceData;
+	class TCPServiceBase;
 	//////////////////////////////////////////////////////////////////////////
 	// TCPBaseSocket
 	//////////////////////////////////////////////////////////////////////////
@@ -447,61 +465,56 @@ namespace details
 		TCPBaseSocket(const TCPBaseSocket&) = delete;
 		void operator=(const TCPBaseSocket&) = delete;
 
-		friend TCPServiceData;
+		friend TCPServiceBase;
 		friend TCPService;
 		SocketHandle m_s = CZRPC_INVALID_SOCKET;
 	};
 
 	// This is not part of the TCPService class, so we can break the circular dependency
 	// between TCPAcceptor/TCPSocket and TCPService
-	class TCPServiceData
+	class TCPServiceBase
 	{
 	public:
-		TCPServiceData()
-			: m_stopped(false)
-			, m_signalFlight(0)
+		TCPServiceBase()
+			: m_signalCounter(0)
 		{
 		}
 
-
 	protected:
 
-		friend TCPSocket;
-		friend TCPAcceptor;
+		friend class TCPSocket;
 
 #if _WIN32
 		details::WSAInstance m_wsaInstance;
 #endif
+
 		std::unique_ptr<TCPBaseSocket> m_signalIn;
 		std::unique_ptr<TCPBaseSocket> m_signalOut;
-
-		std::atomic<int> m_signalFlight;
-		std::atomic<bool> m_stopped; // A "stop" command was enqueued
-		bool m_finishing = false; // The stop command was found, and we are in the process of executing any remaining commands
+		std::atomic<int> m_signalCounter;
 
 		struct ConnectOp
 		{
 			std::chrono::time_point<std::chrono::high_resolution_clock> timeoutPoint;
 			ConnectHandler h;
 		};
-
 		std::unordered_map<TCPSocket*, ConnectOp> m_connects;  // Pending connects
 		std::set<TCPAcceptor*> m_accepts; // pending accepts
-		std::set<TCPSocket*> m_recvs; // pending reads
+		std::set<TCPSocket*> m_reads; // pending reads
 		std::set<TCPSocket*> m_sends; // pending writes
 
 		using CmdQueue = std::queue<std::function<void()>>;
 		Monitor<CmdQueue> m_cmdQueue;
 		CmdQueue m_tmpQueue;
 		char m_signalInBuf[1];
+
 		void signal()
 		{
 			if (!m_signalOut)
 				return;
-			if (m_signalFlight.load() > 0)
+			if (m_signalCounter.load() > 0)
 				return;
 			char buf = 0;
-			++m_signalFlight;
+			++m_signalCounter;
 			if (::send(m_signalOut->m_s, &buf, 1, 0) != 1)
 				TCPFATAL(details::ErrorWrapper().msg().c_str());
 		}
@@ -515,17 +528,6 @@ namespace details
 			});
 			signal();
 		}
-
-		// Used only for debugging, so the TCPSocket/TCPAcceptor can execute thread safe asserts with the owner
-		template< typename H>
-		auto execSafe(H&& h)
-		{
-			return m_cmdQueue([&](CmdQueue& q)
-			{
-				return h();
-			});
-		}
-
 
 	};
 } // namespace details
@@ -545,15 +547,15 @@ class TCPSocket : public details::TCPBaseSocket
 {
 public:
 
-	TCPSocket(details::TCPServiceData& serviceData)
-		: m_owner(serviceData)
+	TCPSocket(details::TCPServiceBase& service)
+		: m_owner(service)
 	{
 	}
 
 	virtual ~TCPSocket()
 	{
-		TCPASSERT(m_recvs.size() == 0);
-		TCPASSERT(m_sends.size() == 0);
+		TCPASSERT(!m_readHandler);
+		TCPASSERT(!m_writeHandler);
 		releaseHandle();
 	}
 
@@ -651,7 +653,7 @@ public:
 				// Normal behavior, so setup the connect detection with select
 				m_owner.addCmd([this, h = std::move(h), timeoutMs]
 				{
-					details::TCPServiceData::ConnectOp op;
+					details::TCPServiceBase::ConnectOp op;
 					op.timeoutPoint = std::chrono::high_resolution_clock::now() + std::chrono::milliseconds(timeoutMs);
 					op.h = std::move(h);
 					m_owner.m_connects[this] = std::move(op);
@@ -807,7 +809,7 @@ protected:
 
 	friend TCPService;
 	friend TCPAcceptor;
-	details::TCPServiceData& m_owner;
+	details::TCPServiceBase& m_owner;
 	std::pair<std::string, int> m_localAddr;
 	std::pair<std::string, int> m_peerAddr;
 
@@ -966,8 +968,8 @@ class TCPAcceptor : public details::TCPBaseSocket
 {
 public:
 
-	TCPAcceptor(details::TCPServiceData& serviceData)
-		: m_owner(serviceData)
+	TCPAcceptor(details::TCPServiceBase& service)
+		: m_owner(service)
 	{
 	}
 
@@ -1144,7 +1146,7 @@ protected:
 		}
 	}
 
-	details::TCPServiceData& m_owner;
+	details::TCPServiceBase& m_owner;
 	std::queue<AcceptOp> m_accepts;
 	std::pair<std::string, int> m_localAddr;
 };
@@ -1160,7 +1162,7 @@ Thread Safety:
 	Distinct objects  : Safe
 	Shared objects : Unsafe
 */
-class TCPService : public details::TCPServiceData
+class TCPService : public details::TCPServiceBase
 {
 private:
 	struct Callstack
@@ -1252,7 +1254,7 @@ public:
 	bool tick()
 	{
 		// put a marker on the callstack, so other code can detect when inside the tick function
-		typename details::Callstack<details::TCPServiceData>::Context ctx(this);
+		typename details::Callstack<details::TCPServiceBase>::Context ctx(this);
 
 		// Continue executing commands until the queue is empty
 		while (prepareTmpQueue())
