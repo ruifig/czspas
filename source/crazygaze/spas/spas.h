@@ -446,6 +446,7 @@ namespace details
 		BaseSocket(const BaseSocket&) = delete;
 		void operator=(const BaseSocket&) = delete;
 
+		friend Acceptor;
 		bool isValid() const
 		{
 			return m_s != CZSPAS_INVALID_SOCKET;
@@ -477,6 +478,8 @@ namespace details
 #endif
 		std::unique_ptr<BaseSocket> m_signalIn;
 		std::unique_ptr<BaseSocket> m_signalOut;
+
+
 	};
 } // namespace details
 
@@ -536,6 +539,7 @@ public:
 
 protected:
 
+	friend Acceptor;
 	std::pair<std::string, int> m_localAddr;
 	std::pair<std::string, int> m_peerAddr;
 };
@@ -593,7 +597,7 @@ public:
 			)
 		{
 			auto ec = details::ErrorWrapper().getError();
-			CZSPAS_ERROR(ec.msg());
+			CZSPAS_ERROR("Acceptor %p: %s", this, ec.msg());
 			releaseHandle();
 			return ec;
 		}
@@ -609,12 +613,35 @@ public:
 
 	Error accept(Socket& sock)
 	{
+		CZSPAS_ASSERT(isValid());
+		CZSPAS_ASSERT(!sock.isValid());
+
+		sockaddr_in addr;
+		socklen_t size = sizeof(addr);
+		sock.m_s = ::accept(m_s, (struct sockaddr*)&addr, &size);
+		if (sock.m_s == CZSPAS_INVALID_SOCKET)
+		{
+			auto ec = details::ErrorWrapper().getError();
+			CZSPAS_ERROR("Acceptor %p: %s", ec.msg());
+			sock.releaseHandle();
+		}
+
+		sock.m_localAddr = details::utils::getLocalAddr(sock.m_s);
+		sock.m_peerAddr = details::utils::getRemoteAddr(sock.m_s);
+		details::utils::setBlocking(sock.m_s, false);
+		CZSPAS_INFO("Acceptor %p: Socket %d connected to %s:%d, socket %d",
+			this, (int)sock.m_s, sock.m_peerAddr.first.c_str(), sock.m_peerAddr.second);
+
+		// No error
+		return Error();
 	}
 
 	template< typename H, typename = IsAcceptHandler<H> >
 	void asyncAccept(Socket& sock, H&& h)
 	{
 		// #TODO : Fill me
+		m_h = std::move(h);
+
 	}
 
 	void close()
@@ -629,7 +656,13 @@ public:
 
 protected:
 
+	// Called by Service
+	void doAsyncAccept()
+	{
+	}
+
 	std::pair<std::string, int> m_localAddr;
+	AcceptHandler m_h;
 };
 
 
