@@ -1,6 +1,6 @@
 #include "testsPCH.h"
 
-#define LOOP_TESTS 1
+#define LOOP_TESTS 0
 
 namespace cz
 {
