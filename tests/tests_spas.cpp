@@ -38,6 +38,17 @@ TEST(Acceptor_listen_failure)
 	CHECK_CZSPAS_EQUAL(Other, ec);
 }
 
+TEST(Acceptor_tmp)
+{
+	Service io;
+	Acceptor ac(io);
+	auto ec = ac.listen(SERVER_PORT, 1);
+	CHECK_CZSPAS(ec);
+
+	Socket s(io);
+	ac.accept(s);
+}
+
 TEST(Service1)
 {
 	Service io;
