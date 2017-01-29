@@ -448,7 +448,7 @@ namespace details
 
 		bool isValid() const
 		{
-			return m_s != CZRPC_INVALID_SOCKET;
+			return m_s != CZSPAS_INVALID_SOCKET;
 		}
 
 		void releaseHandle()
@@ -471,9 +471,6 @@ namespace details
 		}
 
 	protected:
-
-		friend Socket;
-		friend Acceptor;
 
 #if _WIN32
 		details::WSAInstance m_wsaInstance;
@@ -571,7 +568,42 @@ public:
 	*/
 	Error listen(int port, int backlog)
 	{
-		// #TODO : Fill me
+		CZSPAS_ASSERT(!isValid());
+
+		CZSPAS_INFO("Acceptor %p: listen(%d, %d)", this, port, backlog);
+		
+		m_s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (m_s == CZSPAS_INVALID_SOCKET)
+		{
+			auto ec = details::ErrorWrapper().getError();
+			CZSPAS_ERROR(ec.msg());
+			return ec;
+		}
+
+		details::utils::setReuseAddress(m_s);
+
+		CZSPAS_INFO("Acceptor %p: listening socket=%d", this, (int)m_s);
+		sockaddr_in addr;
+		addr.sin_family = AF_INET;
+		addr.sin_port = htons(port);
+		addr.sin_addr.s_addr = htonl(INADDR_ANY);
+		if (
+			(::bind(m_s, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR) ||
+			(::listen(m_s, backlog) == CZSPAS_SOCKET_ERROR)
+			)
+		{
+			auto ec = details::ErrorWrapper().getError();
+			CZSPAS_ERROR(ec.msg());
+			releaseHandle();
+			return ec;
+		}
+
+		// Enable any loopback optimizations (in case this socket is used in a loopback)
+		details::utils::optimizeLoopback(m_s);
+
+		m_localAddr = details::utils::getLocalAddr(m_s);
+
+		// No error
 		return Error();
 	}
 
