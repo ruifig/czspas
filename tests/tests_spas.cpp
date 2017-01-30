@@ -13,9 +13,11 @@ using namespace spas;
 
 using namespace cz::spas;
 
-#define CHECK_CZSPAS_EQUAL(expected, ec) \
-	if ((ec.code)!=(Error::Code::expected)) { \
-		UnitTest::CheckEqual(*UnitTest::CurrentTest::Results(), Error(Error::Code::expected).msg(), ec.msg(),UnitTest::TestDetails(*UnitTest::CurrentTest::Details(), __LINE__)); \
+#define CHECK_CZSPAS_EQUAL(expected, ec)                                                                      \
+	if ((ec.code) != (Error::Code::expected))                                                                 \
+	{                                                                                                         \
+		UnitTest::CheckEqual(*UnitTest::CurrentTest::Results(), Error(Error::Code::expected).msg(), ec.msg(), \
+		                     UnitTest::TestDetails(*UnitTest::CurrentTest::Details(), __LINE__));             \
 	}
 #define CHECK_CZSPAS(ec) CHECK_CZSPAS_EQUAL(Success, ec)
 
@@ -46,7 +48,7 @@ TEST(Acceptor_tmp)
 	CHECK_CZSPAS(ec);
 
 	Socket s(io);
-	ac.accept(s);
+	ac.accept(s, 10000);
 }
 
 TEST(Service1)
