@@ -24,6 +24,7 @@ using namespace cz::spas;
 SUITE(CZSPAS)
 {
 
+// Checks behavior for a simple listen
 TEST(Acceptor_listen_ok)
 {
 	Service io;
@@ -32,6 +33,7 @@ TEST(Acceptor_listen_ok)
 	CHECK_CZSPAS(ec);
 }
 
+// Checks behavior when trying to listen on an invalid port
 TEST(Acceptor_listen_failure)
 {
 	Service io;
@@ -40,6 +42,9 @@ TEST(Acceptor_listen_failure)
 	CHECK_CZSPAS_EQUAL(Other, ec);
 }
 
+// Tests the accept timeout behavior
+// Because internally the timeout is split in two fields (microseconds and seconds), we need to test something below
+// 1 second, and something above, to make sure the split is done correctly
 TEST(Acceptor_accept_timeout)
 {
 	Service io;
@@ -50,13 +55,13 @@ TEST(Acceptor_accept_timeout)
 	Socket s(io);
 	UnitTest::Timer timer;
 	timer.Start();
-	ec = ac.accept(s, 100);
-	CHECK_CLOSE(100, timer.GetTimeInMs(), 20);
+	ec = ac.accept(s, 50);
+	CHECK_CLOSE(50, timer.GetTimeInMs(), 20);
 	CHECK_CZSPAS_EQUAL(Cancelled, ec);
 
 	timer.Start();
-	ec = ac.accept(s, 1100);
-	CHECK_CLOSE(1100, timer.GetTimeInMs(), 20);
+	ec = ac.accept(s, 1050);
+	CHECK_CLOSE(1050, timer.GetTimeInMs(), 20);
 	CHECK_CZSPAS_EQUAL(Cancelled, ec);
 }
 
@@ -78,6 +83,7 @@ TEST(Acceptor_accept_break)
 
 	auto ft2 = std::async([&ac]
 	{
+		// Give it some time for the other thread to start the accept
 		UnitTest::TimeHelpers::SleepMs(100);
 		// Closing the socket on our own, to cause the accept to break
 		::closesocket(ac.getHandle());
