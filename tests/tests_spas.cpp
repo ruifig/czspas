@@ -77,7 +77,6 @@ TEST(Acceptor_accept_break)
 		Socket s(io);
 		auto ec = ac.accept(s);
 		CHECK_CZSPAS_EQUAL(Other, ec);
-		printf("f1.4\n");
 	});
 
 	auto ft2 = std::async(std::launch::async, [&ac]
@@ -101,8 +100,7 @@ TEST(Acceptor_accept_break)
 	ft2.get();
 }
 
-
-TEST(Acceptor_tmp)
+TEST(Socket_connect_ok)
 {
 	Service io;
 	Acceptor ac(io);
@@ -111,7 +109,7 @@ TEST(Acceptor_tmp)
 
 	auto ft = std::async(std::launch::async, [&io]
 	{
-		UnitTest::TimeHelpers::SleepMs(100);
+		UnitTest::TimeHelpers::SleepMs(10);
 		Socket s(io);
 		auto ec = s.connect("127.0.0.1", SERVER_PORT);
 		CHECK_CZSPAS(ec);
@@ -119,8 +117,15 @@ TEST(Acceptor_tmp)
 
 	Socket s(io);
 	ac.accept(s, 1000);
-	printf("Done...\n");
 	ft.get();
+}
+
+TEST(Socket_connect_failure)
+{
+	Service io;
+	Socket s(io);
+	auto ec = s.connect("127.0.0.1", SERVER_PORT);
+	CHECK_CZSPAS_EQUAL(Other, ec);
 }
 
 }
