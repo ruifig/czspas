@@ -441,6 +441,11 @@ namespace details
 			releaseHandle();
 		}
 
+		SocketHandle getHandle()
+		{
+			return m_s;
+		}
+
 	protected:
 
 		BaseSocket(const BaseSocket&) = delete;
@@ -673,55 +678,45 @@ public:
 		CZSPAS_ASSERT(isValid());
 		CZSPAS_ASSERT(!sock.isValid());
 
-		auto start = std::chrono::high_resolution_clock::now();
-		auto end = start + std::chrono::milliseconds(timeoutMs==-1 ? 0 : timeoutMs);
-
-		while (true)
+		timeval timeout{ 0,0 };
+		if (timeoutMs != -1)
 		{
-			timeval timeout{ 0,0 };
-			if (timeoutMs != -1)
-			{
-				auto remain = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-				timeout.tv_sec = static_cast<long>((long)remain.count() / (1000 * 1000));
-				timeout.tv_usec = static_cast<long>((long)remain.count() % (1000 * 1000));
-			}
-
-			fd_set fds;
-			FD_ZERO(&fds);
-			FD_SET(m_s, &fds);
-			auto res = ::select((int)m_s + 1, &fds, NULL, NULL, timeoutMs == -1 ? NULL : &timeout);
-
-			if (res == CZSPAS_SOCKET_ERROR)
-				CZSPAS_ERROR(details::ErrorWrapper().msg().c_str());
-			else if (res == 0)
-				return Error(Error::Code::Cancelled);
-
-			if (FD_ISSET(m_s, &fds))
-			{
-				sockaddr_in addr;
-				socklen_t size = sizeof(addr);
-				sock.m_s = ::accept(m_s, (struct sockaddr*)&addr, &size);
-				if (sock.m_s == CZSPAS_INVALID_SOCKET)
-				{
-					auto ec = details::ErrorWrapper().getError();
-					CZSPAS_ERROR("Acceptor %p: %s", ec.msg());
-					sock.releaseHandle();
-				}
-
-				sock.m_localAddr = details::utils::getLocalAddr(sock.m_s);
-				sock.m_peerAddr = details::utils::getRemoteAddr(sock.m_s);
-				details::utils::setBlocking(sock.m_s, false);
-				CZSPAS_INFO("Acceptor %p: Socket %d connected to %s:%d, socket %d",
-					this, (int)sock.m_s, sock.m_peerAddr.first.c_str(), sock.m_peerAddr.second);
-
-				// No error
-				return Error();
-			}
-
-			if (timeoutMs != -1)
-				start = std::chrono::high_resolution_clock::now();
+			timeout.tv_sec = static_cast<long>((long)(timeoutMs) / 1000);
+			timeout.tv_usec = static_cast<long>(((long)(timeoutMs) % 1000)*1000);
 		}
 
+		fd_set fds;
+		FD_ZERO(&fds);
+		FD_SET(m_s, &fds);
+		auto res = ::select((int)m_s + 1, &fds, NULL, NULL, timeoutMs == -1 ? NULL : &timeout);
+
+		if (res == CZSPAS_SOCKET_ERROR)
+			CZSPAS_ERROR(details::ErrorWrapper().msg().c_str());
+		else if (res == 0)
+			return Error(Error::Code::Cancelled);
+
+		CZSPAS_ASSERT(res == 1);
+		CZSPAS_ASSERT(FD_ISSET(m_s, &fds));
+
+		sockaddr_in addr;
+		socklen_t size = sizeof(addr);
+		sock.m_s = ::accept(m_s, (struct sockaddr*)&addr, &size);
+		if (sock.m_s == CZSPAS_INVALID_SOCKET)
+		{
+			sock.releaseHandle();
+			auto ec = details::ErrorWrapper().getError();
+			CZSPAS_ERROR("Acceptor %p: %s", this, ec.msg());
+			return ec;
+		}
+
+		sock.m_localAddr = details::utils::getLocalAddr(sock.m_s);
+		sock.m_peerAddr = details::utils::getRemoteAddr(sock.m_s);
+		details::utils::setBlocking(sock.m_s, false);
+		CZSPAS_INFO("Acceptor %p: Socket %p connected to %s:%d", this, &sock, sock.m_peerAddr.first.c_str(),
+		            sock.m_peerAddr.second);
+
+		// No error
+		return Error();
 	}
 
 #endif
