@@ -62,7 +62,29 @@ TEST(Acceptor_accept_timeout)
 
 TEST(Acceptor_accept_break)
 {
+	Service io;
+	Acceptor ac(io);
+	auto ec = ac.listen(SERVER_PORT, 1);
+	CHECK_CZSPAS(ec);
 
+	auto ft1 = std::async([&ac, &io]
+	{
+		UnitTest::Timer timer;
+		timer.Start();
+		Socket s(io);
+		auto ec = ac.accept(s);
+		CHECK_CZSPAS_EQUAL(Other, ec);
+	});
+
+	auto ft2 = std::async([&ac]
+	{
+		UnitTest::TimeHelpers::SleepMs(100);
+		// Closing the socket on our own, to cause the accept to break
+		::closesocket(ac.getHandle());
+	});
+
+	ft1.get();
+	ft2.get();
 }
 
 
@@ -82,14 +104,8 @@ TEST(Acceptor_tmp)
 	});
 
 	Socket s(io);
-	ac.accept(s, 100000);
-
-}
-
-TEST(Service1)
-{
-	Service io;
-
+	ac.accept(s, 1000);
+	ft.get();
 }
 
 }
