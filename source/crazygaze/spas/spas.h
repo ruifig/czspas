@@ -479,7 +479,6 @@ namespace details
 		std::unique_ptr<BaseSocket> m_signalIn;
 		std::unique_ptr<BaseSocket> m_signalOut;
 
-
 	};
 } // namespace details
 
@@ -503,7 +502,39 @@ public:
 	//! Synchronous connect
 	Error connect(const char* ip, int port)
 	{
-		// #TODO : Fill me
+		CZSPAS_ASSERT(!isValid());
+
+		CZSPAS_INFO("Socket %p: Connect(%s,%d)", this, ip, port);
+		m_s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (m_s == CZSPAS_INVALID_SOCKET)
+		{
+			auto ec = details::ErrorWrapper().getError();
+			CZSPAS_ERROR("Socket %p: %s", this, ec.msg());
+			return ec;
+		}
+
+		// Enable any loopback optimizations (in case this socket is used in loopback)
+		details::utils::optimizeLoopback(m_s);
+
+		sockaddr_in addr;
+		memset(&addr, 0, sizeof(addr));
+		addr.sin_family = AF_INET;
+		addr.sin_port = htons(port);
+		inet_pton(AF_INET, ip, &(addr.sin_addr));
+		if (::connect(m_s, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR)
+		{
+			auto ec = details::ErrorWrapper().getError();
+			CZSPAS_ERROR("Socket %p: %s", this, ec.msg());
+			releaseHandle();
+			return ec;
+		}
+
+		details::utils::setBlocking(m_s, false);
+
+		m_localAddr = details::utils::getLocalAddr(m_s);
+		m_peerAddr = details::utils::getRemoteAddr(m_s);
+		CZSPAS_INFO("Socket %p: Connected to %s:%d", this, m_peerAddr.first.c_str(), m_peerAddr.second);
+
 		return Error();
 	}
 	 

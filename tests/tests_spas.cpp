@@ -40,7 +40,7 @@ TEST(Acceptor_listen_failure)
 	CHECK_CZSPAS_EQUAL(Other, ec);
 }
 
-TEST(Acceptor_tmp)
+TEST(Acceptor_accept_timeout)
 {
 	Service io;
 	Acceptor ac(io);
@@ -48,7 +48,42 @@ TEST(Acceptor_tmp)
 	CHECK_CZSPAS(ec);
 
 	Socket s(io);
-	ac.accept(s, 10000);
+	UnitTest::Timer timer;
+	timer.Start();
+	ec = ac.accept(s, 100);
+	CHECK_CLOSE(100, timer.GetTimeInMs(), 20);
+	CHECK_CZSPAS_EQUAL(Cancelled, ec);
+
+	timer.Start();
+	ec = ac.accept(s, 1100);
+	CHECK_CLOSE(1100, timer.GetTimeInMs(), 20);
+	CHECK_CZSPAS_EQUAL(Cancelled, ec);
+}
+
+TEST(Acceptor_accept_break)
+{
+
+}
+
+
+TEST(Acceptor_tmp)
+{
+	Service io;
+	Acceptor ac(io);
+	auto ec = ac.listen(SERVER_PORT, 1);
+	CHECK_CZSPAS(ec);
+
+	auto ft = std::async([&io]
+	{
+		UnitTest::TimeHelpers::SleepMs(100);
+		Socket s(io);
+		auto ec = s.connect("127.0.0.1", SERVER_PORT);
+		CHECK_CZSPAS(ec);
+	});
+
+	Socket s(io);
+	ac.accept(s, 100000);
+
 }
 
 TEST(Service1)
