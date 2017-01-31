@@ -60,6 +60,7 @@
 #include <queue>
 #include <stdio.h>
 #include <cstdarg>
+#include <string.h>
 
 // Windows defines a min/max macro, interferes with STL
 #ifdef max
@@ -83,9 +84,10 @@ template<unsigned int N>
 inline void copyStrToFixedBuffer(char (&dst)[N], const char* src)
 {
 #if _WIN32
-	strncpy_s(dst, sizeof(dst), src, strlen(src));
+	strncpy_s(dst, sizeof(dst), src, sizeof(dst)-1);
 #else
-	strncpy(dst, src, strlen(src));
+	strncpy(dst, src, sizeof(dst));
+	dst[sizeof(dst)-1] = 0;
 #endif
 }
 
@@ -93,7 +95,7 @@ struct DefaultLog
 {
 	static void out(bool fatal, const char* type, const char* fmt, ...)
 	{
-		char buf[256];
+		char buf[512];
 		copyStrToFixedBuffer(buf, type);
 		va_list args;
 		va_start(args, fmt);
@@ -616,7 +618,7 @@ public:
 		if (m_s == CZSPAS_INVALID_SOCKET)
 		{
 			auto ec = details::ErrorWrapper().getError();
-			CZSPAS_ERROR(ec.msg());
+			CZSPAS_ERROR("Acceptor %p: %s", this, ec.msg());
 			return ec;
 		}
 
@@ -690,10 +692,14 @@ public:
 		FD_SET(m_s, &fds);
 		auto res = ::select((int)m_s + 1, &fds, NULL, NULL, timeoutMs == -1 ? NULL : &timeout);
 
-		if (res == CZSPAS_SOCKET_ERROR)
-			CZSPAS_ERROR(details::ErrorWrapper().msg().c_str());
-		else if (res == 0)
+		if (res == CZSPAS_SOCKET_ERROR) {
+			auto ec = details::ErrorWrapper().getError();
+			CZSPAS_ERROR("Acceptor %p: %s", this, ec.msg());
+            return ec;
+		}
+		else if (res == 0) {
 			return Error(Error::Code::Cancelled);
+		}
 
 		CZSPAS_ASSERT(res == 1);
 		CZSPAS_ASSERT(FD_ISSET(m_s, &fds));
@@ -721,7 +727,7 @@ public:
 
 #endif
 
-	template< typename H, typename = IsAcceptHandler<H> >
+	template< typename H, typename = details::IsAcceptHandler<H> >
 	void asyncAccept(Socket& sock, H&& h)
 	{
 		// #TODO : Fill me

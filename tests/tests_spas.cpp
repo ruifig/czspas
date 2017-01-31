@@ -72,21 +72,25 @@ TEST(Acceptor_accept_break)
 	auto ec = ac.listen(SERVER_PORT, 1);
 	CHECK_CZSPAS(ec);
 
-	auto ft1 = std::async([&ac, &io]
+	auto ft1 = std::async(std::launch::async, [&ac, &io]
 	{
-		UnitTest::Timer timer;
-		timer.Start();
 		Socket s(io);
 		auto ec = ac.accept(s);
 		CHECK_CZSPAS_EQUAL(Other, ec);
+		printf("f1.4\n");
 	});
 
-	auto ft2 = std::async([&ac]
+	auto ft2 = std::async(std::launch::async, [&ac]
 	{
 		// Give it some time for the other thread to start the accept
 		UnitTest::TimeHelpers::SleepMs(100);
+
 		// Closing the socket on our own, to cause the accept to break
-		::closesocket(ac.getHandle());
+		// Initially I was calling spas::details::utils::closeSocket(ac.getHandle()), which works fine on Windows.
+		// It does a shutdown with SD_BOTH on Windows, and SD_RDWR on Linux, but it seems on Linux, using a shutdown with
+		// SD_RDWR doesn't cause the ::select used internally by Acceptor::accept to break. It hangs forever.
+        // So, I need to do a manual shutdown with SHUT_RD
+		::shutdown(ac.getHandle(), SHUT_RD);
 	});
 
 	ft1.get();
@@ -101,7 +105,7 @@ TEST(Acceptor_tmp)
 	auto ec = ac.listen(SERVER_PORT, 1);
 	CHECK_CZSPAS(ec);
 
-	auto ft = std::async([&io]
+	auto ft = std::async(std::launch::async, [&io]
 	{
 		UnitTest::TimeHelpers::SleepMs(100);
 		Socket s(io);
@@ -111,6 +115,7 @@ TEST(Acceptor_tmp)
 
 	Socket s(io);
 	ac.accept(s, 1000);
+	printf("Done...\n");
 	ft.get();
 }
 

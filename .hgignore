@@ -21,4 +21,9 @@ syntax: glob
 syntax: regexp
 
 ^build/
+# CLion folders
+^cmake-build-debug/
+^cmake-build-release/
+^.idea/
+
 
