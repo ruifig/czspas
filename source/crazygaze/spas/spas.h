@@ -12,6 +12,10 @@
 //
 // Windows loopback fast path:
 // https://blogs.technet.microsoft.com/wincat/2012/12/05/fast-tcp-loopback-performance-and-low-latency-with-windows-server-2012-tcp-loopback-fast-path/
+//
+// Notes on WSAPoll
+//	https://blogs.msdn.microsoft.com/wndp/2006/10/26/wsapoll-a-new-winsock-api-to-simplify-porting-poll-applications-to-winsock/
+//	Also has some tips how to write code for IPv6
 
 // #TODO
 // - Instead of using SO_REUSEADDR, consider:
@@ -406,6 +410,25 @@ namespace details
 		}
 	};
 
+	template <class T, class MTX=std::mutex>
+	class Monitor
+	{
+	private:
+		mutable T m_t;
+		mutable MTX m_mtx;
+
+	public:
+		using Type = T;
+		Monitor() {}
+		Monitor(T t_) : m_t(std::move(t_)) {}
+		template <typename F>
+		auto operator()(F f) const -> decltype(f(m_t))
+		{
+			std::lock_guard<std::mutex> hold{ m_mtx };
+			return f(m_t);
+		}
+	};
+
 #if _WIN32
 	struct WSAInstance
 	{
@@ -450,10 +473,14 @@ namespace details
 
 	protected:
 
+		virtual void doReceive() { }
+		virtual void doSend() { }
+
 		BaseSocket(const BaseSocket&) = delete;
 		void operator=(const BaseSocket&) = delete;
 
 		friend Acceptor;
+		friend Service;
 		bool isValid() const
 		{
 			return m_s != CZSPAS_INVALID_SOCKET;
@@ -469,6 +496,9 @@ namespace details
 		SocketHandle m_s = CZSPAS_INVALID_SOCKET;
 	};
 
+
+	class 
+
 	// This is not part of the Service class, so that we can break the circular dependency
 	// between Acceptor/Socket and Service
 	class ServiceData
@@ -480,11 +510,38 @@ namespace details
 
 	protected:
 
+		friend class Socket;
+		template< typename H, typename = IsSimpleHandler<H> >
+		void queueReadyHandler(H&& h)
+		{
+			m_readyHandlers([&](CmdQueue& q)
+			{
+				q.push(std::move(h));
+			});
+		}
+
+		template< typename H, typename = IsSimpleHandler<H> >
+		void queueNewOperation(H&& h)
+		{
+			m_newOperations([&](CmdQueue& q)
+			{
+				q.push(std::move(h));
+			});
+		}
+
 #if _WIN32
 		details::WSAInstance m_wsaInstance;
 #endif
 		std::unique_ptr<BaseSocket> m_signalIn;
 		std::unique_ptr<BaseSocket> m_signalOut;
+
+		using CmdQueue = std::queue<std::function<void()>>;
+		details::Monitor<CmdQueue> m_readyHandlers; // Queue of handlers ready for execution
+		details::Monitor<CmdQueue> m_newOperations;
+
+		std::thread m_ioThread; // thread that runs the "select" loop
+		std::set<BaseSocket*> m_reads;
+		std::set<BaseSocket*> m_writes;
 
 	};
 } // namespace details
@@ -545,9 +602,27 @@ public:
 		return Error();
 	}
 	 
+	// #TODO : Remove the timeout parameter, and assume a default
+	// 
 	void asyncConnect(const char* ip, int port, ConnectHandler h, int timeoutMs = 200)
 	{
-		// #TODO : Fill me
+		CZSPAS_ASSERT(!isValid());
+
+		CZSPAS_INFO("Socket %p: asyncConnect(%s,%d, H, %d)", this, ip, port, timeoutMs);
+
+		m_s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (m_s == CZSPAS_INVALID_SOCKET)
+		{
+			auto ec = details::ErrorWrapper().getError();
+			CZSPAS_ERROR("Socket %p: %s", this, ec.msg());
+			m_owner.queueReadyHandler([ec = std::move(ec), h = std::move(h)]
+			{
+				h(ec);
+			});
+			return;
+		}
+
+
 	}
 
 	template< typename H, typename = details::IsTransferHandler<H> >
