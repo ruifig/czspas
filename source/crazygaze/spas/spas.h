@@ -408,6 +408,108 @@ namespace details
 				return std::make_pair("", 0);
 			}
 		}
+
+		//! Creates a socket and puts it into listen mode
+		//
+		// \param port
+		//		What port to listen on. If 0, the OS will pick a port from the dynamic range
+		// \param ec
+		//		If an error occurs, this contains the error.
+		// \param backlog
+		//		Size of the the connection backlog.
+		//		Also, this is only an hint to the OS. It's not guaranteed.
+		//
+		static std::pair<Error, SocketHandle> createListenSocket(int port, int backlog)
+		{
+			SocketHandle s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+			if (s == CZSPAS_INVALID_SOCKET)
+				return std::make_pair(details::ErrorWrapper().getError(), s);
+
+			details::utils::setReuseAddress(s);
+
+			sockaddr_in addr;
+			addr.sin_family = AF_INET;
+			addr.sin_port = htons(port);
+			addr.sin_addr.s_addr = htonl(INADDR_ANY);
+			if (
+				(::bind(s, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR) ||
+				(::listen(s, backlog) == CZSPAS_SOCKET_ERROR)
+				)
+			{
+				auto ec = details::ErrorWrapper().getError();
+				closeSocket(s);
+				return std::make_pair(ec, CZSPAS_INVALID_SOCKET);
+			}
+
+			// Enable any loopback optimizations (in case this socket is used in a loopback)
+			details::utils::optimizeLoopback(s);
+
+			return std::make_pair(Error(), s);
+		}
+
+		//! Synchronous connect
+		static std::pair<Error, SocketHandle> createConnectSocket(const char* ip, int port)
+		{
+			SocketHandle s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+			if (s == CZSPAS_INVALID_SOCKET)
+				return std::make_pair(details::ErrorWrapper().getError(), s);
+
+			// Enable any loopback optimizations (in case this socket is used in loopback)
+			details::utils::optimizeLoopback(s);
+
+			sockaddr_in addr;
+			memset(&addr, 0, sizeof(addr));
+			addr.sin_family = AF_INET;
+			addr.sin_port = htons(port);
+			inet_pton(AF_INET, ip, &(addr.sin_addr));
+			if (::connect(s, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR)
+			{
+				auto ec = details::ErrorWrapper().getError();
+				closeSocket(s);
+				return std::make_pair(ec, CZSPAS_INVALID_SOCKET);
+			}
+
+			details::utils::setBlocking(s, false);
+			return std::make_pair(Error(), s);
+		}
+
+		static std::pair<Error, SocketHandle> accept(SocketHandle& acceptor, int timeoutMs = -1)
+		{
+			CZSPAS_ASSERT(acceptor != CZSPAS_INVALID_SOCKET);
+
+			timeval timeout{ 0,0 };
+			if (timeoutMs != -1)
+			{
+				timeout.tv_sec = static_cast<long>((long)(timeoutMs) / 1000);
+				timeout.tv_usec = static_cast<long>(((long)(timeoutMs) % 1000) * 1000);
+			}
+
+			fd_set fds;
+			FD_ZERO(&fds);
+			FD_SET(acceptor, &fds);
+			auto res = ::select((int)acceptor + 1, &fds, NULL, NULL, timeoutMs == -1 ? NULL : &timeout);
+
+			if (res == CZSPAS_SOCKET_ERROR) {
+				return std::make_pair(details::ErrorWrapper().getError(), CZSPAS_INVALID_SOCKET);
+			}
+			else if (res == 0) {
+				return std::make_pair(Error(Error::Code::Cancelled), CZSPAS_INVALID_SOCKET);
+			}
+
+			CZSPAS_ASSERT(res == 1);
+			CZSPAS_ASSERT(FD_ISSET(acceptor, &fds));
+
+			sockaddr_in addr;
+			socklen_t size = sizeof(addr);
+			SocketHandle s = ::accept(acceptor, (struct sockaddr*)&addr, &size);
+			if (s == CZSPAS_INVALID_SOCKET)
+				return std::make_pair(details::ErrorWrapper().getError(), s);
+
+			details::utils::setBlocking(s, false);
+
+			return std::make_pair(Error(), s);
+		}
+
 	};
 
 	template <class T, class MTX=std::mutex>
@@ -496,8 +598,61 @@ namespace details
 		SocketHandle m_s = CZSPAS_INVALID_SOCKET;
 	};
 
+	// 
+	// Runs a poll()/WSAPoll() on a different thread, and calls registered handlers whenever there is a event available.
+	//
+	class IODemux
+	{
+	public:
+		IODemux()
+		{
+			auto acceptor = utils::createListenSocket(0, 1);
+			CZSPAS_ASSERT(!acceptor.first);
 
-	class 
+			auto connectFt = std::async(std::launch::async, [this, port=details::utils::getLocalAddr(acceptor.second).second]
+			{
+				auto res = details::utils::createConnectSocket("127.0.0.1", port);
+				CZSPAS_ASSERT(!res.first);
+				return res.second;
+			});
+
+			auto res = details::utils::accept(acceptor.second);
+			details::utils::closeSocket(acceptor.second);
+			CZSPAS_ASSERT(!res.first);
+			m_signalIn = res.second;
+			m_signalOut = connectFt.get();
+
+			m_th = std::thread([this]
+			{
+				run();
+			});
+		}
+		~IODemux()
+		{
+			m_th.join();
+			details::utils::closeSocket(m_signalOut);
+			details::utils::closeSocket(m_signalIn);
+		}
+	private:
+		void run()
+		{
+		}
+
+		// Sends data to signal socket, to cause poll to break
+		void signal()
+		{
+			char buf = 0;
+			if (::send(m_signalOut, &buf, 1, 0) != 1)
+				CZSPAS_FATAL("IODemux %p", this, details::ErrorWrapper().msg().c_str());
+		}
+
+#if _WIN32
+		details::WSAInstance m_wsaInstance;
+#endif
+		std::thread m_th;
+		SocketHandle m_signalIn;
+		SocketHandle m_signalOut;
+	};
 
 	// This is not part of the Service class, so that we can break the circular dependency
 	// between Acceptor/Socket and Service
@@ -569,31 +724,13 @@ public:
 		CZSPAS_ASSERT(!isValid());
 
 		CZSPAS_INFO("Socket %p: Connect(%s,%d)", this, ip, port);
-		m_s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-		if (m_s == CZSPAS_INVALID_SOCKET)
+		auto res = details::utils::createConnectSocket(ip, port);
+		if (res.first)
 		{
-			auto ec = details::ErrorWrapper().getError();
-			CZSPAS_ERROR("Socket %p: %s", this, ec.msg());
-			return ec;
+			CZSPAS_ERROR("Socket %p: %s", this, res.first.msg());
+			return res.first;
 		}
-
-		// Enable any loopback optimizations (in case this socket is used in loopback)
-		details::utils::optimizeLoopback(m_s);
-
-		sockaddr_in addr;
-		memset(&addr, 0, sizeof(addr));
-		addr.sin_family = AF_INET;
-		addr.sin_port = htons(port);
-		inet_pton(AF_INET, ip, &(addr.sin_addr));
-		if (::connect(m_s, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR)
-		{
-			auto ec = details::ErrorWrapper().getError();
-			CZSPAS_ERROR("Socket %p: %s", this, ec.msg());
-			releaseHandle();
-			return ec;
-		}
-
-		details::utils::setBlocking(m_s, false);
+		m_s = res.second;
 
 		m_localAddr = details::utils::getLocalAddr(m_s);
 		m_peerAddr = details::utils::getRemoteAddr(m_s);
@@ -686,40 +823,17 @@ public:
 	Error listen(int port, int backlog)
 	{
 		CZSPAS_ASSERT(!isValid());
-
 		CZSPAS_INFO("Acceptor %p: listen(%d, %d)", this, port, backlog);
-		
-		m_s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-		if (m_s == CZSPAS_INVALID_SOCKET)
+
+		auto res = details::utils::createListenSocket(port, backlog);
+		if (res.first)
 		{
-			auto ec = details::ErrorWrapper().getError();
-			CZSPAS_ERROR("Acceptor %p: %s", this, ec.msg());
-			return ec;
+			CZSPAS_ERROR("Acceptor %p: %s", this, res.first.msg());
+			return res.first;
 		}
-
-		details::utils::setReuseAddress(m_s);
-
-		CZSPAS_INFO("Acceptor %p: listening socket=%d", this, (int)m_s);
-		sockaddr_in addr;
-		addr.sin_family = AF_INET;
-		addr.sin_port = htons(port);
-		addr.sin_addr.s_addr = htonl(INADDR_ANY);
-		if (
-			(::bind(m_s, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR) ||
-			(::listen(m_s, backlog) == CZSPAS_SOCKET_ERROR)
-			)
-		{
-			auto ec = details::ErrorWrapper().getError();
-			CZSPAS_ERROR("Acceptor %p: %s", this, ec.msg());
-			releaseHandle();
-			return ec;
-		}
-
-		// Enable any loopback optimizations (in case this socket is used in a loopback)
-		details::utils::optimizeLoopback(m_s);
+		m_s = res.second;
 
 		m_localAddr = details::utils::getLocalAddr(m_s);
-
 		// No error
 		return Error();
 	}
@@ -755,44 +869,16 @@ public:
 		CZSPAS_ASSERT(isValid());
 		CZSPAS_ASSERT(!sock.isValid());
 
-		timeval timeout{ 0,0 };
-		if (timeoutMs != -1)
+		auto res = details::utils::accept(m_s, timeoutMs);
+		if (res.first)
 		{
-			timeout.tv_sec = static_cast<long>((long)(timeoutMs) / 1000);
-			timeout.tv_usec = static_cast<long>(((long)(timeoutMs) % 1000)*1000);
+			CZSPAS_ERROR("Acceptor %p: %s", this, res.first.msg());
+			return res.first;
 		}
-
-		fd_set fds;
-		FD_ZERO(&fds);
-		FD_SET(m_s, &fds);
-		auto res = ::select((int)m_s + 1, &fds, NULL, NULL, timeoutMs == -1 ? NULL : &timeout);
-
-		if (res == CZSPAS_SOCKET_ERROR) {
-			auto ec = details::ErrorWrapper().getError();
-			CZSPAS_ERROR("Acceptor %p: %s", this, ec.msg());
-            return ec;
-		}
-		else if (res == 0) {
-			return Error(Error::Code::Cancelled);
-		}
-
-		CZSPAS_ASSERT(res == 1);
-		CZSPAS_ASSERT(FD_ISSET(m_s, &fds));
-
-		sockaddr_in addr;
-		socklen_t size = sizeof(addr);
-		sock.m_s = ::accept(m_s, (struct sockaddr*)&addr, &size);
-		if (sock.m_s == CZSPAS_INVALID_SOCKET)
-		{
-			sock.releaseHandle();
-			auto ec = details::ErrorWrapper().getError();
-			CZSPAS_ERROR("Acceptor %p: %s", this, ec.msg());
-			return ec;
-		}
+		sock.m_s = res.second;
 
 		sock.m_localAddr = details::utils::getLocalAddr(sock.m_s);
 		sock.m_peerAddr = details::utils::getRemoteAddr(sock.m_s);
-		details::utils::setBlocking(sock.m_s, false);
 		CZSPAS_INFO("Acceptor %p: Socket %p connected to %s:%d", this, &sock, sock.m_peerAddr.first.c_str(),
 		            sock.m_peerAddr.second);
 
