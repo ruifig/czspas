@@ -128,4 +128,12 @@ TEST(Socket_connect_failure)
 	CHECK_CZSPAS_EQUAL(Other, ec);
 }
 
+TEST(Dummy)
+{
+	{
+		details::IODemux demux;
+	}
+	printf("\n");
+}
+
 }
