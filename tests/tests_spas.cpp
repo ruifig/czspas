@@ -132,6 +132,7 @@ TEST(Dummy)
 {
 	{
 		details::IODemux demux;
+		UnitTest::TimeHelpers::SleepMs(10000);
 	}
 	printf("\n");
 }
