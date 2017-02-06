@@ -531,6 +531,31 @@ namespace details
 		}
 	};
 
+	template<typename T>
+	typename std::vector<T>::iterator removeAndReplaceWithLast(std::vector<T>& c, typename std::vector<T>::iterator it)
+	{
+		assert(it != c.end());
+		if (it == c.end() - 1)
+		{
+			return c.erase(it);
+		}
+		else
+		{
+			*it = std::move(*(c.end() - 1));
+			c.erase(c.cend() - 1);
+			return it;
+		}
+	}
+
+	/*
+	Same as std::find_if, but uses the full container range.
+	*/
+	template<typename C, typename F>
+	auto find_if(C& c, const F& f) -> decltype(c.begin())
+	{
+		return std::find_if(c.begin(), c.end(), f);
+	}
+
 #if _WIN32
 	struct WSAInstance
 	{
@@ -604,6 +629,13 @@ namespace details
 	class IODemux
 	{
 	public:
+		class Listener
+		{
+		public:
+			virtual void handleReceive(bool cancelled) = 0;
+			virtual void handleSend(bool cancelled) = 0;
+		};
+
 		IODemux()
 		{
 			auto acceptor = utils::createListenSocket(0, 1);
@@ -629,14 +661,59 @@ namespace details
 		}
 		~IODemux()
 		{
+			m_finish = true;
+			signal();
 			m_th.join();
 			details::utils::closeSocket(m_signalOut);
 			details::utils::closeSocket(m_signalIn);
 		}
-	private:
-		void run()
+
+		void registerReceive(SocketHandle s, Listener* l)
 		{
+			m_newOps([&](auto& q)
+			{
+				q.push({ s, l, Op::Receive });
+			});
 		}
+
+		void registerSend(SocketHandle s, Listener* l)
+		{
+			m_newOps([&](auto& q)
+			{
+				q.push({ s, l, Op::Send });
+			});
+		}
+
+		void cancelRequests(SocketHandle s)
+		{
+			m_newOps([&](auto& q)
+			{
+				q.push({ s, nullptr, Op::Cancel });
+			});
+		}
+
+	private:
+
+#if _WIN32
+		details::WSAInstance m_wsaInstance;
+#endif
+		enum class Op
+		{
+			Cancel = 0,
+			Receive = 1,
+			Send = 2
+		};
+		struct PendingOp
+		{
+			SocketHandle s;
+			Listener* listener;
+			Op op; // POLLRDNORM, POLLWRNORM, or 0 (cancel)
+		};
+		details::Monitor<std::queue<PendingOp>> m_newOps;
+		std::thread m_th;
+		SocketHandle m_signalIn;
+		SocketHandle m_signalOut;
+		bool m_finish = false;
 
 		// Sends data to signal socket, to cause poll to break
 		void signal()
@@ -646,12 +723,160 @@ namespace details
 				CZSPAS_FATAL("IODemux %p", this, details::ErrorWrapper().msg().c_str());
 		}
 
-#if _WIN32
-		details::WSAInstance m_wsaInstance;
-#endif
-		std::thread m_th;
-		SocketHandle m_signalIn;
-		SocketHandle m_signalOut;
+		// Read as much data as possible from the signalIn socket
+		void readSignalIn()
+		{
+			char buf[64];
+			bool done = false;
+			while (!done)
+			{
+				if (recv(m_signalIn, buf, sizeof(buf), 0) == CZSPAS_SOCKET_ERROR)
+				{
+					details::ErrorWrapper err;
+					if (err.isBlockError()) // This is expected, and it means there is no more data to read
+					{
+						done = true;
+					}
+					else
+					{
+						CZSPAS_FATAL("IODemux %p: %s", this, err.msg().c_str());
+					}
+				}
+			}
+		}
+
+		void run()
+		{
+			std::vector<pollfd> fds;
+			std::unordered_map<SocketHandle, Listener*> handlers;
+			std::queue<PendingOp> tmpOps;
+
+			auto findInFds = [&fds](SocketHandle s)
+			{
+				auto it = details::find_if(fds, [s](pollfd& fd)
+				{
+					return fd.fd == s;
+				});
+				CZSPAS_ASSERT(it != fds.end());
+				return it;
+			};
+
+			auto addRequest = [&](SocketHandle s, Listener* l, short flags)
+			{
+				auto handlerIt = handlers.find(s);
+				if (handlerIt == handlers.end())
+				{
+					handlers.emplace(s, l);
+					fds.push_back({ s, flags, 0 });
+				}
+				else
+				{
+					auto fdIt = findInFds(s);
+					// Make sure we only have 1 pending request of a specific type
+					// This means if we get e.g a read request (POLLRDNORM), that bit can't be set at the moment
+					CZSPAS_ASSERT((fdIt->events&flags) == 0);
+					fdIt->events |= flags;
+				}
+			};
+
+			// Add signalIn to fds
+			fds.push_back({ m_signalIn, POLLRDNORM, 0 });
+			while (!m_finish)
+			{
+				auto res = WSAPoll(&fds.front(), fds.size(), -1);
+				if (res == 0) // Timeout
+				{
+
+				}
+				else if (res == CZSPAS_SOCKET_ERROR)
+				{
+					CZSPAS_FATAL("IODemux %p: %s", this, details::ErrorWrapper().msg().c_str());
+				}
+				// else if (res>0) // Number of elements in the fds array for which an revents nember is nonzero
+
+				if (fds[0].revents & POLLRDNORM)
+				{
+					readSignalIn();
+				}
+
+				//
+				// Process received events
+				//
+				for (auto it = fds.begin() + 1; it != fds.end(); )
+				{
+					if (it->revents & POLLERR ||
+						it->revents & POLLHUP ||
+						it->revents & POLLNVAL
+						)
+					{
+						CZSPAS_ASSERT(0);
+					}
+
+					auto handlerIt = handlers.find(it->fd);
+					CZSPAS_ASSERT(handlerIt != handlers.end());
+					if (it->revents & POLLRDNORM)
+					{
+						it->events &= ~POLLRDNORM; // We handle 1 single read event, then disable further interest
+						handlerIt->second->handleReceive(false);
+					}
+					if (it->revents & POLLWRNORM)
+					{
+						it->events &= ~POLLWRNORM; // We handle 1 single write event, then disable further interest
+						handlerIt->second->handleSend(false);
+					}
+
+					// If we are not interested in any more request from this handler, remove it
+					if ((it->events & (POLLRDNORM | POLLWRNORM)) == 0)
+					{
+						handlers.erase(handlerIt);
+						it = details::removeAndReplaceWithLast(fds, it);
+					}
+					else
+					{
+						++it;;
+					}
+				}
+
+				//
+				// Process new operations
+				//
+				m_newOps([&](auto& q)
+				{
+					std::swap(q, tmpOps);
+				});
+
+				while (tmpOps.size())
+				{
+					PendingOp op = tmpOps.front();
+					tmpOps.pop();
+					if (op.op == Op::Cancel)
+					{
+						auto handlerIt = handlers.find(op.s);
+						if (handlerIt == handlers.end())
+						{
+							// Handler not found, so nothing to do
+						}
+						else
+						{
+							auto fdIt = findInFds(handlerIt->first);
+
+							if (fdIt->events & POLLRDNORM)
+								handlerIt->second->handleReceive(true);
+							if (fdIt->events & POLLWRNORM)
+								handlerIt->second->handleSend(true);
+							handlers.erase(handlerIt);
+							details::removeAndReplaceWithLast(fds, fdIt);
+						}
+					}
+					else
+					{
+						addRequest(op.s, op.listener, op.op == Op::Receive ? POLLRDNORM : POLLWRNORM);
+					}
+				}
+
+			}
+		}
+
 	};
 
 	// This is not part of the Service class, so that we can break the circular dependency
