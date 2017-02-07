@@ -219,6 +219,52 @@ namespace details
 	{
 	};
 
+
+	//
+	// Multiple producer, multiple consumer thread safe queue
+	//
+	template<typename T>
+	class SharedQueue
+	{
+	private:
+		std::queue<T> m_queue;
+		mutable std::mutex m_mtx;
+		std::condition_variable m_data_cond;
+
+		SharedQueue& operator=(const SharedQueue&) = delete;
+		SharedQueue(const SharedQueue& other) = delete;
+
+	public:
+		SharedQueue() {}
+
+		template<typename T>
+		void push(T&& item) {
+			std::lock_guard<std::mutex> lock(m_mtx);
+			m_queue.push(std::forward<T>(item));
+			m_data_cond.notify_one();
+		}
+
+		//! swaps the contents of the internal queue by the supplied queue
+		// This allows the caller to process a batch of items without making repeated calls to the SharedQueue
+		// \param q
+		//		Queue to swap with	
+		// \param block
+		//		If true, it will block waiting for items to arrive at the internal queue
+		// \return
+		//		New size of the supplied queue
+		size_t swap(std::queue<T>& q, bool block)
+		{
+			std::unique_lock<std::mutex> lock(m_mtx);
+			if (block)
+				m_data_cond.wait(lock, [this] { return !m_queue.empty(); });
+			std::swap(q, m_queue);
+			// If we had no items and now have some, notify
+			if (m_queue.size()>1 && q.size()==0)
+				m_data_cond.notify_one();
+			return q.size();
+		}
+	};
+
 	template<typename H>
 	using IsTransferHandler = std::enable_if_t<check_signature<H, void(const Error&, int)>::value>;
 	template<typename H>
@@ -580,49 +626,6 @@ namespace details
 	};
 #endif
 
-	class ServiceData;
-	//////////////////////////////////////////////////////////////////////////
-	// BaseSocket
-	//////////////////////////////////////////////////////////////////////////
-	class BaseSocket
-	{
-	public:
-		BaseSocket(details::ServiceData& owner) : m_owner(owner) {}
-		virtual ~BaseSocket()
-		{
-			releaseHandle();
-		}
-
-		SocketHandle getHandle()
-		{
-			return m_s;
-		}
-
-	protected:
-
-		virtual void doReceive() { }
-		virtual void doSend() { }
-
-		BaseSocket(const BaseSocket&) = delete;
-		void operator=(const BaseSocket&) = delete;
-
-		friend Acceptor;
-		friend Service;
-		bool isValid() const
-		{
-			return m_s != CZSPAS_INVALID_SOCKET;
-		}
-
-		void releaseHandle()
-		{
-			details::utils::closeSocket(m_s);
-			m_s = CZSPAS_INVALID_SOCKET;
-		}
-
-		details::ServiceData& m_owner;
-		SocketHandle m_s = CZSPAS_INVALID_SOCKET;
-	};
-
 	// 
 	// Runs a poll()/WSAPoll() on a different thread, and calls registered handlers whenever there is a event available.
 	//
@@ -668,28 +671,31 @@ namespace details
 			details::utils::closeSocket(m_signalIn);
 		}
 
-		void registerReceive(SocketHandle s, Listener* l)
+		void registerReceive(SocketHandle s, Listener* l, int timeoutMs = -1)
 		{
 			m_newOps([&](auto& q)
 			{
-				q.push({ s, l, Op::Receive });
+				q.push({ s, l, Op::Receive, timeoutMs });
 			});
+			signal();
 		}
 
-		void registerSend(SocketHandle s, Listener* l)
+		void registerSend(SocketHandle s, Listener* l, int timeoutMs = -1)
 		{
 			m_newOps([&](auto& q)
 			{
-				q.push({ s, l, Op::Send });
+				q.push({ s, l, Op::Send, timeoutMs});
 			});
+			signal();
 		}
 
 		void cancelRequests(SocketHandle s)
 		{
 			m_newOps([&](auto& q)
 			{
-				q.push({ s, nullptr, Op::Cancel });
+				q.push({ s, nullptr, Op::Cancel, -1});
 			});
+			signal();
 		}
 
 	private:
@@ -708,6 +714,7 @@ namespace details
 			SocketHandle s;
 			Listener* listener;
 			Op op; // POLLRDNORM, POLLWRNORM, or 0 (cancel)
+			int timeoutMs;
 		};
 		details::Monitor<std::queue<PendingOp>> m_newOps;
 		std::thread m_th;
@@ -879,53 +886,82 @@ namespace details
 
 	};
 
-	// This is not part of the Service class, so that we can break the circular dependency
-	// between Acceptor/Socket and Service
-	class ServiceData
+	class BaseService;
+
+	//////////////////////////////////////////////////////////////////////////
+	// BaseSocket
+	//////////////////////////////////////////////////////////////////////////
+	class BaseSocket : public IODemux::Listener
 	{
 	public:
-		ServiceData()
+		BaseSocket(details::BaseService& owner) : m_owner(owner) {}
+		virtual ~BaseSocket()
+		{
+			releaseHandle();
+		}
+
+		SocketHandle getHandle()
+		{
+			return m_s;
+		}
+
+	protected:
+		
+		BaseSocket(const BaseSocket&) = delete;
+		void operator=(const BaseSocket&) = delete;
+
+		friend Acceptor;
+		friend Service;
+		bool isValid() const
+		{
+			return m_s != CZSPAS_INVALID_SOCKET;
+		}
+
+		void releaseHandle()
+		{
+			details::utils::closeSocket(m_s);
+			m_s = CZSPAS_INVALID_SOCKET;
+		}
+
+		details::BaseService& m_owner;
+		SocketHandle m_s = CZSPAS_INVALID_SOCKET;
+	};
+
+	// This is not part of the Service class, so that we can break the circular dependency
+	// between Acceptor/Socket and Service
+	class BaseService
+	{
+	public:
+		BaseService()
 		{
 		}
 
 	protected:
+		IODemux m_iodemux;
+		using ReadyQueue = std::queue<std::function<void()>>;
 
 		friend class Socket;
 		template< typename H, typename = IsSimpleHandler<H> >
 		void queueReadyHandler(H&& h)
 		{
-			m_readyHandlers([&](CmdQueue& q)
-			{
-				q.push(std::move(h));
-			});
+			m_readyHandlers.push(std::forward<H>(h));
 		}
 
 		template< typename H, typename = IsSimpleHandler<H> >
 		void queueNewOperation(H&& h)
 		{
+			/*
 			m_newOperations([&](CmdQueue& q)
 			{
 				q.push(std::move(h));
 			});
+			*/
 		}
 
-#if _WIN32
-		details::WSAInstance m_wsaInstance;
-#endif
-		std::unique_ptr<BaseSocket> m_signalIn;
-		std::unique_ptr<BaseSocket> m_signalOut;
-
-		using CmdQueue = std::queue<std::function<void()>>;
-		details::Monitor<CmdQueue> m_readyHandlers; // Queue of handlers ready for execution
-		details::Monitor<CmdQueue> m_newOperations;
-
-		std::thread m_ioThread; // thread that runs the "select" loop
-		std::set<BaseSocket*> m_reads;
-		std::set<BaseSocket*> m_writes;
-
+		SharedQueue<std::function<void()>> m_readyHandlers;
 	};
-} // namespace details
 
+} // namespace details
 
 //////////////////////////////////////////////////////////////////////////
 // Socket
@@ -934,8 +970,8 @@ class Socket : public details::BaseSocket
 {
 public:
 
-	Socket(details::ServiceData& serviceData)
-		: details::BaseSocket(serviceData)
+	Socket(details::BaseService& service)
+		: details::BaseSocket(service)
 	{
 	}
 
@@ -984,17 +1020,57 @@ public:
 			return;
 		}
 
+		// Enable any loopback optimizations (in case this socket is used in loopback)
+		details::utils::optimizeLoopback(m_s);
+		// Set to non-blocking, so we can do an asynchronous connect
+		details::utils::setBlocking(m_s, false);
 
+		sockaddr_in addr;
+		memset(&addr, 0, sizeof(addr));
+		addr.sin_family = AF_INET;
+		addr.sin_port = htons(port);
+		inet_pton(AF_INET, ip, &(addr.sin_addr));
+
+		if (::connect(m_s, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR)
+		{
+			details::ErrorWrapper err;
+			if (err.isBlockError())
+			{
+				// Normal behavior, so setup the connect detection with select
+				// A asynchronous connect is done when we receive a write event on the socket
+				m_connectHandler = std::move(h);
+				m_owner.m_iodemux.registerSend(m_s, this, timeoutMs);
+			}
+			else
+			{
+				m_owner.queueReadyHandler([ec = std::move(err.getError()), h = std::move(h)]
+				{
+					h(ec);
+				});
+			}
+		}
+		else
+		{
+			// It may happen that the connect succeeds right away.
+			m_owner.queueReadyHandler([h = std::move(h)]
+			{
+				h(Error());
+			});
+		}
 	}
 
 	template< typename H, typename = details::IsTransferHandler<H> >
 	void asyncReceiveSome(char* buf, int len, H&& h)
 	{
+		CZSPAS_ASSERT(!m_receiveHandler); // There can be only one receive operation in flight
+		m_receiveHandler = std::move(h);
 		// # TODO : Fill me
 	}
 	template< typename H, typename = details::IsTransferHandler<H> >
 	void asyncSendSome(const char* buf, int len, H&& h)
 	{
+		CZSPAS_ASSERT(!m_sendHandler); // There can be only one send operation in flight
+		m_sendHandler = std::move(h);
 		// #TODO : Fill me
 	}
 
@@ -1014,9 +1090,25 @@ public:
 
 protected:
 
+	virtual void handleReceive(bool cancelled) override
+	{
+	}
+
+	virtual void handleSend(bool cancelled) override
+	{
+		if (m_connectHandler)
+		{
+			m_connectHandler(Error(cancelled ? Error::Code::Cancelled : Error::Code::Success));
+			m_connectHandler = nullptr; // free any resources
+		}
+	}
+
 	friend Acceptor;
 	std::pair<std::string, int> m_localAddr;
 	std::pair<std::string, int> m_peerAddr;
+	ConnectHandler m_connectHandler; // used for asynchronous connects
+	TransferHandler m_receiveHandler;
+	TransferHandler m_sendHandler;
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -1026,8 +1118,8 @@ class Acceptor : public details::BaseSocket
 {
 public:
 
-	Acceptor(details::ServiceData& serviceData)
-		: details::BaseSocket(serviceData)
+	Acceptor(details::BaseService& service)
+		: details::BaseSocket(service)
 	{
 	}
 
@@ -1133,6 +1225,16 @@ public:
 
 protected:
 
+	virtual void handleReceive(bool cancelled) override
+	{
+		// #TODO : Fill me
+	}
+
+	virtual void handleSend(bool cancelled) override
+	{
+		CZSPAS_FATAL("Unexpected code path. This should never get called");
+	}
+
 	// Called by Service
 	void doAsyncAccept()
 	{
@@ -1146,7 +1248,7 @@ protected:
 //////////////////////////////////////////////////////////////////////////
 // Service
 //////////////////////////////////////////////////////////////////////////
-class Service : public details::ServiceData
+class Service : public details::BaseService
 {
 private:
 
@@ -1162,20 +1264,34 @@ public:
 	// \return
 	//		false : We are shutting down, and no need to call again
 	//		true  : We should call tick again
-	bool tick()
+	bool tick(bool block = false)
 	{
-		return true;
+		CZSPAS_ASSERT(m_tmpQ.size() == 0);
+		m_readyHandlers.swap(m_tmpQ, block);
+		while (m_tmpQ.size())
+		{
+			m_tmpQ.front()();
+			m_tmpQ.pop();
+		}
+		return m_finish;
 	}
 
+	// Continuously wait for and executes handlers.
+	// Only returns when a "stop" is called
 	void run()
 	{
-		while (tick()) { }
+		while (tick(true))
+		{
+		}
 	}
 
-	//! Interrupts any tick calls in progress, and marks the service as finishing
+	//! Causes the Service to be signaled as finished, and thus causing "run" to return false
 	void stop()
 	{
-		// #TODO : Fill me
+		m_readyHandlers.push([this]()
+		{
+			m_finish = true;
+		});
 	}
 
 	// Request to invoke the specified handler
@@ -1195,7 +1311,8 @@ public:
 	}
 
 protected:
-
+	std::queue<std::function<void()>> m_tmpQ;
+	bool m_finish;
 };
 
 } // namespace spas

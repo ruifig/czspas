@@ -128,13 +128,40 @@ TEST(Socket_connect_failure)
 	CHECK_CZSPAS_EQUAL(Other, ec);
 }
 
+TEST(Socket_asyncConnect_ok)
+{
+	Service io;
+
+	Socket serverSide(io);
+	auto ft = std::async(std::launch::async, [&io, &serverSide]
+	{
+		Acceptor ac(io);
+		auto ec = ac.listen(SERVER_PORT, 1);
+		CHECK_CZSPAS(ec);
+		ec = ac.accept(serverSide, 1000);
+		CHECK_CZSPAS(ec);
+	});
+
+	Socket s(io);
+	s.asyncConnect("127.0.0.1", SERVER_PORT, [&](const Error& ec)
+	{
+		CHECK_CZSPAS(ec);
+	});
+
+	io.run();
+
+	ft.get();
+}
+
+
 TEST(Dummy)
 {
 	{
 		details::IODemux demux;
-		UnitTest::TimeHelpers::SleepMs(10000);
+		UnitTest::TimeHelpers::SleepMs(1000);
 	}
 	printf("\n");
 }
+
 
 }
