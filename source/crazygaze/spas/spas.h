@@ -632,7 +632,7 @@ namespace details
 	class IODemux
 	{
 	public:
-		using Handler = void(*)(bool cancelled, void* cookie);
+		using EventHandler = void(*)(bool cancelled, void* cookie);
 
 		IODemux()
 		{
@@ -666,7 +666,7 @@ namespace details
 			details::utils::closeSocket(m_signalIn);
 		}
 
-		void registerReceive(SocketHandle s, Handler h, void* cookie, int timeoutMs = -1)
+		void registerReceive(SocketHandle s, EventHandler h, void* cookie, int timeoutMs = -1)
 		{
 			m_newOps([&](auto& q)
 			{
@@ -675,7 +675,7 @@ namespace details
 			signal();
 		}
 
-		void registerSend(SocketHandle s, Handler h, void* cookie, int timeoutMs = -1)
+		void registerSend(SocketHandle s, EventHandler h, void* cookie, int timeoutMs = -1)
 		{
 			m_newOps([&](auto& q)
 			{
@@ -684,7 +684,7 @@ namespace details
 			signal();
 		}
 
-		void cancelRequests(SocketHandle s, Handler h, void* cookie)
+		void cancelRequests(SocketHandle s, EventHandler h, void* cookie)
 		{
 			m_newOps([&](auto& q)
 			{
@@ -700,18 +700,19 @@ namespace details
 #endif
 		struct PendingOp
 		{
-			SocketHandle s;
-			Handler handler;
-			void* cookie;
-			short op; // POLLRDNORM, POLLWRNORM, or 0 (cancel)
-			int timeoutMs;
+			SocketHandle s = CZSPAS_INVALID_SOCKET;
+			EventHandler handler = nullptr;
+			void* cookie = nullptr;
+			short op = 0; // POLLRDNORM, POLLWRNORM, or 0 (cancel)
+			int timeoutMs = -1;
 		};
 
-		struct SocketRegister
+		struct Handlers
 		{
+			SocketHandle fd = CZSPAS_INVALID_SOCKET;
 			struct Entry
 			{
-				Handler handler = nullptr;
+				EventHandler evtHandler = nullptr;
 				void* cookie = nullptr;
 			} handlers[2];
 
@@ -720,7 +721,7 @@ namespace details
 				return handlers[flags == POLLWRNORM ? 0 : 1];
 			}
 
-			void setHandler(Handler h, void* cookie, short flags)
+			void setHandler(EventHandler h, void* cookie, short flags)
 			{
 				auto&& r = getHandler(flags);
 				CZSPAS_ASSERT(r.handler == nullptr);
@@ -797,25 +798,50 @@ namespace details
 			}
 		}
 
+		// These two need to match. A given index at one must have the same socket at the other
+		std::vector<pollfd> m_fds;
+		std::vector<Handlers> m_handlers; // This needs to 
+		void handleEvent(int idx, short flag)
+		{
+			CZSPAS_ASSERT(flag == POLLWRNORM || flag == POLLRDNORM);
+			CZSPAS_ASSERT(idx < m_fds.size() && m_handlers.size() == m_fds.size() && m_handlers[idx].fd == m_fds[idx].fd);
+			auto& fd = m_fds[idx];
+			if (fd.revents & flag)
+			{
+				auto& h = m_handlers[idx].getHandler(flag);
+				fd.events &= ~flag; // We handle 1 single event of this type, so disable the request for this type of event
+				h.evtHandler(false, h.cookie);
+				h.evtHandler = nullptr;
+				h.cookie = nullptr;
+			}
+		}
+
 		void run()
 		{
 			std::vector<pollfd> fds;
-			std::unordered_map<SocketHandle, SocketRegister> handlers;
+			std::vector<SocketHandle, Handlers> handlers; // This needs to 
+
 			std::queue<PendingOp> tmpOps;
 
 			auto findInFds = [&fds](SocketHandle s)
 			{
-				auto it = details::find_if(fds, [s](pollfd& fd)
-				{
-					return fd.fd == s;
-				});
-				CZSPAS_ASSERT(it != fds.end());
-				return it;
+				return details::find_if(fds, [s](pollfd& fd) { return fd.fd == s; });
+			};
+			auto findInHandlers = [&handlers](SocketHandle s)
+			{
+				return details::find_if(handlers, [s](Handlers& reg) { return reg.s == s; });
 			};
 
 			auto addRequest = [&](const PendingOp& op)
 			{
-				auto res = handlers.emplace(op.s, SocketRegister());
+				auto fdIt = findInFds(op.s);
+
+				if (fdIt == fds.end()) // This socket was not found in our registry
+				{
+					CZSPAS_ASSERT(findInHandlers(op.s)
+				}
+
+				auto res = handlers.emplace(op.s, Handlers());
 				// .second==true  : We inserted a new element
 				// .second==false : Means there was no insertion (we have an existing element)
 				res.first->second.setHandler(op.handler, op.cookie, op.op);
