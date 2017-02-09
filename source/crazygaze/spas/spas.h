@@ -632,12 +632,7 @@ namespace details
 	class IODemux
 	{
 	public:
-		class Listener
-		{
-		public:
-			virtual void handleReceive(bool cancelled) = 0;
-			virtual void handleSend(bool cancelled) = 0;
-		};
+		using Handler = void(*)(bool cancelled, void* cookie);
 
 		IODemux()
 		{
@@ -671,29 +666,29 @@ namespace details
 			details::utils::closeSocket(m_signalIn);
 		}
 
-		void registerReceive(SocketHandle s, Listener* l, int timeoutMs = -1)
+		void registerReceive(SocketHandle s, Handler h, void* cookie, int timeoutMs = -1)
 		{
 			m_newOps([&](auto& q)
 			{
-				q.push({ s, l, Op::Receive, timeoutMs });
+				q.push({ s, h, cookie, POLLRDNORM, timeoutMs });
 			});
 			signal();
 		}
 
-		void registerSend(SocketHandle s, Listener* l, int timeoutMs = -1)
+		void registerSend(SocketHandle s, Handler h, void* cookie, int timeoutMs = -1)
 		{
 			m_newOps([&](auto& q)
 			{
-				q.push({ s, l, Op::Send, timeoutMs});
+				q.push({ s, h, cookie, POLLWRNORM, timeoutMs});
 			});
 			signal();
 		}
 
-		void cancelRequests(SocketHandle s)
+		void cancelRequests(SocketHandle s, Handler h, void* cookie)
 		{
 			m_newOps([&](auto& q)
 			{
-				q.push({ s, nullptr, Op::Cancel, -1});
+				q.push({ s, h, cookie, 0, -1});
 			});
 			signal();
 		}
@@ -703,19 +698,58 @@ namespace details
 #if _WIN32
 		details::WSAInstance m_wsaInstance;
 #endif
-		enum class Op
-		{
-			Cancel = 0,
-			Receive = 1,
-			Send = 2
-		};
 		struct PendingOp
 		{
 			SocketHandle s;
-			Listener* listener;
-			Op op; // POLLRDNORM, POLLWRNORM, or 0 (cancel)
+			Handler handler;
+			void* cookie;
+			short op; // POLLRDNORM, POLLWRNORM, or 0 (cancel)
 			int timeoutMs;
 		};
+
+		struct Registered
+		{
+			struct H
+			{
+				Handler handler = nullptr;
+				void* cookie = nullptr;
+			};
+			H handlers[2];
+
+			H& getHandler(short flags)
+			{
+				return handlers[flags == POLLWRNORM ? 0 : 1];
+			}
+
+			void setHandler(Handler h, void* cookie, short flags)
+			{
+				auto&& r = getHandler(flags);
+				CZSPAS_ASSERT(r.handler == nullptr);
+				r.handler = h;
+				r.cookie = cookie;
+			}
+
+			void removeHandler(short flags)
+			{
+				auto&& r = getHandler(flags);
+				r.handler = nullptr;
+				r.cookie = nullptr;
+			}
+
+			void handleEvent(pollfd& fd, short flag)
+			{
+				if (fd.revents & flag)
+				{
+					fd.events &= ~flag; // We handle 1 single event of this type, so disable the request for this type of event
+					auto&& r = getHandler(flag);
+					r.handler(false, r.cookie);
+					r.cookie = nullptr;
+					r.handler = nullptr;
+				}
+			}
+
+		};
+
 		details::Monitor<std::queue<PendingOp>> m_newOps;
 		std::thread m_th;
 		SocketHandle m_signalIn;
@@ -755,7 +789,7 @@ namespace details
 		void run()
 		{
 			std::vector<pollfd> fds;
-			std::unordered_map<SocketHandle, Listener*> handlers;
+			std::unordered_map<SocketHandle, Registered> handlers;
 			std::queue<PendingOp> tmpOps;
 
 			auto findInFds = [&fds](SocketHandle s)
@@ -768,21 +802,25 @@ namespace details
 				return it;
 			};
 
-			auto addRequest = [&](SocketHandle s, Listener* l, short flags)
+			auto addRequest = [&](const PendingOp& op)
 			{
-				auto handlerIt = handlers.find(s);
-				if (handlerIt == handlers.end())
+				auto res = handlers.emplace(op.s, Registered());
+				// .second==true  : We inserted a new element
+				// .second==false : Means there was no insertion (we have an existing element)
+				res.first->second.setHandler(op.handler, op.cookie, op.op);
+				if (res.second)
 				{
-					handlers.emplace(s, l);
-					fds.push_back({ s, flags, 0 });
+					// New element inserted, so add a new element to fds too
+					fds.push_back({ op.s, op.op, 0 });
 				}
 				else
 				{
-					auto fdIt = findInFds(s);
+					// We are updating an existing element, so search for it in fds, and update it
+					auto fdIt = findInFds(op.s);
 					// Make sure we only have 1 pending request of a specific type
 					// This means if we get e.g a read request (POLLRDNORM), that bit can't be set at the moment
-					CZSPAS_ASSERT((fdIt->events&flags) == 0);
-					fdIt->events |= flags;
+					CZSPAS_ASSERT((fdIt->events & op.op) == 0);
+					fdIt->events |= op.op;
 				}
 			};
 
@@ -819,18 +857,11 @@ namespace details
 						CZSPAS_ASSERT(0);
 					}
 
+					// Handle any read or write events if any
 					auto handlerIt = handlers.find(it->fd);
 					CZSPAS_ASSERT(handlerIt != handlers.end());
-					if (it->revents & POLLRDNORM)
-					{
-						it->events &= ~POLLRDNORM; // We handle 1 single read event, then disable further interest
-						handlerIt->second->handleReceive(false);
-					}
-					if (it->revents & POLLWRNORM)
-					{
-						it->events &= ~POLLWRNORM; // We handle 1 single write event, then disable further interest
-						handlerIt->second->handleSend(false);
-					}
+					handlerIt->second.handleEvent(*it, POLLRDNORM);
+					handlerIt->second.handleEvent(*it, POLLWRNORM);
 
 					// If we are not interested in any more request from this handler, remove it
 					if ((it->events & (POLLRDNORM | POLLWRNORM)) == 0)
@@ -856,7 +887,7 @@ namespace details
 				{
 					PendingOp op = tmpOps.front();
 					tmpOps.pop();
-					if (op.op == Op::Cancel)
+					if (op.op == 0) // 0 means Cancel
 					{
 						auto handlerIt = handlers.find(op.s);
 						if (handlerIt == handlers.end())
@@ -866,18 +897,23 @@ namespace details
 						else
 						{
 							auto fdIt = findInFds(handlerIt->first);
-
 							if (fdIt->events & POLLRDNORM)
-								handlerIt->second->handleReceive(true);
+							{
+								auto&& handler = handlerIt->second.getHandler(POLLRDNORM);
+								handler.handler(true, handler.cookie);
+							}
 							if (fdIt->events & POLLWRNORM)
-								handlerIt->second->handleSend(true);
+							{
+								auto&& handler = handlerIt->second.getHandler(POLLWRNORM);
+								handler.handler(true, handler.cookie);
+							}
 							handlers.erase(handlerIt);
 							details::removeAndReplaceWithLast(fds, fdIt);
 						}
 					}
 					else
 					{
-						addRequest(op.s, op.listener, op.op == Op::Receive ? POLLRDNORM : POLLWRNORM);
+						addRequest(op);
 					}
 				}
 
@@ -891,7 +927,7 @@ namespace details
 	//////////////////////////////////////////////////////////////////////////
 	// BaseSocket
 	//////////////////////////////////////////////////////////////////////////
-	class BaseSocket : public IODemux::Listener
+	class BaseSocket
 	{
 	public:
 		BaseSocket(details::BaseService& owner) : m_owner(owner) {}
@@ -1039,7 +1075,7 @@ public:
 				// Normal behavior, so setup the connect detection with select
 				// A asynchronous connect is done when we receive a write event on the socket
 				m_connectHandler = std::move(h);
-				m_owner.m_iodemux.registerSend(m_s, this, timeoutMs);
+				m_owner.m_iodemux.registerSend(m_s, &handleConnect, this, timeoutMs);
 			}
 			else
 			{
@@ -1090,17 +1126,22 @@ public:
 
 protected:
 
-	virtual void handleReceive(bool cancelled) override
+	static void handleReceive(bool cancelled, void* cookie)
 	{
+		// #TODO : Implement this
 	}
 
-	virtual void handleSend(bool cancelled) override
+	static void handleSend(bool cancelled, void* cookie)
 	{
-		if (m_connectHandler)
-		{
-			m_connectHandler(Error(cancelled ? Error::Code::Cancelled : Error::Code::Success));
-			m_connectHandler = nullptr; // free any resources
-		}
+		// #TODO : Implement this
+	}
+
+	static void handleConnect(bool cancelled, void* cookie)
+	{
+		auto this_ = reinterpret_cast<Socket*>(cookie);
+		CZSPAS_ASSERT(this_->m_connectHandler);
+		this_->m_connectHandler(Error(cancelled ? Error::Code::Cancelled : Error::Code::Success));
+		this_->m_connectHandler = nullptr; // free any resources
 	}
 
 	friend Acceptor;
@@ -1225,14 +1266,9 @@ public:
 
 protected:
 
-	virtual void handleReceive(bool cancelled) override
+	virtual void handleReceive(bool cancelled, void* cookie)
 	{
 		// #TODO : Fill me
-	}
-
-	virtual void handleSend(bool cancelled) override
-	{
-		CZSPAS_FATAL("Unexpected code path. This should never get called");
 	}
 
 	// Called by Service
@@ -1273,7 +1309,7 @@ public:
 			m_tmpQ.front()();
 			m_tmpQ.pop();
 		}
-		return m_finish;
+		return !m_finish;
 	}
 
 	// Continuously wait for and executes handlers.
@@ -1312,7 +1348,7 @@ public:
 
 protected:
 	std::queue<std::function<void()>> m_tmpQ;
-	bool m_finish;
+	bool m_finish = false;
 };
 
 } // namespace spas
