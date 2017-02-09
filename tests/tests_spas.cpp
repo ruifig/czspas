@@ -143,14 +143,17 @@ TEST(Socket_asyncConnect_ok)
 	});
 
 	Socket s(io);
+	Semaphore done;
 	s.asyncConnect("127.0.0.1", SERVER_PORT, [&](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
+		io.stop(); // stop the service, to finish this test
+		done.notify();
 	});
 
 	io.run();
-
 	ft.get();
+	done.wait(); // To make sure the asyncConnect gets called
 }
 
 
