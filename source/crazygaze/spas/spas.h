@@ -707,16 +707,15 @@ namespace details
 			int timeoutMs;
 		};
 
-		struct Registered
+		struct SocketRegister
 		{
-			struct H
+			struct Entry
 			{
 				Handler handler = nullptr;
 				void* cookie = nullptr;
-			};
-			H handlers[2];
+			} handlers[2];
 
-			H& getHandler(short flags)
+			Entry& getHandler(short flags)
 			{
 				return handlers[flags == POLLWRNORM ? 0 : 1];
 			}
@@ -743,6 +742,18 @@ namespace details
 					fd.events &= ~flag; // We handle 1 single event of this type, so disable the request for this type of event
 					auto&& r = getHandler(flag);
 					r.handler(false, r.cookie);
+					r.cookie = nullptr;
+					r.handler = nullptr;
+				}
+			}
+
+			void cancelEvent(pollfd& fd, short flag)
+			{
+				if (fd.events & flag)
+				{
+					fd.events &= ~flag; // We handle 1 single event of this type, so disable the request for this type of event
+					auto&& r = getHandler(flag);
+					r.handler(true, r.cookie);
 					r.cookie = nullptr;
 					r.handler = nullptr;
 				}
@@ -789,7 +800,7 @@ namespace details
 		void run()
 		{
 			std::vector<pollfd> fds;
-			std::unordered_map<SocketHandle, Registered> handlers;
+			std::unordered_map<SocketHandle, SocketRegister> handlers;
 			std::queue<PendingOp> tmpOps;
 
 			auto findInFds = [&fds](SocketHandle s)
@@ -804,7 +815,7 @@ namespace details
 
 			auto addRequest = [&](const PendingOp& op)
 			{
-				auto res = handlers.emplace(op.s, Registered());
+				auto res = handlers.emplace(op.s, SocketRegister());
 				// .second==true  : We inserted a new element
 				// .second==false : Means there was no insertion (we have an existing element)
 				res.first->second.setHandler(op.handler, op.cookie, op.op);
@@ -897,16 +908,8 @@ namespace details
 						else
 						{
 							auto fdIt = findInFds(handlerIt->first);
-							if (fdIt->events & POLLRDNORM)
-							{
-								auto&& handler = handlerIt->second.getHandler(POLLRDNORM);
-								handler.handler(true, handler.cookie);
-							}
-							if (fdIt->events & POLLWRNORM)
-							{
-								auto&& handler = handlerIt->second.getHandler(POLLWRNORM);
-								handler.handler(true, handler.cookie);
-							}
+							handlerIt->second.cancelEvent(*fdIt, POLLRDNORM);
+							handlerIt->second.cancelEvent(*fdIt, POLLWRNORM);
 							handlers.erase(handlerIt);
 							details::removeAndReplaceWithLast(fds, fdIt);
 						}
