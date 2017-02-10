@@ -651,12 +651,16 @@ namespace details
 			CZSPAS_ASSERT(!res.first);
 			m_signalIn = res.second;
 			m_signalOut = connectFt.get();
+			// We reserve index 0 for the signalIn socket. This never gets changed or removed
+			m_fds.push_back({ m_signalIn, POLLRDNORM, 0 });
+			m_handlers.push_back(Handlers(m_signalIn));
 
-			m_th = std::thread([this]
-			{
+			m_th = std::thread([this] {
 				run();
 			});
+
 		}
+
 		~IODemux()
 		{
 			m_finish = true;
@@ -700,15 +704,16 @@ namespace details
 #endif
 		struct PendingOp
 		{
-			SocketHandle s = CZSPAS_INVALID_SOCKET;
-			EventHandler handler = nullptr;
-			void* cookie = nullptr;
-			short op = 0; // POLLRDNORM, POLLWRNORM, or 0 (cancel)
-			int timeoutMs = -1;
+			SocketHandle fd;
+			EventHandler handler;
+			void* cookie;
+			short op; // POLLRDNORM, POLLWRNORM, or 0 (cancel)
+			int timeoutMs;
 		};
 
 		struct Handlers
 		{
+			Handlers(SocketHandle fd) : fd(fd) { }
 			SocketHandle fd = CZSPAS_INVALID_SOCKET;
 			struct Entry
 			{
@@ -720,46 +725,6 @@ namespace details
 			{
 				return handlers[flags == POLLWRNORM ? 0 : 1];
 			}
-
-			void setHandler(EventHandler h, void* cookie, short flags)
-			{
-				auto&& r = getHandler(flags);
-				CZSPAS_ASSERT(r.handler == nullptr);
-				r.handler = h;
-				r.cookie = cookie;
-			}
-
-			void removeHandler(short flags)
-			{
-				auto&& r = getHandler(flags);
-				r.handler = nullptr;
-				r.cookie = nullptr;
-			}
-
-			void handleEvent(pollfd& fd, short flag)
-			{
-				if (fd.revents & flag)
-				{
-					fd.events &= ~flag; // We handle 1 single event of this type, so disable the request for this type of event
-					auto&& r = getHandler(flag);
-					r.handler(false, r.cookie);
-					r.cookie = nullptr;
-					r.handler = nullptr;
-				}
-			}
-
-			void cancelEvent(pollfd& fd, short flag)
-			{
-				if (fd.events & flag)
-				{
-					fd.events &= ~flag; // We handle 1 single event of this type, so disable the request for this type of event
-					auto&& r = getHandler(flag);
-					r.handler(true, r.cookie);
-					r.cookie = nullptr;
-					r.handler = nullptr;
-				}
-			}
-
 		};
 
 		details::Monitor<std::queue<PendingOp>> m_newOps;
@@ -800,7 +765,38 @@ namespace details
 
 		// These two need to match. A given index at one must have the same socket at the other
 		std::vector<pollfd> m_fds;
-		std::vector<Handlers> m_handlers; // This needs to 
+		std::vector<Handlers> m_handlers;
+		std::queue<PendingOp> m_tmpOps;
+
+		int findSocket(SocketHandle fd)
+		{
+			for (int i = 1; i < static_cast<int>(m_fds.size()); i++)
+			{
+				if (m_fds[i].fd == fd)
+					return i;
+			}
+			return -1;
+		}
+
+		void setEventHandler(SocketHandle fd, EventHandler evtHandler, void* cookie, short flag)
+		{
+			CZSPAS_ASSERT(flag == POLLWRNORM || flag == POLLRDNORM);
+			int idx = findSocket(fd);
+			if (idx == -1)
+			{
+				m_fds.push_back({ fd, 0, 0 });
+				m_handlers.push_back(Handlers(fd));
+				idx = static_cast<int>(m_fds.size()) - 1;
+			}
+
+			auto& f = m_fds[idx];
+			auto& h = m_handlers[idx].getHandler(flag);
+			f.events |= flag;
+			CZSPAS_ASSERT(h.evtHandler == nullptr);
+			h.evtHandler = evtHandler;
+			h.cookie = cookie;
+		}
+
 		void handleEvent(int idx, short flag)
 		{
 			CZSPAS_ASSERT(flag == POLLWRNORM || flag == POLLRDNORM);
@@ -809,8 +805,33 @@ namespace details
 			if (fd.revents & flag)
 			{
 				auto& h = m_handlers[idx].getHandler(flag);
-				fd.events &= ~flag; // We handle 1 single event of this type, so disable the request for this type of event
+				// We handle 1 single event of this type, so disable the request for this type of event
+				fd.events &= ~flag; 
 				h.evtHandler(false, h.cookie);
+				h.evtHandler = nullptr;
+				h.cookie = nullptr;
+			}
+		}
+
+		auto removeEventHandlers(int idx)
+		{
+			CZSPAS_ASSERT(idx < m_fds.size() && m_handlers.size() == m_fds.size() && m_handlers[idx].fd == m_fds[idx].fd);
+			details::removeAndReplaceWithLast(m_fds, m_fds.begin() + idx);
+			details::removeAndReplaceWithLast(m_handlers, m_handlers.begin() + idx);
+			return m_fds.begin() + idx;
+		}
+
+		void cancelEvent(int idx, short flag)
+		{
+			CZSPAS_ASSERT(flag == POLLWRNORM || flag == POLLRDNORM);
+			CZSPAS_ASSERT(idx < m_fds.size() && m_handlers.size() == m_fds.size() && m_handlers[idx].fd == m_fds[idx].fd);
+			auto& fd = m_fds[idx];
+			if (fd.events & flag)
+			{
+				auto& h = m_handlers[idx].getHandler(flag);
+				// We handle 1 single event of this type, so disable the request for this type of event
+				fd.events &= ~flag; 
+				h.evtHandler(true, h.cookie);
 				h.evtHandler = nullptr;
 				h.cookie = nullptr;
 			}
@@ -818,54 +839,11 @@ namespace details
 
 		void run()
 		{
-			std::vector<pollfd> fds;
-			std::vector<SocketHandle, Handlers> handlers; // This needs to 
-
-			std::queue<PendingOp> tmpOps;
-
-			auto findInFds = [&fds](SocketHandle s)
-			{
-				return details::find_if(fds, [s](pollfd& fd) { return fd.fd == s; });
-			};
-			auto findInHandlers = [&handlers](SocketHandle s)
-			{
-				return details::find_if(handlers, [s](Handlers& reg) { return reg.s == s; });
-			};
-
-			auto addRequest = [&](const PendingOp& op)
-			{
-				auto fdIt = findInFds(op.s);
-
-				if (fdIt == fds.end()) // This socket was not found in our registry
-				{
-					CZSPAS_ASSERT(findInHandlers(op.s)
-				}
-
-				auto res = handlers.emplace(op.s, Handlers());
-				// .second==true  : We inserted a new element
-				// .second==false : Means there was no insertion (we have an existing element)
-				res.first->second.setHandler(op.handler, op.cookie, op.op);
-				if (res.second)
-				{
-					// New element inserted, so add a new element to fds too
-					fds.push_back({ op.s, op.op, 0 });
-				}
-				else
-				{
-					// We are updating an existing element, so search for it in fds, and update it
-					auto fdIt = findInFds(op.s);
-					// Make sure we only have 1 pending request of a specific type
-					// This means if we get e.g a read request (POLLRDNORM), that bit can't be set at the moment
-					CZSPAS_ASSERT((fdIt->events & op.op) == 0);
-					fdIt->events |= op.op;
-				}
-			};
 
 			// Add signalIn to fds
-			fds.push_back({ m_signalIn, POLLRDNORM, 0 });
 			while (!m_finish)
 			{
-				auto res = WSAPoll(&fds.front(), fds.size(), -1);
+				auto res = WSAPoll(&m_fds.front(), static_cast<unsigned long>(m_fds.size()), -1);
 				if (res == 0) // Timeout
 				{
 
@@ -876,7 +854,7 @@ namespace details
 				}
 				// else if (res>0) // Number of elements in the fds array for which an revents nember is nonzero
 
-				if (fds[0].revents & POLLRDNORM)
+				if (m_fds[0].revents & POLLRDNORM)
 				{
 					readSignalIn();
 				}
@@ -884,8 +862,9 @@ namespace details
 				//
 				// Process received events
 				//
-				for (auto it = fds.begin() + 1; it != fds.end(); )
+				for (auto it = m_fds.begin() + 1; it != m_fds.end(); )
 				{
+					int idx = static_cast<int>(it - m_fds.begin());
 					if (it->revents & POLLERR ||
 						it->revents & POLLHUP ||
 						it->revents & POLLNVAL
@@ -894,17 +873,13 @@ namespace details
 						CZSPAS_ASSERT(0);
 					}
 
-					// Handle any read or write events if any
-					auto handlerIt = handlers.find(it->fd);
-					CZSPAS_ASSERT(handlerIt != handlers.end());
-					handlerIt->second.handleEvent(*it, POLLRDNORM);
-					handlerIt->second.handleEvent(*it, POLLWRNORM);
+					handleEvent(idx, POLLRDNORM);
+					handleEvent(idx, POLLWRNORM);
 
 					// If we are not interested in any more request from this handler, remove it
 					if ((it->events & (POLLRDNORM | POLLWRNORM)) == 0)
 					{
-						handlers.erase(handlerIt);
-						it = details::removeAndReplaceWithLast(fds, it);
+						it = removeEventHandlers(idx);
 					}
 					else
 					{
@@ -917,32 +892,30 @@ namespace details
 				//
 				m_newOps([&](auto& q)
 				{
-					std::swap(q, tmpOps);
+					std::swap(q, m_tmpOps);
 				});
 
-				while (tmpOps.size())
+				while (m_tmpOps.size())
 				{
-					PendingOp op = tmpOps.front();
-					tmpOps.pop();
+					PendingOp op = m_tmpOps.front();
+					m_tmpOps.pop();
 					if (op.op == 0) // 0 means Cancel
 					{
-						auto handlerIt = handlers.find(op.s);
-						if (handlerIt == handlers.end())
+						int idx = findSocket(op.fd);
+						if (idx==-1)
 						{
 							// Handler not found, so nothing to do
 						}
 						else
 						{
-							auto fdIt = findInFds(handlerIt->first);
-							handlerIt->second.cancelEvent(*fdIt, POLLRDNORM);
-							handlerIt->second.cancelEvent(*fdIt, POLLWRNORM);
-							handlers.erase(handlerIt);
-							details::removeAndReplaceWithLast(fds, fdIt);
+							cancelEvent(idx, POLLRDNORM);
+							cancelEvent(idx, POLLWRNORM);
+							removeEventHandlers(idx);
 						}
 					}
 					else
 					{
-						addRequest(op);
+						setEventHandler(op.fd, op.handler, op.cookie, op.op);
 					}
 				}
 
