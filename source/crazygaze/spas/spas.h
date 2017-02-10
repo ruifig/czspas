@@ -702,12 +702,14 @@ namespace details
 #if _WIN32
 		details::WSAInstance m_wsaInstance;
 #endif
+		using TimePoint = std::chrono::time_point<std::chrono::high_resolution_clock>;
+
 		struct PendingOp
 		{
 			SocketHandle fd;
-			EventHandler handler;
+			EventHandler evtHandler;
 			void* cookie;
-			short op; // POLLRDNORM, POLLWRNORM, or 0 (cancel)
+			short flag; // POLLRDNORM, POLLWRNORM, or 0 (cancel)
 			int timeoutMs;
 		};
 
@@ -719,6 +721,7 @@ namespace details
 			{
 				EventHandler evtHandler = nullptr;
 				void* cookie = nullptr;
+				TimePoint timeoutPoint;
 			} handlers[2];
 
 			Entry& getHandler(short flags)
@@ -778,23 +781,27 @@ namespace details
 			return -1;
 		}
 
-		void setEventHandler(SocketHandle fd, EventHandler evtHandler, void* cookie, short flag)
+		void setEventHandler(const PendingOp& op)
 		{
-			CZSPAS_ASSERT(flag == POLLWRNORM || flag == POLLRDNORM);
-			int idx = findSocket(fd);
+			CZSPAS_ASSERT(op.flag == POLLWRNORM || op.flag == POLLRDNORM);
+			int idx = findSocket(op.fd);
 			if (idx == -1)
 			{
-				m_fds.push_back({ fd, 0, 0 });
-				m_handlers.push_back(Handlers(fd));
+				m_fds.push_back({ op.fd, 0, 0 });
+				m_handlers.push_back(Handlers(op.fd));
 				idx = static_cast<int>(m_fds.size()) - 1;
 			}
 
 			auto& f = m_fds[idx];
-			auto& h = m_handlers[idx].getHandler(flag);
-			f.events |= flag;
+			auto& h = m_handlers[idx].getHandler(op.flag);
+			f.events |= op.flag;
 			CZSPAS_ASSERT(h.evtHandler == nullptr);
-			h.evtHandler = evtHandler;
-			h.cookie = cookie;
+			h.evtHandler = op.evtHandler;
+			h.cookie = op.cookie;
+			if (op.timeoutMs != -1)
+			{
+				h.timeoutPoint = std::chrono::high_resolution_clock::now() + std::chrono::milliseconds(op.timeoutMs);
+			}
 		}
 
 		void handleEvent(int idx, short flag)
@@ -810,6 +817,7 @@ namespace details
 				h.evtHandler(false, h.cookie);
 				h.evtHandler = nullptr;
 				h.cookie = nullptr;
+				h.timeoutPoint = TimePoint();
 			}
 		}
 
@@ -834,19 +842,62 @@ namespace details
 				h.evtHandler(true, h.cookie);
 				h.evtHandler = nullptr;
 				h.cookie = nullptr;
+				h.timeoutPoint = TimePoint();
 			}
+		}
+
+		void checkTimeouts()
+		{
+			auto now = std::chrono::high_resolution_clock::now();
+			auto notimeout = TimePoint();
+			for (auto it = m_fds.begin() + 1; it != m_fds.end();)
+			{
+				int idx = static_cast<int>(it - m_fds.begin());
+				Handlers::Entry* h = &m_handlers[idx].getHandler(POLLWRNORM);
+				if (h->evtHandler && h->timeoutPoint != notimeout && now > h->timeoutPoint)
+				{
+					cancelEvent(idx, POLLWRNORM);
+				}
+				h = &m_handlers[idx].getHandler(POLLRDNORM);
+				if (h->evtHandler && h->timeoutPoint != notimeout && now > h->timeoutPoint)
+				{
+					cancelEvent(idx, POLLRDNORM);
+				}
+
+				// If we are not interested in any more request from this handler, remove it
+				if ((it->events & (POLLRDNORM | POLLWRNORM)) == 0)
+				{
+					it = removeEventHandlers(idx);
+				}
+				else
+				{
+					++it;;
+				}
+			}
+
 		}
 
 		void run()
 		{
-
-			// Add signalIn to fds
+			TimePoint notimeout;
 			while (!m_finish)
 			{
-				auto res = WSAPoll(&m_fds.front(), static_cast<unsigned long>(m_fds.size()), -1);
+				auto now = std::chrono::high_resolution_clock::now();
+				std::chrono::nanoseconds timeout(std::numeric_limits<long long>::max());
+				for (auto&& hh : m_handlers)
+				{
+					if (hh.handlers[0].evtHandler && hh.handlers[0].timeoutPoint != notimeout)
+					{
+						std::chrono::nanoseconds remain = hh.handlers[0].timeoutPoint - now;
+						if (remain < timeout)
+							timeout = remain;
+					}
+				}
+
+				auto res = WSAPoll(&m_fds.front(), static_cast<unsigned long>(m_fds.size()), timeoutMs);
 				if (res == 0) // Timeout
 				{
-
+					checkTimeouts();
 				}
 				else if (res == CZSPAS_SOCKET_ERROR)
 				{
@@ -899,7 +950,7 @@ namespace details
 				{
 					PendingOp op = m_tmpOps.front();
 					m_tmpOps.pop();
-					if (op.op == 0) // 0 means Cancel
+					if (op.flag == 0) // 0 means Cancel
 					{
 						int idx = findSocket(op.fd);
 						if (idx==-1)
@@ -915,7 +966,7 @@ namespace details
 					}
 					else
 					{
-						setEventHandler(op.fd, op.handler, op.cookie, op.op);
+						setEventHandler(op);
 					}
 				}
 
