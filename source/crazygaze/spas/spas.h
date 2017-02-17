@@ -846,6 +846,13 @@ namespace details
 			}
 		}
 
+		void calculateTimeout(int idx, short flag, TimePoint& point)
+		{
+			CZSPAS_ASSERT(flag == POLLWRNORM || flag == POLLRDNORM);
+			auto& h = m_handlers[idx].getHandler(flag);
+			if (!h.evtHandler || h.timeoutPoint==h.timeoutPoint)
+		}
+
 		void checkTimeouts()
 		{
 			auto now = std::chrono::high_resolution_clock::now();
