@@ -1,6 +1,5 @@
 #include "testsPCH.h"
 
-
 using namespace cz;
 using namespace spas;
 
@@ -133,26 +132,28 @@ TEST(Socket_asyncConnect_ok)
 	Service io;
 
 	Socket serverSide(io);
-	Acceptor ac(io);
-	auto ec = ac.listen(SERVER_PORT, 1);
-	CHECK_CZSPAS(ec);
-	auto ft = std::async(std::launch::async, [&ac, &serverSide]
+	Semaphore readyToAccept;
+	auto ft = std::async(std::launch::async, [&]
 	{
-		auto ec = ac.accept(serverSide, 1000);
+		Acceptor ac(io);
+		auto ec = ac.listen(SERVER_PORT, 1);
+		CHECK_CZSPAS(ec);
+		readyToAccept.notify();
+		ec = ac.accept(serverSide, 1000);
 		CHECK_CZSPAS(ec);
 	});
 
 	Socket s(io);
 	Semaphore done;
+
+	// This is needed, since it is possible we take longer than expected to get to the accept call
+	// done in the std::async, therefore causing a time in the asyncConnect.
+	readyToAccept.wait();
+
 	UnitTest::Timer timer;
 	timer.Start();
 	s.asyncConnect("127.0.0.1", SERVER_PORT, [&](const Error& ec)
 	{
-		if (ec)
-		{
-			auto t = timer.GetTimeInMs();
-			printf("");
-		}
 		CHECK_CZSPAS(ec);
 		io.stop(); // stop the service, to finish this test
 		done.notify();
@@ -183,6 +184,42 @@ TEST(Socket_asyncConnect_timeout)
 	done.wait(); // To make sure the asyncConnect gets called
 }
 
+TEST(Socket_asyncAccept_ok)
+{
+	Service io;
+
+	auto ioth = std::thread([&io]
+	{
+		io.run();
+	});
+
+	Semaphore done;
+	Socket serverSide(io);
+	Acceptor ac(io);
+	auto ec = ac.listen(SERVER_PORT, 1);
+	CHECK_CZSPAS(ec);
+	ac.asyncAccept(serverSide, [&](const Error& ec)
+	{
+		CHECK_CZSPAS(ec);
+		done.notify();
+	}, 1000);
+
+	Socket s(io);
+
+	s.asyncConnect("127.0.0.1", SERVER_PORT, [&](const Error& ec)
+	{
+		CHECK_CZSPAS(ec);
+		done.notify();
+	}, 1000);
+
+	done.wait();
+	done.wait();
+	io.stop();
+	ioth.join();
+}
+
+
+// #TODO : Remove this
 TEST(Dummy)
 {
 	{

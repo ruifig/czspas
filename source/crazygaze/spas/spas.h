@@ -265,6 +265,7 @@ namespace details
 		}
 	};
 
+	// #TODO : Are these needed?
 	template<typename H>
 	using IsTransferHandler = std::enable_if_t<check_signature<H, void(const Error&, int)>::value>;
 	template<typename H>
@@ -520,6 +521,7 @@ namespace details
 		}
 
 		static std::pair<Error, SocketHandle> accept(SocketHandle& acceptor, int timeoutMs = -1)
+
 		{
 			CZSPAS_ASSERT(acceptor != CZSPAS_INVALID_SOCKET);
 
@@ -1035,6 +1037,8 @@ namespace details
 		using ReadyQueue = std::queue<std::function<void()>>;
 
 		friend class Socket;
+		friend class Acceptor;
+
 		template< typename H, typename = IsSimpleHandler<H> >
 		void queueReadyHandler(H&& h)
 		{
@@ -1198,8 +1202,14 @@ protected:
 	{
 		auto this_ = reinterpret_cast<Socket*>(cookie);
 		CZSPAS_ASSERT(this_->m_connectHandler);
-		this_->m_connectHandler(Error(cancelled ? Error::Code::Cancelled : Error::Code::Success));
-		this_->m_connectHandler = nullptr; // free any resources
+
+		// Copy to a local variable and call from that one.
+		// The naive approach would be to call m_connectHandler directly, followed by a reset. This is wrong, since the
+		// user's handler might make a call to asyncConnect, therefore setting the m_connectHandler to a new handler, which
+		// we well remove right after.
+		auto h = std::move(this_->m_connectHandler);
+		this_->m_connectHandler = nullptr;
+		h(Error(cancelled ? Error::Code::Cancelled : Error::Code::Success));
 	}
 
 	friend Acceptor;
@@ -1254,32 +1264,6 @@ public:
 		return Error();
 	}
 
-#if 0
-	Error accept(Socket& sock, int timeoutMs = -1)
-	{
-		CZSPAS_ASSERT(isValid());
-		CZSPAS_ASSERT(!sock.isValid());
-
-		sockaddr_in addr;
-		socklen_t size = sizeof(addr);
-		sock.m_s = ::accept(m_s, (struct sockaddr*)&addr, &size);
-		if (sock.m_s == CZSPAS_INVALID_SOCKET)
-		{
-			auto ec = details::ErrorWrapper().getError();
-			CZSPAS_ERROR("Acceptor %p: %s", ec.msg());
-			sock.releaseHandle();
-		}
-
-		sock.m_localAddr = details::utils::getLocalAddr(sock.m_s);
-		sock.m_peerAddr = details::utils::getRemoteAddr(sock.m_s);
-		details::utils::setBlocking(sock.m_s, false);
-		CZSPAS_INFO("Acceptor %p: Socket %d connected to %s:%d, socket %d",
-			this, (int)sock.m_s, sock.m_peerAddr.first.c_str(), sock.m_peerAddr.second);
-
-		// No error
-		return Error();
-	}
-#else
 	Error accept(Socket& sock, int timeoutMs = -1)
 	{
 		CZSPAS_ASSERT(isValid());
@@ -1302,14 +1286,16 @@ public:
 		return Error();
 	}
 
-#endif
-
 	template< typename H, typename = details::IsAcceptHandler<H> >
-	void asyncAccept(Socket& sock, H&& h)
+	void asyncAccept(Socket& sock, H&& h, int timeoutMs = -1)
 	{
-		// #TODO : Fill me
-		m_h = std::move(h);
+		CZSPAS_ASSERT(isValid());
+		CZSPAS_ASSERT(!sock.isValid());
 
+		// #TODO : Fill me
+		m_acceptHandler = std::move(h);
+		m_acceptSocket = &sock;
+		m_owner.m_iodemux.registerReceive(m_s, &handleAccept, this, timeoutMs);
 	}
 
 	void close()
@@ -1324,9 +1310,37 @@ public:
 
 protected:
 
-	virtual void handleReceive(bool cancelled, void* cookie)
+	static void handleAccept(bool cancelled, void* cookie)
 	{
+		auto this_ = reinterpret_cast<Acceptor*>(cookie);
+		CZSPAS_ASSERT(this_->m_acceptHandler);
+		CZSPAS_ASSERT(!this_->m_acceptSocket->isValid());
+
 		// #TODO : Fill me
+
+		// See notes on Socket::handleConnect why we need to copy to a local variable
+		auto h = std::move(this_->m_acceptHandler);
+		auto sock = this_->m_acceptSocket;
+		this_->m_acceptHandler = nullptr;
+		this_->m_acceptSocket = nullptr;
+
+		if (cancelled)
+		{
+			h(Error(Error::Code::Cancelled));
+			return;
+		}
+
+		sockaddr_in addr;
+		socklen_t size = sizeof(addr);
+		sock->m_s = ::accept(this_->m_s, (struct sockaddr*)&addr, &size);
+		if (sock->m_s == CZSPAS_INVALID_SOCKET)
+		{
+			h(details::ErrorWrapper().getError());
+			return;
+		}
+
+		details::utils::setBlocking(sock->m_s, false);
+		h(Error());
 	}
 
 	// Called by Service
@@ -1335,7 +1349,8 @@ protected:
 	}
 
 	std::pair<std::string, int> m_localAddr;
-	AcceptHandler m_h;
+	AcceptHandler m_acceptHandler;
+	Socket* m_acceptSocket = nullptr;
 };
 
 
