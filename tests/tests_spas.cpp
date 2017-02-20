@@ -156,6 +156,25 @@ TEST(Socket_asyncConnect_ok)
 	done.wait(); // To make sure the asyncConnect gets called
 }
 
+TEST(Socket_asyncConnect_timeout)
+{
+	Service io;
+
+	Socket s(io);
+	Semaphore done;
+	UnitTest::Timer timer;
+	timer.Start();
+	int timeoutMs = 1000;
+	s.asyncConnect("127.0.0.1", SERVER_PORT, [&](const Error& ec)
+	{
+		CHECK_CZSPAS_EQUAL(Cancelled, ec);
+		CHECK_CLOSE(timeoutMs, timer.GetTimeInMs(), 20);
+		io.stop(); // stop the service, to finish this test
+		done.notify();
+	}, timeoutMs);
+	io.run();
+	done.wait(); // To make sure the asyncConnect gets called
+}
 
 TEST(Dummy)
 {
