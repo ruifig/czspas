@@ -798,10 +798,10 @@ namespace details
 			CZSPAS_ASSERT(h.evtHandler == nullptr);
 			h.evtHandler = op.evtHandler;
 			h.cookie = op.cookie;
-			if (op.timeoutMs != -1)
-			{
-				h.timeoutPoint = std::chrono::high_resolution_clock::now() + std::chrono::milliseconds(op.timeoutMs);
-			}
+			if (op.timeoutMs == -1)
+				h.timeoutPoint = TimePoint::max();
+			else
+				h.timeoutPoint=	std::chrono::high_resolution_clock::now() + std::chrono::milliseconds(op.timeoutMs);
 		}
 
 		void handleEvent(int idx, short flag)
@@ -817,7 +817,6 @@ namespace details
 				h.evtHandler(false, h.cookie);
 				h.evtHandler = nullptr;
 				h.cookie = nullptr;
-				h.timeoutPoint = TimePoint();
 			}
 		}
 
@@ -842,15 +841,16 @@ namespace details
 				h.evtHandler(true, h.cookie);
 				h.evtHandler = nullptr;
 				h.cookie = nullptr;
-				h.timeoutPoint = TimePoint();
 			}
 		}
 
-		void calculateTimeout(int idx, short flag, TimePoint& point)
+		TimePoint calculateTimeout(int idx, short flag, TimePoint& point)
 		{
 			CZSPAS_ASSERT(flag == POLLWRNORM || flag == POLLRDNORM);
 			auto& h = m_handlers[idx].getHandler(flag);
-			if (!h.evtHandler || h.timeoutPoint==h.timeoutPoint)
+			if (!h.evtHandler)
+				return point;
+			return h.timeoutPoint < point ? h.timeoutPoint : point;
 		}
 
 		void checkTimeouts()
@@ -881,25 +881,24 @@ namespace details
 					++it;;
 				}
 			}
-
 		}
 
 		void run()
 		{
-			TimePoint notimeout;
+			TimePoint timeoutPoint = TimePoint::max();
 			while (!m_finish)
 			{
-				auto now = std::chrono::high_resolution_clock::now();
-				std::chrono::nanoseconds timeout(std::numeric_limits<long long>::max());
-				for (auto&& hh : m_handlers)
+
+				// 
+				// Calculate the timeout we need for the poll()
+				for (int i = 0; i < m_handlers.size(); i++)
 				{
-					if (hh.handlers[0].evtHandler && hh.handlers[0].timeoutPoint != notimeout)
-					{
-						std::chrono::nanoseconds remain = hh.handlers[0].timeoutPoint - now;
-						if (remain < timeout)
-							timeout = remain;
-					}
+					timeoutPoint = calculateTimeout(i, POLLWRNORM, timeoutPoint);
+					timeoutPoint = calculateTimeout(i, POLLRDNORM, timeoutPoint);
 				}
+				int timeoutMs = -1;
+				if (timeoutPoint != TimePoint::max())
+					timeoutMs = std::chrono::duration_cast<std::chrono::milliseconds>(timeoutPoint - std::chrono::high_resolution_clock::now()).count();
 
 				auto res = WSAPoll(&m_fds.front(), static_cast<unsigned long>(m_fds.size()), timeoutMs);
 				if (res == 0) // Timeout
