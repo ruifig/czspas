@@ -133,19 +133,26 @@ TEST(Socket_asyncConnect_ok)
 	Service io;
 
 	Socket serverSide(io);
-	auto ft = std::async(std::launch::async, [&io, &serverSide]
+	Acceptor ac(io);
+	auto ec = ac.listen(SERVER_PORT, 1);
+	CHECK_CZSPAS(ec);
+	auto ft = std::async(std::launch::async, [&ac, &serverSide]
 	{
-		Acceptor ac(io);
-		auto ec = ac.listen(SERVER_PORT, 1);
-		CHECK_CZSPAS(ec);
-		ec = ac.accept(serverSide, 1000);
+		auto ec = ac.accept(serverSide, 1000);
 		CHECK_CZSPAS(ec);
 	});
 
 	Socket s(io);
 	Semaphore done;
+	UnitTest::Timer timer;
+	timer.Start();
 	s.asyncConnect("127.0.0.1", SERVER_PORT, [&](const Error& ec)
 	{
+		if (ec)
+		{
+			auto t = timer.GetTimeInMs();
+			printf("");
+		}
 		CHECK_CZSPAS(ec);
 		io.stop(); // stop the service, to finish this test
 		done.notify();
@@ -164,7 +171,7 @@ TEST(Socket_asyncConnect_timeout)
 	Semaphore done;
 	UnitTest::Timer timer;
 	timer.Start();
-	int timeoutMs = 1000;
+	int timeoutMs = 200;
 	s.asyncConnect("127.0.0.1", SERVER_PORT, [&](const Error& ec)
 	{
 		CHECK_CZSPAS_EQUAL(Cancelled, ec);

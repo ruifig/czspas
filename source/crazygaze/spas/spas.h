@@ -856,17 +856,16 @@ namespace details
 		void checkTimeouts()
 		{
 			auto now = std::chrono::high_resolution_clock::now();
-			auto notimeout = TimePoint();
 			for (auto it = m_fds.begin() + 1; it != m_fds.end();)
 			{
 				int idx = static_cast<int>(it - m_fds.begin());
 				Handlers::Entry* h = &m_handlers[idx].getHandler(POLLWRNORM);
-				if (h->evtHandler && h->timeoutPoint != notimeout && now > h->timeoutPoint)
+				if (h->evtHandler && now > h->timeoutPoint)
 				{
 					cancelEvent(idx, POLLWRNORM);
 				}
 				h = &m_handlers[idx].getHandler(POLLRDNORM);
-				if (h->evtHandler && h->timeoutPoint != notimeout && now > h->timeoutPoint)
+				if (h->evtHandler && now > h->timeoutPoint)
 				{
 					cancelEvent(idx, POLLRDNORM);
 				}
