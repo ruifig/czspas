@@ -653,9 +653,11 @@ namespace details
 			CZSPAS_ASSERT(!res.first);
 			m_signalIn = res.second;
 			m_signalOut = connectFt.get();
+
 			// We reserve index 0 for the signalIn socket. This never gets changed or removed
 			m_fds.push_back({ m_signalIn, POLLRDNORM, 0 });
-			m_handlers.push_back(Handlers(m_signalIn));
+			m_handlers.push_back(Handler());
+			m_handlers.push_back(Handler());
 
 			m_th = std::thread([this] {
 				run();
@@ -715,21 +717,11 @@ namespace details
 			int timeoutMs;
 		};
 
-		struct Handlers
+		struct Handler
 		{
-			Handlers(SocketHandle fd) : fd(fd) { }
-			SocketHandle fd = CZSPAS_INVALID_SOCKET;
-			struct Entry
-			{
-				EventHandler evtHandler = nullptr;
-				void* cookie = nullptr;
-				TimePoint timeoutPoint;
-			} handlers[2];
-
-			Entry& getHandler(short flags)
-			{
-				return handlers[flags == POLLWRNORM ? 0 : 1];
-			}
+			EventHandler evtHandler = nullptr;
+			void* cookie = nullptr;
+			TimePoint timeoutPoint;
 		};
 
 		details::Monitor<std::queue<PendingOp>> m_newOps;
@@ -768,9 +760,15 @@ namespace details
 			}
 		}
 
-		// These two need to match. A given index at one must have the same socket at the other
+		// These two vector have the following relation:
+		// For a given element at index I in m_fds, there are two entries in m_handlers (at indexes I*2 and I*2+1)
 		std::vector<pollfd> m_fds;
-		std::vector<Handlers> m_handlers;
+		std::vector<Handler> m_handlers;
+		Handler& getHandlerAt(int idx, short flag)
+		{
+			return m_handlers[idx * 2 + (flag == POLLRDNORM ? 0 : 1)];
+		}
+
 		std::queue<PendingOp> m_tmpOps;
 
 		int findSocket(SocketHandle fd)
@@ -790,12 +788,13 @@ namespace details
 			if (idx == -1)
 			{
 				m_fds.push_back({ op.fd, 0, 0 });
-				m_handlers.push_back(Handlers(op.fd));
+				m_handlers.emplace_back();
+				m_handlers.emplace_back();
 				idx = static_cast<int>(m_fds.size()) - 1;
 			}
 
 			auto& f = m_fds[idx];
-			auto& h = m_handlers[idx].getHandler(op.flag);
+			auto& h = getHandlerAt(idx, op.flag);
 			f.events |= op.flag;
 			CZSPAS_ASSERT(h.evtHandler == nullptr);
 			h.evtHandler = op.evtHandler;
@@ -809,11 +808,11 @@ namespace details
 		void handleEvent(int idx, short flag)
 		{
 			CZSPAS_ASSERT(flag == POLLWRNORM || flag == POLLRDNORM);
-			CZSPAS_ASSERT(idx < m_fds.size() && m_handlers.size() == m_fds.size() && m_handlers[idx].fd == m_fds[idx].fd);
+			CZSPAS_ASSERT(idx < m_fds.size() && m_handlers.size() == m_fds.size()*2);
 			auto& fd = m_fds[idx];
 			if (fd.revents & flag)
 			{
-				auto& h = m_handlers[idx].getHandler(flag);
+				auto&& h = getHandlerAt(idx, flag);
 				// We handle 1 single event of this type, so disable the request for this type of event
 				fd.events &= ~flag; 
 				h.evtHandler(false, h.cookie);
@@ -824,20 +823,24 @@ namespace details
 
 		auto removeEventHandlers(int idx)
 		{
-			CZSPAS_ASSERT(idx < m_fds.size() && m_handlers.size() == m_fds.size() && m_handlers[idx].fd == m_fds[idx].fd);
+			CZSPAS_ASSERT(idx < m_fds.size() && m_handlers.size() == m_fds.size()*2);
 			details::removeAndReplaceWithLast(m_fds, m_fds.begin() + idx);
-			details::removeAndReplaceWithLast(m_handlers, m_handlers.begin() + idx);
+
+			// #TODO : Replace this with something that removes 2 elements in one go
+			details::removeAndReplaceWithLast(m_handlers, m_handlers.begin() + idx * 2 + 1);
+			details::removeAndReplaceWithLast(m_handlers, m_handlers.begin() + idx * 2);
+
 			return m_fds.begin() + idx;
 		}
 
 		void cancelEvent(int idx, short flag)
 		{
 			CZSPAS_ASSERT(flag == POLLWRNORM || flag == POLLRDNORM);
-			CZSPAS_ASSERT(idx < m_fds.size() && m_handlers.size() == m_fds.size() && m_handlers[idx].fd == m_fds[idx].fd);
+			CZSPAS_ASSERT(idx < m_fds.size() && m_handlers.size() == m_fds.size()*2);
 			auto& fd = m_fds[idx];
 			if (fd.events & flag)
 			{
-				auto& h = m_handlers[idx].getHandler(flag);
+				auto&& h = getHandlerAt(idx, flag);
 				// We handle 1 single event of this type, so disable the request for this type of event
 				fd.events &= ~flag; 
 				h.evtHandler(true, h.cookie);
@@ -846,30 +849,22 @@ namespace details
 			}
 		}
 
-		TimePoint calculateTimeout(int idx, short flag, TimePoint& point)
-		{
-			CZSPAS_ASSERT(flag == POLLWRNORM || flag == POLLRDNORM);
-			auto& h = m_handlers[idx].getHandler(flag);
-			if (!h.evtHandler)
-				return point;
-			return h.timeoutPoint < point ? h.timeoutPoint : point;
-		}
-
 		void checkTimeouts()
 		{
 			auto now = std::chrono::high_resolution_clock::now();
 			for (auto it = m_fds.begin() + 1; it != m_fds.end();)
 			{
+				// #TODO : Improve this by possibly iterating the 2 handler entries?
 				int idx = static_cast<int>(it - m_fds.begin());
-				Handlers::Entry* h = &m_handlers[idx].getHandler(POLLWRNORM);
-				if (h->evtHandler && now > h->timeoutPoint)
-				{
-					cancelEvent(idx, POLLWRNORM);
-				}
-				h = &m_handlers[idx].getHandler(POLLRDNORM);
+				Handler* h = &getHandlerAt(idx, POLLRDNORM);
 				if (h->evtHandler && now > h->timeoutPoint)
 				{
 					cancelEvent(idx, POLLRDNORM);
+				}
+				h = &getHandlerAt(idx, POLLWRNORM);
+				if (h->evtHandler && now > h->timeoutPoint)
+				{
+					cancelEvent(idx, POLLWRNORM);
 				}
 
 				// If we are not interested in any more request from this handler, remove it
@@ -892,11 +887,12 @@ namespace details
 
 				// 
 				// Calculate the timeout we need for the poll()
-				for (int i = 0; i < m_handlers.size(); i++)
+				for (auto&& h : m_handlers)
 				{
-					timeoutPoint = calculateTimeout(i, POLLWRNORM, timeoutPoint);
-					timeoutPoint = calculateTimeout(i, POLLRDNORM, timeoutPoint);
+					if (h.evtHandler && h.timeoutPoint < timeoutPoint)
+						timeoutPoint = h.timeoutPoint;
 				}
+
 				int timeoutMs = -1;
 				if (timeoutPoint != TimePoint::max())
 					timeoutMs = std::chrono::duration_cast<std::chrono::milliseconds>(timeoutPoint - std::chrono::high_resolution_clock::now()).count();
@@ -1205,8 +1201,8 @@ protected:
 
 		// Copy to a local variable and call from that one.
 		// The naive approach would be to call m_connectHandler directly, followed by a reset. This is wrong, since the
-		// user's handler might make a call to asyncConnect, therefore setting the m_connectHandler to a new handler, which
-		// we well remove right after.
+		// user's handler might make a call to asyncConnect, therefore setting the m_connectHandler to a new handler,
+		// which we well remove right after.
 		auto h = std::move(this_->m_connectHandler);
 		this_->m_connectHandler = nullptr;
 		h(Error(cancelled ? Error::Code::Cancelled : Error::Code::Success));
