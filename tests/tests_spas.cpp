@@ -176,7 +176,7 @@ TEST(Socket_asyncConnect_timeout)
 	s.asyncConnect("127.0.0.1", SERVER_PORT, [&](const Error& ec)
 	{
 		CHECK_CZSPAS_EQUAL(Cancelled, ec);
-		CHECK_CLOSE(timeoutMs, timer.GetTimeInMs(), 20);
+		CHECK_CLOSE(timeoutMs, timer.GetTimeInMs(), 100);
 		io.stop(); // stop the service, to finish this test
 		done.notify();
 	}, timeoutMs);
