@@ -655,14 +655,11 @@ namespace details
 			m_signalOut = connectFt.get();
 
 			// We reserve index 0 for the signalIn socket. This never gets changed or removed
-			m_fds.push_back({ m_signalIn, POLLRDNORM, 0 });
-			m_handlers.push_back(Handler());
-			m_handlers.push_back(Handler());
+			m_sockets.get(m_signalIn, POLLRDNORM);
 
 			m_th = std::thread([this] {
 				run();
 			});
-
 		}
 
 		~IODemux()
@@ -724,7 +721,52 @@ namespace details
 			TimePoint timeoutPoint;
 		};
 
+		struct Set
+		{
+			std::pair<pollfd*, Handler*> getAt(int idx , short flag)
+			{
+				CZSPAS_ASSERT(flag == POLLWRNORM || flag == POLLRDNORM);
+				CZSPAS_ASSERT(idx < fds.size() && handlers.size() == fds.size() * 2);
+				return std::make_pair(&fds[idx], &handlers[idx * 2 + (flag == POLLRDNORM ? 0 : 1)]);
+			}
+
+			std::pair<pollfd*, Handler*> get(SocketHandle fd, short flag)
+			{
+				CZSPAS_ASSERT(flag == POLLWRNORM || flag == POLLRDNORM);
+				size_t idx;
+				for (idx = 0; idx < fds.size(); idx++)
+				{
+					if (fds[idx].fd == fd)
+						break;
+				}
+
+				if (idx == fds.size())
+				{
+					fds.push_back({ fd, flag , 0 });
+					handlers.emplace_back();
+					handlers.emplace_back();
+				}
+
+				return getAt(static_cast<int>(idx), flag);
+			}
+			
+			void remove(int idx)
+			{
+				CZSPAS_ASSERT(idx < fds.size() && handlers.size() == fds.size() * 2);
+				details::removeAndReplaceWithLast(fds, fds.begin() + idx);
+				// #TODO : Replace this with something that removes 2 elements in one go
+				details::removeAndReplaceWithLast(handlers, handlers.begin() + idx * 2 + 1);
+				details::removeAndReplaceWithLast(handlers, handlers.begin() + idx * 2);
+			}
+
+			// These two vector have the following relation:
+			// For a given element at index I in m_fds, there are two entries in m_handlers (at indexes I*2 and I*2+1)
+			std::vector<pollfd> fds;
+			std::vector<Handler> handlers;
+		};
+
 		details::Monitor<std::queue<PendingOp>> m_newOps;
+		Set m_sockets;
 		std::thread m_th;
 		SocketHandle m_signalIn;
 		SocketHandle m_signalOut;
@@ -760,121 +802,72 @@ namespace details
 			}
 		}
 
-		// These two vector have the following relation:
-		// For a given element at index I in m_fds, there are two entries in m_handlers (at indexes I*2 and I*2+1)
-		std::vector<pollfd> m_fds;
-		std::vector<Handler> m_handlers;
-		Handler& getHandlerAt(int idx, short flag)
-		{
-			return m_handlers[idx * 2 + (flag == POLLRDNORM ? 0 : 1)];
-		}
-
 		std::queue<PendingOp> m_tmpOps;
-
-		int findSocket(SocketHandle fd)
-		{
-			for (int i = 1; i < static_cast<int>(m_fds.size()); i++)
-			{
-				if (m_fds[i].fd == fd)
-					return i;
-			}
-			return -1;
-		}
 
 		void setEventHandler(const PendingOp& op)
 		{
-			CZSPAS_ASSERT(op.flag == POLLWRNORM || op.flag == POLLRDNORM);
-			int idx = findSocket(op.fd);
-			if (idx == -1)
-			{
-				m_fds.push_back({ op.fd, 0, 0 });
-				m_handlers.emplace_back();
-				m_handlers.emplace_back();
-				idx = static_cast<int>(m_fds.size()) - 1;
-			}
-
-			auto& f = m_fds[idx];
-			auto& h = getHandlerAt(idx, op.flag);
-			f.events |= op.flag;
-			CZSPAS_ASSERT(h.evtHandler == nullptr);
-			h.evtHandler = op.evtHandler;
-			h.cookie = op.cookie;
+			auto f = m_sockets.get(op.fd, op.flag);
+			f.first->events |= op.flag;
+			CZSPAS_ASSERT(f.second->evtHandler == nullptr);
+			f.second->evtHandler = op.evtHandler;
+			f.second->cookie = op.cookie;
 			if (op.timeoutMs == -1)
-				h.timeoutPoint = TimePoint::max();
+				f.second->timeoutPoint = TimePoint::max();
 			else
-				h.timeoutPoint=	std::chrono::high_resolution_clock::now() + std::chrono::milliseconds(op.timeoutMs);
+				f.second->timeoutPoint = std::chrono::high_resolution_clock::now() + std::chrono::milliseconds(op.timeoutMs);
 		}
 
 		void handleEvent(int idx, short flag)
 		{
-			CZSPAS_ASSERT(flag == POLLWRNORM || flag == POLLRDNORM);
-			CZSPAS_ASSERT(idx < m_fds.size() && m_handlers.size() == m_fds.size()*2);
-			auto& fd = m_fds[idx];
-			if (fd.revents & flag)
+			auto f = m_sockets.getAt(idx, flag);
+			if (f.first->revents & flag)
 			{
-				auto&& h = getHandlerAt(idx, flag);
 				// We handle 1 single event of this type, so disable the request for this type of event
-				fd.events &= ~flag; 
-				h.evtHandler(false, h.cookie);
-				h.evtHandler = nullptr;
-				h.cookie = nullptr;
+				f.first->events &= ~flag; 
+				f.second->evtHandler(false, f.second->cookie);
+				f.second->evtHandler = nullptr;
+				f.second->cookie = nullptr;
 			}
-		}
-
-		auto removeEventHandlers(int idx)
-		{
-			CZSPAS_ASSERT(idx < m_fds.size() && m_handlers.size() == m_fds.size()*2);
-			details::removeAndReplaceWithLast(m_fds, m_fds.begin() + idx);
-
-			// #TODO : Replace this with something that removes 2 elements in one go
-			details::removeAndReplaceWithLast(m_handlers, m_handlers.begin() + idx * 2 + 1);
-			details::removeAndReplaceWithLast(m_handlers, m_handlers.begin() + idx * 2);
-
-			return m_fds.begin() + idx;
 		}
 
 		void cancelEvent(int idx, short flag)
 		{
-			CZSPAS_ASSERT(flag == POLLWRNORM || flag == POLLRDNORM);
-			CZSPAS_ASSERT(idx < m_fds.size() && m_handlers.size() == m_fds.size()*2);
-			auto& fd = m_fds[idx];
-			if (fd.events & flag)
+			auto f = m_sockets.getAt(idx, flag);
+			if (f.first->events & flag)
 			{
-				auto&& h = getHandlerAt(idx, flag);
 				// We handle 1 single event of this type, so disable the request for this type of event
-				fd.events &= ~flag; 
-				h.evtHandler(true, h.cookie);
-				h.evtHandler = nullptr;
-				h.cookie = nullptr;
+				f.first->events &= ~flag; 
+				f.second->evtHandler(true, f.second->cookie);
+				f.second->evtHandler = nullptr;
+				f.second->cookie = nullptr;
 			}
 		}
 
 		void checkTimeouts()
 		{
 			auto now = std::chrono::high_resolution_clock::now();
-			for (auto it = m_fds.begin() + 1; it != m_fds.end();)
+			for (int idx = 1; idx < static_cast<int>(m_sockets.fds.size());)
 			{
 				// #TODO : Improve this by possibly iterating the 2 handler entries?
-				int idx = static_cast<int>(it - m_fds.begin());
-				Handler* h = &getHandlerAt(idx, POLLRDNORM);
-				if (h->evtHandler && now > h->timeoutPoint)
+				auto f = m_sockets.getAt(idx, POLLRDNORM);
+				if (f.second->evtHandler && now > f.second->timeoutPoint)
 				{
 					cancelEvent(idx, POLLRDNORM);
 				}
-				h = &getHandlerAt(idx, POLLWRNORM);
-				if (h->evtHandler && now > h->timeoutPoint)
+				f = m_sockets.getAt(idx, POLLWRNORM);
+				if (f.second->evtHandler && now > f.second->timeoutPoint)
 				{
 					cancelEvent(idx, POLLWRNORM);
 				}
 
 				// If we are not interested in any more request from this handler, remove it
-				if ((it->events & (POLLRDNORM | POLLWRNORM)) == 0)
+				if ((f.first->events & (POLLRDNORM | POLLWRNORM)) == 0)
 				{
-					it = removeEventHandlers(idx);
+					m_sockets.remove(idx);
 				}
 				else
 				{
-					++it;;
+					++idx;
 				}
 			}
 		}
@@ -887,7 +880,7 @@ namespace details
 
 				// 
 				// Calculate the timeout we need for the poll()
-				for (auto&& h : m_handlers)
+				for (auto&& h : m_sockets.handlers)
 				{
 					if (h.evtHandler && h.timeoutPoint < timeoutPoint)
 						timeoutPoint = h.timeoutPoint;
@@ -897,7 +890,7 @@ namespace details
 				if (timeoutPoint != TimePoint::max())
 					timeoutMs = std::chrono::duration_cast<std::chrono::milliseconds>(timeoutPoint - std::chrono::high_resolution_clock::now()).count();
 
-				auto res = WSAPoll(&m_fds.front(), static_cast<unsigned long>(m_fds.size()), timeoutMs);
+				auto res = WSAPoll(&m_sockets.fds.front(), static_cast<unsigned long>(m_sockets.fds.size()), timeoutMs);
 				if (res == 0) // Timeout
 				{
 					checkTimeouts();
@@ -908,7 +901,7 @@ namespace details
 				}
 				// else if (res>0) // Number of elements in the fds array for which an revents nember is nonzero
 
-				if (m_fds[0].revents & POLLRDNORM)
+				if (m_sockets.fds[0].revents & POLLRDNORM)
 				{
 					readSignalIn();
 				}
@@ -916,12 +909,12 @@ namespace details
 				//
 				// Process received events
 				//
-				for (auto it = m_fds.begin() + 1; it != m_fds.end(); )
+				for (int idx = 1; idx < static_cast<int>(m_sockets.fds.size()); )
 				{
-					int idx = static_cast<int>(it - m_fds.begin());
-					if (it->revents & POLLERR ||
-						it->revents & POLLHUP ||
-						it->revents & POLLNVAL
+					auto&& f = m_sockets.fds[idx];
+					if (f.revents & POLLERR ||
+						f.revents & POLLHUP ||
+						f.revents & POLLNVAL
 						)
 					{
 						CZSPAS_ASSERT(0);
@@ -931,13 +924,13 @@ namespace details
 					handleEvent(idx, POLLWRNORM);
 
 					// If we are not interested in any more request from this handler, remove it
-					if ((it->events & (POLLRDNORM | POLLWRNORM)) == 0)
+					if ((f.events & (POLLRDNORM | POLLWRNORM)) == 0)
 					{
-						it = removeEventHandlers(idx);
+						m_sockets.remove(idx);
 					}
 					else
 					{
-						++it;;
+						++idx;
 					}
 				}
 
@@ -955,16 +948,15 @@ namespace details
 					m_tmpOps.pop();
 					if (op.flag == 0) // 0 means Cancel
 					{
-						int idx = findSocket(op.fd);
-						if (idx==-1)
+						// If the handler is not found, we don't need to do anything
+						for (int idx = 1; idx < static_cast<int>(m_sockets.fds.size()); ++idx)
 						{
-							// Handler not found, so nothing to do
-						}
-						else
-						{
-							cancelEvent(idx, POLLRDNORM);
-							cancelEvent(idx, POLLWRNORM);
-							removeEventHandlers(idx);
+							if (m_sockets.fds[idx].fd == op.fd)
+							{
+								cancelEvent(idx, POLLRDNORM);
+								cancelEvent(idx, POLLWRNORM);
+								m_sockets.remove(idx);
+							}
 						}
 					}
 					else
