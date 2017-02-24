@@ -132,7 +132,6 @@ struct DefaultLog
 		if (!(expr)) CZSPAS_FATAL(#expr)
 #endif
 
-
 struct Error
 {
 	enum class Code
@@ -726,7 +725,7 @@ namespace details
 			std::pair<pollfd*, Handler*> getAt(int idx , short flag)
 			{
 				CZSPAS_ASSERT(flag == POLLWRNORM || flag == POLLRDNORM);
-				CZSPAS_ASSERT(idx < fds.size() && handlers.size() == fds.size() * 2);
+				CZSPAS_ASSERT(idx < static_cast<int>(fds.size()) && handlers.size() == fds.size() * 2);
 				return std::make_pair(&fds[idx], &handlers[idx * 2 + (flag == POLLRDNORM ? 0 : 1)]);
 			}
 
@@ -752,7 +751,7 @@ namespace details
 			
 			void remove(int idx)
 			{
-				CZSPAS_ASSERT(idx < fds.size() && handlers.size() == fds.size() * 2);
+				CZSPAS_ASSERT(idx < static_cast<int>(fds.size()) && handlers.size() == fds.size() * 2);
 				details::removeAndReplaceWithLast(fds, fds.begin() + idx);
 				// #TODO : Replace this with something that removes 2 elements in one go
 				details::removeAndReplaceWithLast(handlers, handlers.begin() + idx * 2 + 1);
@@ -1024,8 +1023,8 @@ namespace details
 		IODemux m_iodemux;
 		using ReadyQueue = std::queue<std::function<void()>>;
 
-		friend class Socket;
-		friend class Acceptor;
+		friend class cz::spas::Socket;
+		friend class cz::spas::Acceptor;
 
 		template< typename H, typename = IsSimpleHandler<H> >
 		void queueReadyHandler(H&& h)
@@ -1129,7 +1128,7 @@ public:
 			}
 			else
 			{
-				m_owner.queueReadyHandler([ec = std::move(err.getError()), h = std::move(h)]
+				m_owner.queueReadyHandler([ec = err.getError(), h = std::move(h)]
 				{
 					h(ec);
 				});
