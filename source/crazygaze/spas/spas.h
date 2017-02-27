@@ -887,7 +887,7 @@ namespace details
 
 				int timeoutMs = -1;
 				if (timeoutPoint != TimePoint::max())
-					timeoutMs = std::chrono::duration_cast<std::chrono::milliseconds>(timeoutPoint - std::chrono::high_resolution_clock::now()).count();
+					timeoutMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(timeoutPoint - std::chrono::high_resolution_clock::now()).count());
 
 				auto res = WSAPoll(&m_sockets.fds.front(), static_cast<unsigned long>(m_sockets.fds.size()), timeoutMs);
 				if (res == 0) // Timeout
