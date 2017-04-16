@@ -4,7 +4,6 @@ project(czspas)
 include(cmake/ucm.cmake)
 include(cmake/utils.cmake)
 
-
 set_property( GLOBAL PROPERTY USE_FOLDERS ON )
 
 # Will cause building to display what compiler parameters are being used, among other things
