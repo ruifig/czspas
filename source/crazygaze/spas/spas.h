@@ -203,7 +203,7 @@ using AcceptHandler = std::function<void(const Error& ec)>;
 #endif
 
 
-namespace details
+namespace detail
 {
 	// Checks if a specified "Func" type is callable and with the specified signature
 	template <typename, typename, typename = void>
@@ -270,7 +270,7 @@ namespace details
 	template<typename H>
 	using IsSimpleHandler = std::enable_if_t<check_signature<H, void()>::value>;
 	template<typename H>
-	using IsAcceptHandler = std::enable_if_t<details::check_signature<H, void(const Error&)>::value>;
+	using IsAcceptHandler = std::enable_if_t<detail::check_signature<H, void(const Error&)>::value>;
 
 	class ErrorWrapper
 	{
@@ -469,9 +469,9 @@ namespace details
 		{
 			SocketHandle s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 			if (s == CZSPAS_INVALID_SOCKET)
-				return std::make_pair(details::ErrorWrapper().getError(), s);
+				return std::make_pair(detail::ErrorWrapper().getError(), s);
 
-			details::utils::setReuseAddress(s);
+			detail::utils::setReuseAddress(s);
 
 			sockaddr_in addr;
 			addr.sin_family = AF_INET;
@@ -482,13 +482,13 @@ namespace details
 				(::listen(s, backlog) == CZSPAS_SOCKET_ERROR)
 				)
 			{
-				auto ec = details::ErrorWrapper().getError();
+				auto ec = detail::ErrorWrapper().getError();
 				closeSocket(s);
 				return std::make_pair(ec, CZSPAS_INVALID_SOCKET);
 			}
 
 			// Enable any loopback optimizations (in case this socket is used in a loopback)
-			details::utils::optimizeLoopback(s);
+			detail::utils::optimizeLoopback(s);
 
 			return std::make_pair(Error(), s);
 		}
@@ -498,10 +498,10 @@ namespace details
 		{
 			SocketHandle s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 			if (s == CZSPAS_INVALID_SOCKET)
-				return std::make_pair(details::ErrorWrapper().getError(), s);
+				return std::make_pair(detail::ErrorWrapper().getError(), s);
 
 			// Enable any loopback optimizations (in case this socket is used in loopback)
-			details::utils::optimizeLoopback(s);
+			detail::utils::optimizeLoopback(s);
 
 			sockaddr_in addr;
 			memset(&addr, 0, sizeof(addr));
@@ -510,12 +510,12 @@ namespace details
 			inet_pton(AF_INET, ip, &(addr.sin_addr));
 			if (::connect(s, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR)
 			{
-				auto ec = details::ErrorWrapper().getError();
+				auto ec = detail::ErrorWrapper().getError();
 				closeSocket(s);
 				return std::make_pair(ec, CZSPAS_INVALID_SOCKET);
 			}
 
-			details::utils::setBlocking(s, false);
+			detail::utils::setBlocking(s, false);
 			return std::make_pair(Error(), s);
 		}
 
@@ -537,7 +537,7 @@ namespace details
 			auto res = ::select((int)acceptor + 1, &fds, NULL, NULL, timeoutMs == -1 ? NULL : &timeout);
 
 			if (res == CZSPAS_SOCKET_ERROR) {
-				return std::make_pair(details::ErrorWrapper().getError(), CZSPAS_INVALID_SOCKET);
+				return std::make_pair(detail::ErrorWrapper().getError(), CZSPAS_INVALID_SOCKET);
 			}
 			else if (res == 0) {
 				return std::make_pair(Error(Error::Code::Cancelled), CZSPAS_INVALID_SOCKET);
@@ -550,9 +550,9 @@ namespace details
 			socklen_t size = sizeof(addr);
 			SocketHandle s = ::accept(acceptor, (struct sockaddr*)&addr, &size);
 			if (s == CZSPAS_INVALID_SOCKET)
-				return std::make_pair(details::ErrorWrapper().getError(), s);
+				return std::make_pair(detail::ErrorWrapper().getError(), s);
 
-			details::utils::setBlocking(s, false);
+			detail::utils::setBlocking(s, false);
 
 			return std::make_pair(Error(), s);
 		}
@@ -640,15 +640,15 @@ namespace details
 			auto acceptor = utils::createListenSocket(0, 1);
 			CZSPAS_ASSERT(!acceptor.first);
 
-			auto connectFt = std::async(std::launch::async, [this, port=details::utils::getLocalAddr(acceptor.second).second]
+			auto connectFt = std::async(std::launch::async, [this, port=detail::utils::getLocalAddr(acceptor.second).second]
 			{
-				auto res = details::utils::createConnectSocket("127.0.0.1", port);
+				auto res = detail::utils::createConnectSocket("127.0.0.1", port);
 				CZSPAS_ASSERT(!res.first);
 				return res.second;
 			});
 
-			auto res = details::utils::accept(acceptor.second);
-			details::utils::closeSocket(acceptor.second);
+			auto res = detail::utils::accept(acceptor.second);
+			detail::utils::closeSocket(acceptor.second);
 			CZSPAS_ASSERT(!res.first);
 			m_signalIn = res.second;
 			m_signalOut = connectFt.get();
@@ -666,8 +666,8 @@ namespace details
 			m_finish = true;
 			signal();
 			m_th.join();
-			details::utils::closeSocket(m_signalOut);
-			details::utils::closeSocket(m_signalIn);
+			detail::utils::closeSocket(m_signalOut);
+			detail::utils::closeSocket(m_signalIn);
 		}
 
 		void registerReceive(SocketHandle s, EventHandler h, void* cookie, int timeoutMs = -1)
@@ -700,7 +700,7 @@ namespace details
 	private:
 
 #if _WIN32
-		details::WSAInstance m_wsaInstance;
+		detail::WSAInstance m_wsaInstance;
 #endif
 		using TimePoint = std::chrono::time_point<std::chrono::high_resolution_clock>;
 
@@ -752,10 +752,10 @@ namespace details
 			void remove(int idx)
 			{
 				CZSPAS_ASSERT(idx < static_cast<int>(fds.size()) && handlers.size() == fds.size() * 2);
-				details::removeAndReplaceWithLast(fds, fds.begin() + idx);
+				detail::removeAndReplaceWithLast(fds, fds.begin() + idx);
 				// #TODO : Replace this with something that removes 2 elements in one go
-				details::removeAndReplaceWithLast(handlers, handlers.begin() + idx * 2 + 1);
-				details::removeAndReplaceWithLast(handlers, handlers.begin() + idx * 2);
+				detail::removeAndReplaceWithLast(handlers, handlers.begin() + idx * 2 + 1);
+				detail::removeAndReplaceWithLast(handlers, handlers.begin() + idx * 2);
 			}
 
 			// These two vector have the following relation:
@@ -764,7 +764,7 @@ namespace details
 			std::vector<Handler> handlers;
 		};
 
-		details::Monitor<std::queue<PendingOp>> m_newOps;
+		detail::Monitor<std::queue<PendingOp>> m_newOps;
 		Set m_sockets;
 		std::thread m_th;
 		SocketHandle m_signalIn;
@@ -776,7 +776,7 @@ namespace details
 		{
 			char buf = 0;
 			if (::send(m_signalOut, &buf, 1, 0) != 1)
-				CZSPAS_FATAL("IODemux %p", this, details::ErrorWrapper().msg().c_str());
+				CZSPAS_FATAL("IODemux %p", this, detail::ErrorWrapper().msg().c_str());
 		}
 
 		// Read as much data as possible from the signalIn socket
@@ -788,7 +788,7 @@ namespace details
 			{
 				if (recv(m_signalIn, buf, sizeof(buf), 0) == CZSPAS_SOCKET_ERROR)
 				{
-					details::ErrorWrapper err;
+					detail::ErrorWrapper err;
 					if (err.isBlockError()) // This is expected, and it means there is no more data to read
 					{
 						done = true;
@@ -896,7 +896,7 @@ namespace details
 				}
 				else if (res == CZSPAS_SOCKET_ERROR)
 				{
-					CZSPAS_FATAL("IODemux %p: %s", this, details::ErrorWrapper().msg().c_str());
+					CZSPAS_FATAL("IODemux %p: %s", this, detail::ErrorWrapper().msg().c_str());
 				}
 				// else if (res>0) // Number of elements in the fds array for which an revents nember is nonzero
 
@@ -977,7 +977,7 @@ namespace details
 	class BaseSocket
 	{
 	public:
-		BaseSocket(details::BaseService& owner) : m_owner(owner) {}
+		BaseSocket(detail::BaseService& owner) : m_owner(owner) {}
 		virtual ~BaseSocket()
 		{
 			releaseHandle();
@@ -1002,11 +1002,11 @@ namespace details
 
 		void releaseHandle()
 		{
-			details::utils::closeSocket(m_s);
+			detail::utils::closeSocket(m_s);
 			m_s = CZSPAS_INVALID_SOCKET;
 		}
 
-		details::BaseService& m_owner;
+		detail::BaseService& m_owner;
 		SocketHandle m_s = CZSPAS_INVALID_SOCKET;
 	};
 
@@ -1046,17 +1046,17 @@ namespace details
 		SharedQueue<std::function<void()>> m_readyHandlers;
 	};
 
-} // namespace details
+} // namespace detail
 
 //////////////////////////////////////////////////////////////////////////
 // Socket
 //////////////////////////////////////////////////////////////////////////
-class Socket : public details::BaseSocket
+class Socket : public detail::BaseSocket
 {
 public:
 
-	Socket(details::BaseService& service)
-		: details::BaseSocket(service)
+	Socket(detail::BaseService& service)
+		: detail::BaseSocket(service)
 	{
 	}
 
@@ -1070,7 +1070,7 @@ public:
 		CZSPAS_ASSERT(!isValid());
 
 		CZSPAS_INFO("Socket %p: Connect(%s,%d)", this, ip, port);
-		auto res = details::utils::createConnectSocket(ip, port);
+		auto res = detail::utils::createConnectSocket(ip, port);
 		if (res.first)
 		{
 			CZSPAS_ERROR("Socket %p: %s", this, res.first.msg());
@@ -1078,8 +1078,8 @@ public:
 		}
 		m_s = res.second;
 
-		m_localAddr = details::utils::getLocalAddr(m_s);
-		m_peerAddr = details::utils::getRemoteAddr(m_s);
+		m_localAddr = detail::utils::getLocalAddr(m_s);
+		m_peerAddr = detail::utils::getRemoteAddr(m_s);
 		CZSPAS_INFO("Socket %p: Connected to %s:%d", this, m_peerAddr.first.c_str(), m_peerAddr.second);
 
 		return Error();
@@ -1096,7 +1096,7 @@ public:
 		m_s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 		if (m_s == CZSPAS_INVALID_SOCKET)
 		{
-			auto ec = details::ErrorWrapper().getError();
+			auto ec = detail::ErrorWrapper().getError();
 			CZSPAS_ERROR("Socket %p: %s", this, ec.msg());
 			m_owner.queueReadyHandler([ec = std::move(ec), h = std::move(h)]
 			{
@@ -1106,9 +1106,9 @@ public:
 		}
 
 		// Enable any loopback optimizations (in case this socket is used in loopback)
-		details::utils::optimizeLoopback(m_s);
+		detail::utils::optimizeLoopback(m_s);
 		// Set to non-blocking, so we can do an asynchronous connect
-		details::utils::setBlocking(m_s, false);
+		detail::utils::setBlocking(m_s, false);
 
 		sockaddr_in addr;
 		memset(&addr, 0, sizeof(addr));
@@ -1118,7 +1118,7 @@ public:
 
 		if (::connect(m_s, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR)
 		{
-			details::ErrorWrapper err;
+			detail::ErrorWrapper err;
 			if (err.isBlockError())
 			{
 				// Normal behavior, so setup the connect detection with select
@@ -1144,14 +1144,14 @@ public:
 		}
 	}
 
-	template< typename H, typename = details::IsTransferHandler<H> >
+	template< typename H, typename = detail::IsTransferHandler<H> >
 	void asyncReceiveSome(char* buf, int len, H&& h)
 	{
 		CZSPAS_ASSERT(!m_receiveHandler); // There can be only one receive operation in flight
 		m_receiveHandler = std::move(h);
 		// # TODO : Fill me
 	}
-	template< typename H, typename = details::IsTransferHandler<H> >
+	template< typename H, typename = detail::IsTransferHandler<H> >
 	void asyncSendSome(const char* buf, int len, H&& h)
 	{
 		CZSPAS_ASSERT(!m_sendHandler); // There can be only one send operation in flight
@@ -1210,12 +1210,12 @@ protected:
 //////////////////////////////////////////////////////////////////////////
 // Acceptor
 //////////////////////////////////////////////////////////////////////////
-class Acceptor : public details::BaseSocket
+class Acceptor : public detail::BaseSocket
 {
 public:
 
-	Acceptor(details::BaseService& service)
-		: details::BaseSocket(service)
+	Acceptor(detail::BaseService& service)
+		: detail::BaseSocket(service)
 	{
 	}
 
@@ -1238,7 +1238,7 @@ public:
 		CZSPAS_ASSERT(!isValid());
 		CZSPAS_INFO("Acceptor %p: listen(%d, %d)", this, port, backlog);
 
-		auto res = details::utils::createListenSocket(port, backlog);
+		auto res = detail::utils::createListenSocket(port, backlog);
 		if (res.first)
 		{
 			CZSPAS_ERROR("Acceptor %p: %s", this, res.first.msg());
@@ -1246,7 +1246,7 @@ public:
 		}
 		m_s = res.second;
 
-		m_localAddr = details::utils::getLocalAddr(m_s);
+		m_localAddr = detail::utils::getLocalAddr(m_s);
 		// No error
 		return Error();
 	}
@@ -1256,7 +1256,7 @@ public:
 		CZSPAS_ASSERT(isValid());
 		CZSPAS_ASSERT(!sock.isValid());
 
-		auto res = details::utils::accept(m_s, timeoutMs);
+		auto res = detail::utils::accept(m_s, timeoutMs);
 		if (res.first)
 		{
 			CZSPAS_ERROR("Acceptor %p: %s", this, res.first.msg());
@@ -1264,8 +1264,8 @@ public:
 		}
 		sock.m_s = res.second;
 
-		sock.m_localAddr = details::utils::getLocalAddr(sock.m_s);
-		sock.m_peerAddr = details::utils::getRemoteAddr(sock.m_s);
+		sock.m_localAddr = detail::utils::getLocalAddr(sock.m_s);
+		sock.m_peerAddr = detail::utils::getRemoteAddr(sock.m_s);
 		CZSPAS_INFO("Acceptor %p: Socket %p connected to %s:%d", this, &sock, sock.m_peerAddr.first.c_str(),
 		            sock.m_peerAddr.second);
 
@@ -1273,7 +1273,7 @@ public:
 		return Error();
 	}
 
-	template< typename H, typename = details::IsAcceptHandler<H> >
+	template< typename H, typename = detail::IsAcceptHandler<H> >
 	void asyncAccept(Socket& sock, H&& h, int timeoutMs = -1)
 	{
 		CZSPAS_ASSERT(isValid());
@@ -1322,11 +1322,11 @@ protected:
 		sock->m_s = ::accept(this_->m_s, (struct sockaddr*)&addr, &size);
 		if (sock->m_s == CZSPAS_INVALID_SOCKET)
 		{
-			h(details::ErrorWrapper().getError());
+			h(detail::ErrorWrapper().getError());
 			return;
 		}
 
-		details::utils::setBlocking(sock->m_s, false);
+		detail::utils::setBlocking(sock->m_s, false);
 		h(Error());
 	}
 
@@ -1344,7 +1344,7 @@ protected:
 //////////////////////////////////////////////////////////////////////////
 // Service
 //////////////////////////////////////////////////////////////////////////
-class Service : public details::BaseService
+class Service : public detail::BaseService
 {
 private:
 
@@ -1392,7 +1392,7 @@ public:
 
 	// Request to invoke the specified handler
 	// The handler is NOT called from inside this function.
-	template< typename H, typename = details::IsSimpleHandler<H> >
+	template< typename H, typename = detail::IsSimpleHandler<H> >
 	void post(H&& handler)
 	{
 		// #TODO : Fill me
@@ -1400,7 +1400,7 @@ public:
 
 	// Request to invoke the specified handler
 	// The handler can be invoked from inside this function (if the current thread is executing tick)
-	template< typename H, typename = details::IsSimpleHandler<H> >
+	template< typename H, typename = detail::IsSimpleHandler<H> >
 	void dispatch(H&& handler)
 	{
 		// #TODO : Fill me

@@ -13,6 +13,7 @@ syntax: glob
 *.opendb
 *.db
 *.psess
+*vimvs-tmp*
 
 #
 # Note: Patterns using the regexp syntax can be rooted with the prefix ^

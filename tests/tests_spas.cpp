@@ -84,12 +84,12 @@ TEST(Acceptor_accept_break)
 		UnitTest::TimeHelpers::SleepMs(100);
 
 		// Closing the socket on our own, to cause the accept to break
-		// Initially I was calling spas::details::utils::closeSocket(ac.getHandle()), which works fine on Windows.
+		// Initially I was calling spas::detail::utils::closeSocket(ac.getHandle()), which works fine on Windows.
 		// It does a shutdown with SD_BOTH on Windows, and SD_RDWR on Linux, but it seems on Linux, using a shutdown with
 		// SD_RDWR doesn't cause the ::select used internally by Acceptor::accept to break. It hangs forever.
         // So, I need to do a manual shutdown with SHUT_RD
 #if _WIN32
-		spas::details::utils::closeSocket(ac.getHandle());
+		spas::detail::utils::closeSocket(ac.getHandle());
 #else
 		::shutdown(ac.getHandle(), SHUT_RD);
 #endif
@@ -223,7 +223,7 @@ TEST(Socket_asyncAccept_ok)
 TEST(Dummy)
 {
 	{
-		details::IODemux demux;
+		detail::IODemux demux;
 		UnitTest::TimeHelpers::SleepMs(1000);
 	}
 	printf("\n");
