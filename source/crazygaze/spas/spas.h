@@ -520,7 +520,6 @@ namespace detail
 		}
 
 		static std::pair<Error, SocketHandle> accept(SocketHandle& acceptor, int timeoutMs = -1)
-
 		{
 			CZSPAS_ASSERT(acceptor != CZSPAS_INVALID_SOCKET);
 
@@ -704,6 +703,7 @@ namespace detail
 #endif
 		using TimePoint = std::chrono::time_point<std::chrono::high_resolution_clock>;
 
+		// #TODO : Rename this to NewOp
 		struct PendingOp
 		{
 			SocketHandle fd;
@@ -1128,6 +1128,7 @@ public:
 			}
 			else
 			{
+				// #TODO : Do a unit test to cover this code path
 				m_owner.queueReadyHandler([ec = err.getError(), h = std::move(h)]
 				{
 					h(ec);
@@ -1161,6 +1162,7 @@ public:
 
 	void close()
 	{
+		// #TODO : Implement this ???
 	}
 
 	const std::pair<std::string, int>& getLocalAddress() const
@@ -1189,14 +1191,11 @@ protected:
 	{
 		auto this_ = reinterpret_cast<Socket*>(cookie);
 		CZSPAS_ASSERT(this_->m_connectHandler);
-
-		// Copy to a local variable and call from that one.
-		// The naive approach would be to call m_connectHandler directly, followed by a reset. This is wrong, since the
-		// user's handler might make a call to asyncConnect, therefore setting the m_connectHandler to a new handler,
-		// which we well remove right after.
-		auto h = std::move(this_->m_connectHandler);
+		this_->m_owner.queueReadyHandler([cancelled, h=std::move(this_->m_connectHandler)]
+		{
+			h(Error(cancelled ? Error::Code::Cancelled : Error::Code::Success));
+		});
 		this_->m_connectHandler = nullptr;
-		h(Error(cancelled ? Error::Code::Cancelled : Error::Code::Success));
 	}
 
 	friend Acceptor;
@@ -1230,8 +1229,8 @@ public:
 	\param ec
 		If an error occurs, this contains the error.
 	\param backlog
-		Size of the the connection backlog.
-		Also, this is only an hint to the OS. It's not guaranteed.
+		Size of the connection backlog.
+		This is only an hint to the OS. It's not guaranteed.
 	*/
 	Error listen(int port, int backlog)
 	{
@@ -1303,36 +1302,34 @@ protected:
 		CZSPAS_ASSERT(this_->m_acceptHandler);
 		CZSPAS_ASSERT(!this_->m_acceptSocket->isValid());
 
-		// #TODO : Fill me
-
-		// See notes on Socket::handleConnect why we need to copy to a local variable
-		auto h = std::move(this_->m_acceptHandler);
-		auto sock = this_->m_acceptSocket;
-		this_->m_acceptHandler = nullptr;
-		this_->m_acceptSocket = nullptr;
-
 		if (cancelled)
 		{
-			h(Error(Error::Code::Cancelled));
-			return;
+			this_->m_owner.queueReadyHandler([h=std::move(this_->m_acceptHandler)]
+			{
+				h(Error(Error::Code::Cancelled));
+			});
 		}
-
-		sockaddr_in addr;
-		socklen_t size = sizeof(addr);
-		sock->m_s = ::accept(this_->m_s, (struct sockaddr*)&addr, &size);
-		if (sock->m_s == CZSPAS_INVALID_SOCKET)
+		else
 		{
-			h(detail::ErrorWrapper().getError());
-			return;
+			sockaddr_in addr;
+			socklen_t size = sizeof(addr);
+			this_->m_acceptSocket->m_s = ::accept(this_->m_s, (struct sockaddr*)&addr, &size);
+			this_->m_owner.queueReadyHandler([h = std::move(this_->m_acceptHandler), sock = this_->m_acceptSocket]
+			{
+				if (sock->m_s == CZSPAS_INVALID_SOCKET)
+				{
+					h(detail::ErrorWrapper().getError());
+				}
+				else
+				{
+					detail::utils::setBlocking(sock->m_s, false);
+					h(Error());
+				}
+			});
 		}
 
-		detail::utils::setBlocking(sock->m_s, false);
-		h(Error());
-	}
-
-	// Called by Service
-	void doAsyncAccept()
-	{
+		this_->m_acceptHandler = nullptr;
+		this_->m_acceptSocket = nullptr;
 	}
 
 	std::pair<std::string, int> m_localAddr;

@@ -7,11 +7,11 @@ namespace cz
 	namespace spas
 	{
 		bool MyTCPLog::ms_assertOnFatal = true;
-		bool MyTCPLog::ms_logEnabled = true;
+		bool MyTCPLog::ms_logEnabled = false;
 
 		void MyTCPLog::out(bool fatal, const char* type, const char* fmt, ...)
 		{
-			if (!ms_logEnabled)
+			if (!ms_logEnabled && !fatal)
 				return;
 			char buf[256];
 			copyStrToFixedBuffer(buf, type);
