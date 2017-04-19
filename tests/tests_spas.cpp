@@ -150,11 +150,13 @@ TEST(Socket_asyncConnect_ok)
 	// done in the std::async, therefore causing a time in the asyncConnect.
 	readyToAccept.wait();
 
+	auto allowedThread = std::this_thread::get_id();
 	UnitTest::Timer timer;
 	timer.Start();
 	s.asyncConnect("127.0.0.1", SERVER_PORT, [&](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
+		CHECK(std::this_thread::get_id() == allowedThread);
 		io.stop(); // stop the service, to finish this test
 		done.notify();
 	});
@@ -173,10 +175,12 @@ TEST(Socket_asyncConnect_timeout)
 	UnitTest::Timer timer;
 	timer.Start();
 	int timeoutMs = 200;
+	auto allowedThread = std::this_thread::get_id();
 	s.asyncConnect("127.0.0.1", SERVER_PORT, [&](const Error& ec)
 	{
 		CHECK_CZSPAS_EQUAL(Cancelled, ec);
 		CHECK_CLOSE(timeoutMs, timer.GetTimeInMs(), 100);
+		CHECK(std::this_thread::get_id() == allowedThread);
 		io.stop(); // stop the service, to finish this test
 		done.notify();
 	}, timeoutMs);
@@ -201,6 +205,7 @@ TEST(Socket_asyncAccept_ok)
 	ac.asyncAccept(serverSide, [&](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
+		CHECK(std::this_thread::get_id() == ioth.get_id());
 		done.notify();
 	}, 1000);
 
@@ -209,6 +214,7 @@ TEST(Socket_asyncAccept_ok)
 	s.asyncConnect("127.0.0.1", SERVER_PORT, [&](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
+		CHECK(std::this_thread::get_id() == ioth.get_id());
 		done.notify();
 	}, 1000);
 
@@ -217,7 +223,6 @@ TEST(Socket_asyncAccept_ok)
 	io.stop();
 	ioth.join();
 }
-
 
 // #TODO : Remove this
 TEST(Dummy)
