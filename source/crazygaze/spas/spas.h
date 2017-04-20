@@ -1162,7 +1162,7 @@ public:
 	template< typename H, typename = detail::IsTransferHandler<H> >
 	void asyncSendSome(const char* buf, int len, int timeoutMs, H&& h)
 	{
-		CZSPAS_ASSERT(!m_sendHandler); // There can be only one send operation in flight
+		CZSPAS_ASSERT(!m_send.handler); // There can be only one send operation in flight
 		m_send.buf = buf;
 		m_send.len = len;
 		m_send.handler = std::move(h);
@@ -1238,11 +1238,46 @@ protected:
 
 	static void handleSend(bool cancelled, void* cookie)
 	{
-		reinterpret_cast<Socket*>(cookie)->handleReceiveImpl(cancelled);
+		reinterpret_cast<Socket*>(cookie)->handleSendImpl(cancelled);
 	}
 	void handleSendImpl(bool cancelled)
 	{
-		// #TODO : Fill me
+		CZSPAS_ASSERT(m_send.handler);
+
+		int len = ::send(m_s, m_send.buf, m_send.len, 0);
+		if (len = CZSPAS_SOCKET_ERROR)
+		{
+			detail::ErrorWrapper err;
+			if (cancelled)
+			{
+				m_owner.queueReadyHandler([this, ec=err.getError()]
+				{
+					auto data = m_send.moveAndClear();
+					data.handler(Error(Error::Code::Cancelled), 0);
+				});
+			}
+			else if (err.isBlockError())
+			{
+				CZSPAS_FATAL("Blocking not expected at this point.");
+			}
+			else
+			{
+				CZSPAS_ERROR(err.msg().c_str());
+				m_owner.queueReadyHandler([this, ec=err.getError()]
+				{
+					auto data = m_send.moveAndClear();
+					data.handler(ec, 0);
+				});
+			}
+		}
+		else
+		{
+			m_owner.queueReadyHandler([this, len, cancelled]
+			{
+				auto data = m_send.moveAndClear();
+				data.handler(Error(cancelled ? Error::Code::Cancelled : Error::Code::Success), len);
+			});
+		}
 	}
 
 	static void handleConnect(bool cancelled, void* cookie)

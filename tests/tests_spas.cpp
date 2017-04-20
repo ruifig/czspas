@@ -461,6 +461,51 @@ TEST(Socket_asyncReceiveSome_peerDisconnect)
 	done.wait();
 }
 
+TEST(Socket_asyncSendSome_ok)
+{
+	TestServer server;
+	Semaphore done;
+
+	Socket s(server.io);
+	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
+	char buf[6];
+	server.waitForAccept();
+
+	constexpr auto bigbufsize = (uint64_t)(1024) * 1024 * 1024 * 2 - 1;
+	auto bigbuf = std::unique_ptr<char[]>(new char[bigbufsize]);
+	server.socks[0]->asyncSendSome(bigbuf.get(), bigbufsize, -1, [&](const Error& ec, int transfered)
+	{
+		CHECK_EQUAL(bigbufsize, transfered);
+	});
+
+	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, int received)
+	{
+		CHECK(std::this_thread::get_id() == server.get_threadid());
+		CHECK_EQUAL(sizeof(buf), received);
+		CHECK_EQUAL("Hello", buf);
+		done.notify();
+	});
+	done.wait();
+
+	memset(buf, 0, sizeof(buf));
+	CHECK_EQUAL(6, ::send(server.socks[0]->getHandle(), "Hello", 6, 0));
+	s.asyncReceiveSome(&buf[0], 2, -1, [&](const Error& ec, int received)
+	{
+		CHECK(std::this_thread::get_id() == server.get_threadid());
+		CHECK_EQUAL(2, received);
+		s.asyncReceiveSome(&buf[2], 4, -1, [&](const Error& ec, int received)
+		{
+			CHECK_EQUAL(4, received);
+			CHECK_EQUAL("Hello", buf);
+			done.notify();
+		});
+		done.notify();
+	});
+
+	done.wait();
+	done.wait();
+}
+
 // #TODO : Remove this
 TEST(Dummy)
 {
