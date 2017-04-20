@@ -634,6 +634,15 @@ namespace detail
 	public:
 		using EventHandler = void(*)(bool cancelled, void* cookie);
 
+		enum class Reason
+		{
+			Ok,
+			Cancel,
+			Timeout,
+			Disconnect,
+			Error
+		};
+
 		IODemux()
 		{
 			auto acceptor = utils::createListenSocket(0, 1);
@@ -828,8 +837,10 @@ namespace detail
 			}
 		}
 
-		void cancelEvent(int idx, short flag)
+		void cancelEvent(int idx, short flag, Reason reason)
 		{
+			// #TODO : Pass the reason to the handler somehow
+
 			auto f = m_sockets.getAt(idx, flag);
 			if (f.first->events & flag)
 			{
@@ -850,12 +861,12 @@ namespace detail
 				auto f = m_sockets.getAt(idx, POLLRDNORM);
 				if (f.second->evtHandler && now > f.second->timeoutPoint)
 				{
-					cancelEvent(idx, POLLRDNORM);
+					cancelEvent(idx, POLLRDNORM, Reason::Timeout);
 				}
 				f = m_sockets.getAt(idx, POLLWRNORM);
 				if (f.second->evtHandler && now > f.second->timeoutPoint)
 				{
-					cancelEvent(idx, POLLWRNORM);
+					cancelEvent(idx, POLLWRNORM, Reason::Timeout);
 				}
 
 				// If we are not interested in any more request from this handler, remove it
@@ -912,11 +923,14 @@ namespace detail
 					auto&& f = m_sockets.fds[idx];
 					if (f.revents & (POLLERR | POLLHUP | POLLNVAL))
 					{
-						CZSPAS_ASSERT(0);
+						cancelEvent(idx, POLLRDNORM, (f.revents & POLLHUP) ? Reason::Disconnect : Reason::Error);
+						cancelEvent(idx, POLLWRNORM, (f.revents & POLLHUP) ? Reason::Disconnect : Reason::Error);
 					}
-
-					handleEvent(idx, POLLRDNORM);
-					handleEvent(idx, POLLWRNORM);
+					else
+					{
+						handleEvent(idx, POLLRDNORM);
+						handleEvent(idx, POLLWRNORM);
+					}
 
 					// If we are not interested in any more request from this handler, remove it
 					if ((f.events & (POLLRDNORM | POLLWRNORM)) == 0)
@@ -948,8 +962,8 @@ namespace detail
 						{
 							if (m_sockets.fds[idx].fd == op.fd)
 							{
-								cancelEvent(idx, POLLRDNORM);
-								cancelEvent(idx, POLLWRNORM);
+								cancelEvent(idx, POLLRDNORM, Reason::Cancel);
+								cancelEvent(idx, POLLWRNORM, Reason::Cancel);
 								m_sockets.remove(idx);
 							}
 						}
@@ -1047,7 +1061,7 @@ public:
 
 	virtual ~Socket()
 	{
-		CZSPAS_ASSERT(m_connectHandler == nullptr && "There is a pending connect operation");
+		CZSPAS_ASSERT(m_connect.handler == nullptr && "There is a pending connect operation");
 		CZSPAS_ASSERT(m_recv.handler == nullptr && "There is a pending receive operation");
 		CZSPAS_ASSERT(m_send.handler == nullptr && "There is a pending send operation");
 	}
@@ -1075,20 +1089,21 @@ public:
 	 
 	// #TODO : Remove the timeout parameter, and assume a default
 	// 
-	void asyncConnect(const char* ip, int port, ConnectHandler h, int timeoutMs = 200)
+	void asyncConnect(const char* ip, int port, int timeoutMs, ConnectHandler h)
 	{
 		CZSPAS_ASSERT(!isValid());
-
 		CZSPAS_INFO("Socket %p: asyncConnect(%s,%d, H, %d)", this, ip, port, timeoutMs);
 
+		m_connect.handler = std::move(h);
 		m_s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 		if (m_s == CZSPAS_INVALID_SOCKET)
 		{
 			auto ec = detail::ErrorWrapper().getError();
 			CZSPAS_ERROR("Socket %p: %s", this, ec.msg());
-			m_owner.queueReadyHandler([ec = std::move(ec), h = std::move(h)]
+			m_owner.queueReadyHandler([this, ec = std::move(ec)]
 			{
-				h(ec);
+				auto data = m_connect.moveAndClear();
+				data.handler(ec);
 			});
 			return;
 		}
@@ -1111,24 +1126,25 @@ public:
 			{
 				// Normal behavior, so setup the connect detection with select
 				// A asynchronous connect is done when we receive a write event on the socket
-				m_connectHandler = std::move(h);
 				m_owner.m_iodemux.registerSend(m_s, &handleConnect, this, timeoutMs);
 			}
 			else
 			{
 				// #TODO : Do a unit test to cover this code path
-				m_owner.queueReadyHandler([ec = err.getError(), h = std::move(h)]
+				m_owner.queueReadyHandler([this, ec = err.getError()]
 				{
-					h(ec);
+					auto data = m_connect.moveAndClear();
+					data.handler(ec);
 				});
 			}
 		}
 		else
 		{
 			// It may happen that the connect succeeds right away.
-			m_owner.queueReadyHandler([h = std::move(h)]
+			m_owner.queueReadyHandler([this]
 			{
-				h(Error());
+				auto data = m_connect.moveAndClear();
+				data.handler(Error());
 			});
 		}
 	}
@@ -1144,13 +1160,13 @@ public:
 		m_owner.m_iodemux.registerReceive(m_s, &handleReceive, this, timeoutMs);
 	}
 	template< typename H, typename = detail::IsTransferHandler<H> >
-	void asyncSendSome(const char* buf, int len, H&& h)
+	void asyncSendSome(const char* buf, int len, int timeoutMs, H&& h)
 	{
 		CZSPAS_ASSERT(!m_sendHandler); // There can be only one send operation in flight
 		m_send.buf = buf;
 		m_send.len = len;
 		m_send.handler = std::move(h);
-		m_owner.m_iodemux.registerSend(m_s, &handleSend, this, timeout);
+		m_owner.m_iodemux.registerSend(m_s, &handleSend, this, timeoutMs);
 	}
 
 	void close()
@@ -1160,7 +1176,7 @@ public:
 
 	void cancel()
 	{
-		if (m_connectHandler || m_recv.handler || m_send.handler)
+		if (m_connect.handler || m_recv.handler || m_send.handler)
 			m_owner.m_iodemux.cancelRequests(m_s);
 	}
 
@@ -1182,35 +1198,42 @@ protected:
 	}
 	void handleReceiveImpl(bool cancelled)
 	{
-		// Move to a local variable and reset the member variable, since the user handlers will certainly make calls to receive more data,
-		auto info = std::move(m_recv);
-		m_recv.clear();
+		CZSPAS_ASSERT(m_recv.handler);
 
-		int len = ::recv(m_s, info.buf, info.len, 0);
+		int len = ::recv(m_s, m_recv.buf, m_recv.len, 0);
 		if (len == CZSPAS_SOCKET_ERROR)
 		{
 			detail::ErrorWrapper err;
-			if (err.isBlockError())
+			if (cancelled)
+			{
+				m_owner.queueReadyHandler([this, ec=err.getError()]
+				{
+					auto data = m_recv.moveAndClear();
+					data.handler(Error(Error::Code::Cancelled), 0);
+				});
+			}
+			else if (err.isBlockError())
 			{
 				CZSPAS_FATAL("Blocking not expected at this point.");
 			}
 			else
 			{
 				CZSPAS_ERROR(err.msg().c_str());
-				m_owner.queueReadyHandler([ec=err.getError(), h=std::move(info.handler)]
+				m_owner.queueReadyHandler([this, ec=err.getError()]
 				{
-					h(ec, 0);
+					auto data = m_recv.moveAndClear();
+					data.handler(ec, 0);
 				});
 			}
 		}
 		else
 		{
-			m_owner.queueReadyHandler([h = std::move(info.handler), len]
+			m_owner.queueReadyHandler([this, len, cancelled]
 			{
-				h(Error(), len);
+				auto data = m_recv.moveAndClear();
+				data.handler(Error(cancelled ? Error::Code::Cancelled : Error::Code::Success), len);
 			});
 		}
-		
 	}
 
 	static void handleSend(bool cancelled, void* cookie)
@@ -1219,9 +1242,7 @@ protected:
 	}
 	void handleSendImpl(bool cancelled)
 	{
-		auto info = std::move(m_send);
-		m_send.clear();
-		// #TODO : Implement this
+		// #TODO : Fill me
 	}
 
 	static void handleConnect(bool cancelled, void* cookie)
@@ -1230,15 +1251,11 @@ protected:
 	}
 	void handleConnectImpl(bool cancelled)
 	{
-		CZSPAS_ASSERT(m_connectHandler);
-
-		// Move to a local variable and clear the member variable before calling the user handler
-		auto connectHandler = std::move(m_connectHandler);
-		m_connectHandler = nullptr;
-
-		m_owner.queueReadyHandler([cancelled, h=std::move(connectHandler)]
+		CZSPAS_ASSERT(m_connect.handler);
+		m_owner.queueReadyHandler([this, cancelled]
 		{
-			h(Error(cancelled ? Error::Code::Cancelled : Error::Code::Success));
+			auto data = m_connect.moveAndClear();
+			data.handler(Error(cancelled ? Error::Code::Cancelled : Error::Code::Success));
 		});
 	}
 
@@ -1248,32 +1265,42 @@ protected:
 
 	struct ConnectData
 	{
+		ConnectHandler handler;
+		ConnectData moveAndClear()
+		{
+			ConnectData res = std::move(*this);
+			handler = nullptr;
+			return res;
+		}
+	} m_connect;
 
-	};
-
-	ConnectHandler m_connectHandler; // used for asynchronous connects
-	struct Receive
+	struct ReceiveData
 	{
 		char* buf = nullptr;
 		int len = 0;
 		TransferHandler handler;
-		void clear()
+		ReceiveData moveAndClear()
 		{
+			ReceiveData res = std::move(*this);
 			buf = nullptr;
 			len = 0;
 			handler = nullptr;
+			return res;
 		}
 	} m_recv;
-	struct Send
+
+	struct SendData
 	{
 		const char* buf = nullptr;
 		int len = 0;
 		TransferHandler handler;
-		void clear()
+		SendData moveAndClear()
 		{
+			SendData res = std::move(*this);
 			buf = nullptr;
 			len = 0;
 			handler = nullptr;
+			return res;
 		}
 	} m_send;
 };
@@ -1346,7 +1373,7 @@ public:
 	}
 
 	template< typename H, typename = detail::IsAcceptHandler<H> >
-	void asyncAccept(Socket& sock, H&& h, int timeoutMs = -1)
+	void asyncAccept(Socket& sock, int timeoutMs, H&& h)
 	{
 		CZSPAS_ASSERT(isValid());
 		CZSPAS_ASSERT(!m_accept.handler && "There is already a pending accept operation");
