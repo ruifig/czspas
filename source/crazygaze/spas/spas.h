@@ -687,11 +687,11 @@ namespace detail
 			signal();
 		}
 
-		void cancelRequests(SocketHandle s, EventHandler h, void* cookie)
+		void cancelRequests(SocketHandle s)
 		{
 			m_newOps([&](auto& q)
 			{
-				q.push({ s, h, cookie, 0, -1});
+				q.push({ s, nullptr, nullptr, 0, -1});
 			});
 			signal();
 		}
@@ -703,8 +703,7 @@ namespace detail
 #endif
 		using TimePoint = std::chrono::time_point<std::chrono::high_resolution_clock>;
 
-		// #TODO : Rename this to NewOp
-		struct PendingOp
+		struct NewOp
 		{
 			SocketHandle fd;
 			EventHandler evtHandler;
@@ -764,7 +763,7 @@ namespace detail
 			std::vector<Handler> handlers;
 		};
 
-		detail::Monitor<std::queue<PendingOp>> m_newOps;
+		detail::Monitor<std::queue<NewOp>> m_newOps;
 		Set m_sockets;
 		std::thread m_th;
 		SocketHandle m_signalIn;
@@ -801,9 +800,9 @@ namespace detail
 			}
 		}
 
-		std::queue<PendingOp> m_tmpOps;
+		std::queue<NewOp> m_tmpOps;
 
-		void setEventHandler(const PendingOp& op)
+		void setEventHandler(const NewOp& op)
 		{
 			auto f = m_sockets.get(op.fd, op.flag);
 			f.first->events |= op.flag;
@@ -911,10 +910,7 @@ namespace detail
 				for (int idx = 1; idx < static_cast<int>(m_sockets.fds.size()); )
 				{
 					auto&& f = m_sockets.fds[idx];
-					if (f.revents & POLLERR ||
-						f.revents & POLLHUP ||
-						f.revents & POLLNVAL
-						)
+					if (f.revents & (POLLERR | POLLHUP | POLLNVAL))
 					{
 						CZSPAS_ASSERT(0);
 					}
@@ -943,7 +939,7 @@ namespace detail
 
 				while (m_tmpOps.size())
 				{
-					PendingOp op = m_tmpOps.front();
+					NewOp op = m_tmpOps.front();
 					m_tmpOps.pop();
 					if (op.flag == 0) // 0 means Cancel
 					{
@@ -1032,17 +1028,6 @@ namespace detail
 			m_readyHandlers.push(std::forward<H>(h));
 		}
 
-		template< typename H, typename = IsSimpleHandler<H> >
-		void queueNewOperation(H&& h)
-		{
-			/*
-			m_newOperations([&](CmdQueue& q)
-			{
-				q.push(std::move(h));
-			});
-			*/
-		}
-
 		SharedQueue<std::function<void()>> m_readyHandlers;
 	};
 
@@ -1062,6 +1047,9 @@ public:
 
 	virtual ~Socket()
 	{
+		CZSPAS_ASSERT(m_connectHandler == nullptr && "There is a pending connect operation");
+		CZSPAS_ASSERT(m_recv.handler == nullptr && "There is a pending receive operation");
+		CZSPAS_ASSERT(m_send.handler == nullptr && "There is a pending send operation");
 	}
 
 	//! Synchronous connect
@@ -1146,18 +1134,23 @@ public:
 	}
 
 	template< typename H, typename = detail::IsTransferHandler<H> >
-	void asyncReceiveSome(char* buf, int len, H&& h)
+	void asyncReceiveSome(char* buf, int len, int timeoutMs, H&& h)
 	{
-		CZSPAS_ASSERT(!m_receiveHandler); // There can be only one receive operation in flight
-		m_receiveHandler = std::move(h);
-		// # TODO : Fill me
+		CZSPAS_ASSERT(isValid());
+		CZSPAS_ASSERT(!m_recv.handler); // There can be only one receive operation in flight
+		m_recv.buf = buf;
+		m_recv.len = len;
+		m_recv.handler = std::move(h);
+		m_owner.m_iodemux.registerReceive(m_s, &handleReceive, this, timeoutMs);
 	}
 	template< typename H, typename = detail::IsTransferHandler<H> >
 	void asyncSendSome(const char* buf, int len, H&& h)
 	{
 		CZSPAS_ASSERT(!m_sendHandler); // There can be only one send operation in flight
-		m_sendHandler = std::move(h);
-		// #TODO : Fill me
+		m_send.buf = buf;
+		m_send.len = len;
+		m_send.handler = std::move(h);
+		m_owner.m_iodemux.registerSend(m_s, &handleSend, this, timeout);
 	}
 
 	void close()
@@ -1179,31 +1172,89 @@ protected:
 
 	static void handleReceive(bool cancelled, void* cookie)
 	{
-		// #TODO : Implement this
+		reinterpret_cast<Socket*>(cookie)->handleReceiveImpl(cancelled);
+	}
+	void handleReceiveImpl(bool cancelled)
+	{
+		int len = ::recv(m_s, m_recv.buf, m_recv.len, 0);
+		if (len == CZSPAS_SOCKET_ERROR)
+		{
+			detail::ErrorWrapper err;
+			if (err.isBlockError())
+			{
+				CZSPAS_FATAL("Blocking not expected at this point.");
+			}
+			else
+			{
+				CZSPAS_ERROR(err.msg().c_str());
+				m_owner.queueReadyHandler([ec=err.getError(), h=std::move(m_recv.handler)]
+				{
+					h(ec, 0);
+				});
+			}
+		}
+		else
+		{
+			m_owner.queueReadyHandler([h = std::move(m_recv.handler), len]
+			{
+				h(Error(), len);
+			});
+		}
+		
+		m_recv.clear();
 	}
 
 	static void handleSend(bool cancelled, void* cookie)
+	{
+		reinterpret_cast<Socket*>(cookie)->handleReceiveImpl(cancelled);
+	}
+	void handleSendImpl(bool cancelled)
 	{
 		// #TODO : Implement this
 	}
 
 	static void handleConnect(bool cancelled, void* cookie)
 	{
-		auto this_ = reinterpret_cast<Socket*>(cookie);
-		CZSPAS_ASSERT(this_->m_connectHandler);
-		this_->m_owner.queueReadyHandler([cancelled, h=std::move(this_->m_connectHandler)]
+		reinterpret_cast<Socket*>(cookie)->handleConnectImpl(cancelled);
+	}
+	void handleConnectImpl(bool cancelled)
+	{
+		CZSPAS_ASSERT(m_connectHandler);
+		m_owner.queueReadyHandler([cancelled, h=std::move(m_connectHandler)]
 		{
 			h(Error(cancelled ? Error::Code::Cancelled : Error::Code::Success));
 		});
-		this_->m_connectHandler = nullptr;
+		m_connectHandler = nullptr;
 	}
 
 	friend Acceptor;
 	std::pair<std::string, int> m_localAddr;
 	std::pair<std::string, int> m_peerAddr;
 	ConnectHandler m_connectHandler; // used for asynchronous connects
-	TransferHandler m_receiveHandler;
-	TransferHandler m_sendHandler;
+	struct
+	{
+		char* buf = nullptr;
+		int len = 0;
+		TransferHandler handler;
+		void clear()
+		{
+			buf = nullptr;
+			len = 0;
+			handler = nullptr;
+		}
+	} m_recv;
+	struct
+	{
+		const char* buf = nullptr;
+		int len = 0;
+		TransferHandler handler;
+		void clear()
+		{
+			buf = nullptr;
+			len = 0;
+			handler = nullptr;
+		}
+	} m_send;
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -1220,6 +1271,7 @@ public:
 
 	virtual ~Acceptor()
 	{
+		CZSPAS_ASSERT(m_accept.handler==nullptr && "There is a pending accept operation");
 	}
 
 	//! Starts listening for new connections at the specified port
@@ -1278,15 +1330,20 @@ public:
 		CZSPAS_ASSERT(isValid());
 		CZSPAS_ASSERT(!sock.isValid());
 
-		// #TODO : Fill me
-		m_acceptHandler = std::move(h);
-		m_acceptSocket = &sock;
+		m_accept.handler = std::move(h);
+		m_accept.sock = &sock;
 		m_owner.m_iodemux.registerReceive(m_s, &handleAccept, this, timeoutMs);
 	}
 
 	void close()
 	{
 		// #TODO : Fill me
+	}
+
+	void cancel()
+	{
+		if (m_accept.handler)
+			m_owner.m_iodemux.cancelRequests(m_s);
 	}
 
 	const std::pair<std::string, int>& getLocalAddress() const
@@ -1298,13 +1355,16 @@ protected:
 
 	static void handleAccept(bool cancelled, void* cookie)
 	{
-		auto this_ = reinterpret_cast<Acceptor*>(cookie);
-		CZSPAS_ASSERT(this_->m_acceptHandler);
-		CZSPAS_ASSERT(!this_->m_acceptSocket->isValid());
+		reinterpret_cast<Acceptor*>(cookie)->handleAcceptImpl(cancelled);
+	}
+	void handleAcceptImpl(bool cancelled)
+	{
+		CZSPAS_ASSERT(m_accept.handler);
+		CZSPAS_ASSERT(m_accept.sock && !m_accept.sock->isValid());
 
 		if (cancelled)
 		{
-			this_->m_owner.queueReadyHandler([h=std::move(this_->m_acceptHandler)]
+			m_owner.queueReadyHandler([h=std::move(m_accept.handler)]
 			{
 				h(Error(Error::Code::Cancelled));
 			});
@@ -1313,8 +1373,8 @@ protected:
 		{
 			sockaddr_in addr;
 			socklen_t size = sizeof(addr);
-			this_->m_acceptSocket->m_s = ::accept(this_->m_s, (struct sockaddr*)&addr, &size);
-			this_->m_owner.queueReadyHandler([h = std::move(this_->m_acceptHandler), sock = this_->m_acceptSocket]
+			m_accept.sock->m_s = ::accept(m_s, (struct sockaddr*)&addr, &size);
+			m_owner.queueReadyHandler([h = std::move(m_accept.handler), sock = m_accept.sock]
 			{
 				if (sock->m_s == CZSPAS_INVALID_SOCKET)
 				{
@@ -1328,13 +1388,20 @@ protected:
 			});
 		}
 
-		this_->m_acceptHandler = nullptr;
-		this_->m_acceptSocket = nullptr;
+		m_accept.clear();
 	}
 
 	std::pair<std::string, int> m_localAddr;
-	AcceptHandler m_acceptHandler;
-	Socket* m_acceptSocket = nullptr;
+	struct
+	{
+		AcceptHandler handler = nullptr;
+		Socket* sock = nullptr;
+		void clear()
+		{
+			handler = nullptr;
+			sock = nullptr;
+		}
+	} m_accept;
 };
 
 
@@ -1392,7 +1459,7 @@ public:
 	template< typename H, typename = detail::IsSimpleHandler<H> >
 	void post(H&& handler)
 	{
-		// #TODO : Fill me
+		m_readyHandlers.push(std::forward<H>(handler));
 	}
 
 	// Request to invoke the specified handler
