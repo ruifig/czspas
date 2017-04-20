@@ -23,6 +23,10 @@ using namespace cz::spas;
 SUITE(CZSPAS)
 {
 
+//////////////////////////////////////////////////////////////////////////
+// Acceptor tests
+//////////////////////////////////////////////////////////////////////////
+
 // Checks behavior for a simple listen
 TEST(Acceptor_listen_ok)
 {
@@ -98,6 +102,10 @@ TEST(Acceptor_accept_break)
 	ft1.get();
 	ft2.get();
 }
+
+//////////////////////////////////////////////////////////////////////////
+// Socket tests
+//////////////////////////////////////////////////////////////////////////
 
 TEST(Socket_connect_ok)
 {
@@ -188,7 +196,7 @@ TEST(Socket_asyncConnect_timeout)
 	done.wait(); // To make sure the asyncConnect gets called
 }
 
-TEST(Socket_asyncAccept_ok)
+TEST(Acceptor_asyncAccept_ok)
 {
 	Service io;
 
@@ -222,6 +230,143 @@ TEST(Socket_asyncAccept_ok)
 	done.wait();
 	io.stop();
 	ioth.join();
+}
+
+TEST(Acceptor_asyncAccept_cancel)
+{
+	Service io;
+
+	auto ioth = std::thread([&io]
+	{
+		io.run();
+	});
+
+	Semaphore done;
+	Socket serverSide(io);
+	Acceptor ac(io);
+	auto ec = ac.listen(SERVER_PORT, 1);
+	CHECK_CZSPAS(ec);
+	ac.asyncAccept(serverSide, [&](const Error& ec)
+	{
+		CHECK_CZSPAS_EQUAL(Cancelled, ec);
+		CHECK(std::this_thread::get_id() == ioth.get_id());
+		done.notify();
+	}, 1000);
+
+	io.post([&]
+	{
+		ac.cancel();
+	});
+
+	done.wait();
+	io.stop();
+	ioth.join();
+}
+
+struct TestServer
+{
+	Service io;
+	std::thread th;
+	Acceptor* acceptor;
+	Semaphore accepted;
+	ZeroSemaphore pendingOps;
+	std::vector<std::shared_ptr<Socket>> socks;
+
+	TestServer()
+	{
+		th = std::thread([this]
+		{
+			io.run();
+		});
+
+		auto ac = std::make_shared<Acceptor>(io);
+		acceptor = ac.get();
+		CHECK_CZSPAS(ac->listen(SERVER_PORT, 100));
+		doAccept(ac);
+	}
+
+	~TestServer()
+	{
+		io.post([ac=acceptor]
+		{
+			ac->cancel();
+		});
+		pendingOps.wait();
+		io.stop();
+		if (th.joinable())
+			th.join();
+		socks.clear();
+	}
+
+	void doAccept(std::shared_ptr<Acceptor> ac)
+	{
+		pendingOps.increment();
+		auto sock = std::make_shared<Socket>(io);
+		ac->asyncAccept(*sock, [this, ac, sock](const Error& ec)
+		{
+			pendingOps.decrement();
+			if (ec.code == Error::Code::Cancelled)
+				return;
+			CHECK_CZSPAS(ec);
+			socks.push_back(sock);
+			accepted.notify();
+			doAccept(ac);
+		});
+	}
+
+	void waitForAccept()
+	{
+		accepted.wait();
+	}
+	
+	auto get_threadid() const
+	{
+		return th.get_id();
+	}
+
+};
+
+TEST(Socket_asyncReceiveSome)
+{
+	TestServer server;
+	Semaphore done;
+
+	Socket s(server.io);
+	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
+	char buf[6];
+	server.waitForAccept();
+
+	// Test receiving all the data in one call
+	CHECK_EQUAL(6, ::send(server.socks[0]->getHandle(), "Hello", 6, 0));
+	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, int received)
+	{
+		CHECK(std::this_thread::get_id() == server.get_threadid());
+		CHECK_EQUAL(sizeof(buf), received);
+		CHECK_EQUAL("Hello", buf);
+		done.notify();
+	});
+	done.wait();
+
+	// Test receiving all the data in two calls
+	memset(buf, 0, sizeof(buf));
+	CHECK_EQUAL(6, ::send(server.socks[0]->getHandle(), "Hello", 6, 0));
+	s.asyncReceiveSome(&buf[0], 2, -1, [&](const Error& ec, int received)
+	{
+		CHECK(std::this_thread::get_id() == server.get_threadid());
+		CHECK_EQUAL(2, received);
+		s.asyncReceiveSome(&buf[2], 4, -1, [&](const Error& ec, int received)
+		{
+			CHECK_EQUAL(4, received);
+			CHECK_EQUAL("Hello", buf);
+			done.notify();
+		});
+		done.notify();
+	});
+
+	done.wait();
+	done.wait();
+
+
 }
 
 // #TODO : Remove this
