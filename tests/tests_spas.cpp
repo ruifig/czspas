@@ -196,6 +196,27 @@ TEST(Socket_asyncConnect_timeout)
 	done.wait(); // To make sure the asyncConnect gets called
 }
 
+TEST(Socket_asyncConnect_cancel)
+{
+	Service io;
+
+	Socket s(io);
+	Semaphore done;
+	UnitTest::Timer timer;
+	timer.Start();
+	auto allowedThread = std::this_thread::get_id();
+	s.asyncConnect("127.0.0.1", SERVER_PORT, [&](const Error& ec)
+	{
+		CHECK_CZSPAS_EQUAL(Cancelled, ec);
+		CHECK(std::this_thread::get_id() == allowedThread);
+		io.stop();
+		done.notify();
+	}, -1);
+	s.cancel();
+	io.run();
+	done.wait(); // To make sure the asyncConnect gets called
+}
+
 TEST(Acceptor_asyncAccept_ok)
 {
 	Service io;
@@ -291,11 +312,16 @@ struct TestServer
 		{
 			ac->cancel();
 		});
+
+		io.post([&]
+		{
+			for (auto&& s : socks)
+				s->cancel();
+		});
 		pendingOps.wait();
 		io.stop();
 		if (th.joinable())
 			th.join();
-		socks.clear();
 	}
 
 	void doAccept(std::shared_ptr<Acceptor> ac)
@@ -365,10 +391,71 @@ TEST(Socket_asyncReceiveSome)
 
 	done.wait();
 	done.wait();
-
-
 }
 
+TEST(Socket_asyncReceiveSome_cancel)
+{
+	TestServer server;
+	Semaphore done;
+
+	Socket s(server.io);
+	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
+	char buf[6];
+	server.waitForAccept();
+	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, int received)
+	{
+		CHECK(std::this_thread::get_id() == server.get_threadid());
+		CHECK_EQUAL(0, received);
+		CHECK_CZSPAS_EQUAL(Cancelled, ec);
+		done.notify();
+	});
+	server.io.post([&s]
+	{
+		s.cancel();
+	});
+	done.wait();
+}
+
+TEST(Socket_asyncSendSome_asyncReceiveSome)
+{
+	TestServer server;
+	Semaphore done;
+
+	Socket s(server.io);
+	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
+	char buf[6];
+	server.waitForAccept();
+
+	// Test receiving all the data in one call
+	CHECK_EQUAL(6, ::send(server.socks[0]->getHandle(), "Hello", 6, 0));
+	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, int received)
+	{
+		CHECK(std::this_thread::get_id() == server.get_threadid());
+		CHECK_EQUAL(sizeof(buf), received);
+		CHECK_EQUAL("Hello", buf);
+		done.notify();
+	});
+	done.wait();
+
+	// Test receiving all the data in two calls
+	memset(buf, 0, sizeof(buf));
+	CHECK_EQUAL(6, ::send(server.socks[0]->getHandle(), "Hello", 6, 0));
+	s.asyncReceiveSome(&buf[0], 2, -1, [&](const Error& ec, int received)
+	{
+		CHECK(std::this_thread::get_id() == server.get_threadid());
+		CHECK_EQUAL(2, received);
+		s.asyncReceiveSome(&buf[2], 4, -1, [&](const Error& ec, int received)
+		{
+			CHECK_EQUAL(4, received);
+			CHECK_EQUAL("Hello", buf);
+			done.notify();
+		});
+		done.notify();
+	});
+
+	done.wait();
+	done.wait();
+}
 // #TODO : Remove this
 TEST(Dummy)
 {
