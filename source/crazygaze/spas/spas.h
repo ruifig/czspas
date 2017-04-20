@@ -1158,6 +1158,12 @@ public:
 		// #TODO : Implement this ???
 	}
 
+	void cancel()
+	{
+		if (m_connectHandler || m_recv.handler || m_send.handler)
+			m_owner.m_iodemux.cancelRequests(m_s);
+	}
+
 	const std::pair<std::string, int>& getLocalAddress() const
 	{
 		return m_localAddr;
@@ -1176,7 +1182,11 @@ protected:
 	}
 	void handleReceiveImpl(bool cancelled)
 	{
-		int len = ::recv(m_s, m_recv.buf, m_recv.len, 0);
+		// Move to a local variable and reset the member variable, since the user handlers will certainly make calls to receive more data,
+		auto info = std::move(m_recv);
+		m_recv.clear();
+
+		int len = ::recv(m_s, info.buf, info.len, 0);
 		if (len == CZSPAS_SOCKET_ERROR)
 		{
 			detail::ErrorWrapper err;
@@ -1187,7 +1197,7 @@ protected:
 			else
 			{
 				CZSPAS_ERROR(err.msg().c_str());
-				m_owner.queueReadyHandler([ec=err.getError(), h=std::move(m_recv.handler)]
+				m_owner.queueReadyHandler([ec=err.getError(), h=std::move(info.handler)]
 				{
 					h(ec, 0);
 				});
@@ -1195,13 +1205,12 @@ protected:
 		}
 		else
 		{
-			m_owner.queueReadyHandler([h = std::move(m_recv.handler), len]
+			m_owner.queueReadyHandler([h = std::move(info.handler), len]
 			{
 				h(Error(), len);
 			});
 		}
 		
-		m_recv.clear();
 	}
 
 	static void handleSend(bool cancelled, void* cookie)
@@ -1210,6 +1219,8 @@ protected:
 	}
 	void handleSendImpl(bool cancelled)
 	{
+		auto info = std::move(m_send);
+		m_send.clear();
 		// #TODO : Implement this
 	}
 
@@ -1220,18 +1231,22 @@ protected:
 	void handleConnectImpl(bool cancelled)
 	{
 		CZSPAS_ASSERT(m_connectHandler);
-		m_owner.queueReadyHandler([cancelled, h=std::move(m_connectHandler)]
+
+		// Move to a local variable and clear the member variable before calling the user handler
+		auto connectHandler = std::move(m_connectHandler);
+		m_connectHandler = nullptr;
+
+		m_owner.queueReadyHandler([cancelled, h=std::move(connectHandler)]
 		{
 			h(Error(cancelled ? Error::Code::Cancelled : Error::Code::Success));
 		});
-		m_connectHandler = nullptr;
 	}
 
 	friend Acceptor;
 	std::pair<std::string, int> m_localAddr;
 	std::pair<std::string, int> m_peerAddr;
 	ConnectHandler m_connectHandler; // used for asynchronous connects
-	struct
+	struct Receive
 	{
 		char* buf = nullptr;
 		int len = 0;
@@ -1243,7 +1258,7 @@ protected:
 			handler = nullptr;
 		}
 	} m_recv;
-	struct
+	struct Send
 	{
 		const char* buf = nullptr;
 		int len = 0;
@@ -1361,6 +1376,10 @@ protected:
 	{
 		CZSPAS_ASSERT(m_accept.handler);
 		CZSPAS_ASSERT(m_accept.sock && !m_accept.sock->isValid());
+
+		// Move to a local variable and clear the member variable before calling any user handlers
+		auto info = std::move(m_accept);
+		m_accept.clear();
 
 		if (cancelled)
 		{
