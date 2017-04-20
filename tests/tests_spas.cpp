@@ -161,7 +161,7 @@ TEST(Socket_asyncConnect_ok)
 	auto allowedThread = std::this_thread::get_id();
 	UnitTest::Timer timer;
 	timer.Start();
-	s.asyncConnect("127.0.0.1", SERVER_PORT, [&](const Error& ec)
+	s.asyncConnect("127.0.0.1", SERVER_PORT, -1, [&](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
 		CHECK(std::this_thread::get_id() == allowedThread);
@@ -184,14 +184,14 @@ TEST(Socket_asyncConnect_timeout)
 	timer.Start();
 	int timeoutMs = 200;
 	auto allowedThread = std::this_thread::get_id();
-	s.asyncConnect("127.0.0.1", SERVER_PORT, [&](const Error& ec)
+	s.asyncConnect("127.0.0.1", SERVER_PORT, timeoutMs, [&](const Error& ec)
 	{
 		CHECK_CZSPAS_EQUAL(Cancelled, ec);
 		CHECK_CLOSE(timeoutMs, timer.GetTimeInMs(), 100);
 		CHECK(std::this_thread::get_id() == allowedThread);
 		io.stop(); // stop the service, to finish this test
 		done.notify();
-	}, timeoutMs);
+	});
 	io.run();
 	done.wait(); // To make sure the asyncConnect gets called
 }
@@ -205,13 +205,13 @@ TEST(Socket_asyncConnect_cancel)
 	UnitTest::Timer timer;
 	timer.Start();
 	auto allowedThread = std::this_thread::get_id();
-	s.asyncConnect("127.0.0.1", SERVER_PORT, [&](const Error& ec)
+	s.asyncConnect("127.0.0.1", SERVER_PORT, -1, [&](const Error& ec)
 	{
 		CHECK_CZSPAS_EQUAL(Cancelled, ec);
 		CHECK(std::this_thread::get_id() == allowedThread);
 		io.stop();
 		done.notify();
-	}, -1);
+	});
 	s.cancel();
 	io.run();
 	done.wait(); // To make sure the asyncConnect gets called
@@ -231,21 +231,20 @@ TEST(Acceptor_asyncAccept_ok)
 	Acceptor ac(io);
 	auto ec = ac.listen(SERVER_PORT, 1);
 	CHECK_CZSPAS(ec);
-	ac.asyncAccept(serverSide, [&](const Error& ec)
+	ac.asyncAccept(serverSide, 1000, [&](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
 		CHECK(std::this_thread::get_id() == ioth.get_id());
 		done.notify();
-	}, 1000);
+	});
 
 	Socket s(io);
-
-	s.asyncConnect("127.0.0.1", SERVER_PORT, [&](const Error& ec)
+	s.asyncConnect("127.0.0.1", SERVER_PORT, 1000, [&](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
 		CHECK(std::this_thread::get_id() == ioth.get_id());
 		done.notify();
-	}, 1000);
+	});
 
 	done.wait();
 	done.wait();
@@ -267,12 +266,12 @@ TEST(Acceptor_asyncAccept_cancel)
 	Acceptor ac(io);
 	auto ec = ac.listen(SERVER_PORT, 1);
 	CHECK_CZSPAS(ec);
-	ac.asyncAccept(serverSide, [&](const Error& ec)
+	ac.asyncAccept(serverSide, 1000, [&](const Error& ec)
 	{
 		CHECK_CZSPAS_EQUAL(Cancelled, ec);
 		CHECK(std::this_thread::get_id() == ioth.get_id());
 		done.notify();
-	}, 1000);
+	});
 
 	io.post([&]
 	{
@@ -292,9 +291,11 @@ struct TestServer
 	Semaphore accepted;
 	ZeroSemaphore pendingOps;
 	std::vector<std::shared_ptr<Socket>> socks;
+	UnitTest::Timer timer;
 
 	TestServer()
 	{
+		timer.Start();
 		th = std::thread([this]
 		{
 			io.run();
@@ -328,7 +329,7 @@ struct TestServer
 	{
 		pendingOps.increment();
 		auto sock = std::make_shared<Socket>(io);
-		ac->asyncAccept(*sock, [this, ac, sock](const Error& ec)
+		ac->asyncAccept(*sock, -1, [this, ac, sock](const Error& ec)
 		{
 			pendingOps.decrement();
 			if (ec.code == Error::Code::Cancelled)
@@ -352,7 +353,7 @@ struct TestServer
 
 };
 
-TEST(Socket_asyncReceiveSome)
+TEST(Socket_asyncReceiveSome_ok)
 {
 	TestServer server;
 	Semaphore done;
@@ -416,7 +417,7 @@ TEST(Socket_asyncReceiveSome_cancel)
 	done.wait();
 }
 
-TEST(Socket_asyncSendSome_asyncReceiveSome)
+TEST(Socket_asyncReceiveSome_timeout)
 {
 	TestServer server;
 	Semaphore done;
@@ -425,37 +426,41 @@ TEST(Socket_asyncSendSome_asyncReceiveSome)
 	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
 	char buf[6];
 	server.waitForAccept();
+	auto start = server.timer.GetTimeInMs();
+	s.asyncReceiveSome(buf, sizeof(buf), 100, [&](const Error& ec, int received)
+	{
+		CHECK_CLOSE(100, server.timer.GetTimeInMs() - start, 100);
+		CHECK(std::this_thread::get_id() == server.get_threadid());
+		CHECK_EQUAL(0, received);
+		CHECK_CZSPAS_EQUAL(Cancelled, ec);
+		done.notify();
+	});
+	done.wait();
+}
 
-	// Test receiving all the data in one call
-	CHECK_EQUAL(6, ::send(server.socks[0]->getHandle(), "Hello", 6, 0));
+TEST(Socket_asyncReceiveSome_peerDisconnect)
+{
+	TestServer server;
+	Semaphore done;
+
+	Socket s(server.io);
+	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
+	char buf[6];
+	server.waitForAccept();
 	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, int received)
 	{
 		CHECK(std::this_thread::get_id() == server.get_threadid());
-		CHECK_EQUAL(sizeof(buf), received);
-		CHECK_EQUAL("Hello", buf);
+		CHECK_EQUAL(0, received);
+		CHECK_CZSPAS_EQUAL(Cancelled, ec);
 		done.notify();
 	});
-	done.wait();
-
-	// Test receiving all the data in two calls
-	memset(buf, 0, sizeof(buf));
-	CHECK_EQUAL(6, ::send(server.socks[0]->getHandle(), "Hello", 6, 0));
-	s.asyncReceiveSome(&buf[0], 2, -1, [&](const Error& ec, int received)
+	server.io.post([&]
 	{
-		CHECK(std::this_thread::get_id() == server.get_threadid());
-		CHECK_EQUAL(2, received);
-		s.asyncReceiveSome(&buf[2], 4, -1, [&](const Error& ec, int received)
-		{
-			CHECK_EQUAL(4, received);
-			CHECK_EQUAL("Hello", buf);
-			done.notify();
-		});
-		done.notify();
+		detail::utils::closeSocket(server.socks[0]->getHandle());
 	});
-
-	done.wait();
 	done.wait();
 }
+
 // #TODO : Remove this
 TEST(Dummy)
 {
