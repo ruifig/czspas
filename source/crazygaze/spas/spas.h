@@ -1245,6 +1245,12 @@ protected:
 	friend Acceptor;
 	std::pair<std::string, int> m_localAddr;
 	std::pair<std::string, int> m_peerAddr;
+
+	struct ConnectData
+	{
+
+	};
+
 	ConnectHandler m_connectHandler; // used for asynchronous connects
 	struct Receive
 	{
@@ -1343,6 +1349,7 @@ public:
 	void asyncAccept(Socket& sock, H&& h, int timeoutMs = -1)
 	{
 		CZSPAS_ASSERT(isValid());
+		CZSPAS_ASSERT(!m_accept.handler && "There is already a pending accept operation");
 		CZSPAS_ASSERT(!sock.isValid());
 
 		m_accept.handler = std::move(h);
@@ -1377,48 +1384,47 @@ protected:
 		CZSPAS_ASSERT(m_accept.handler);
 		CZSPAS_ASSERT(m_accept.sock && !m_accept.sock->isValid());
 
-		// Move to a local variable and clear the member variable before calling any user handlers
-		auto info = std::move(m_accept);
-		m_accept.clear();
-
 		if (cancelled)
 		{
-			m_owner.queueReadyHandler([h=std::move(m_accept.handler)]
+			m_owner.queueReadyHandler([this]
 			{
-				h(Error(Error::Code::Cancelled));
+				auto data = m_accept.moveAndClear();
+				data.handler(Error(Error::Code::Cancelled));
 			});
 		}
 		else
 		{
 			sockaddr_in addr;
 			socklen_t size = sizeof(addr);
-			m_accept.sock->m_s = ::accept(m_s, (struct sockaddr*)&addr, &size);
-			m_owner.queueReadyHandler([h = std::move(m_accept.handler), sock = m_accept.sock]
+			SocketHandle sock = ::accept(m_s, (struct sockaddr*)&addr, &size);
+			m_owner.queueReadyHandler([this, sock]
 			{
-				if (sock->m_s == CZSPAS_INVALID_SOCKET)
+				auto data = m_accept.moveAndClear();
+				data.sock->m_s = sock;
+				if (data.sock->m_s == CZSPAS_INVALID_SOCKET)
 				{
-					h(detail::ErrorWrapper().getError());
+					data.handler(detail::ErrorWrapper().getError());
 				}
 				else
 				{
-					detail::utils::setBlocking(sock->m_s, false);
-					h(Error());
+					detail::utils::setBlocking(data.sock->m_s, false);
+					data.handler(Error());
 				}
 			});
 		}
-
-		m_accept.clear();
 	}
 
 	std::pair<std::string, int> m_localAddr;
-	struct
+	struct AcceptData
 	{
 		AcceptHandler handler = nullptr;
 		Socket* sock = nullptr;
-		void clear()
+		AcceptData moveAndClear()
 		{
+			AcceptData res = std::move(*this);
 			handler = nullptr;
 			sock = nullptr;
+			return res;
 		}
 	} m_accept;
 };
