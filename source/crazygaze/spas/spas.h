@@ -65,6 +65,7 @@
 #include <stdio.h>
 #include <cstdarg>
 #include <string.h>
+#include <algorithm>
 
 // Windows defines a min/max macro, interferes with STL
 #ifdef max
@@ -266,7 +267,7 @@ namespace detail
 
 	// #TODO : Are these needed?
 	template<typename H>
-	using IsTransferHandler = std::enable_if_t<check_signature<H, void(const Error&, int)>::value>;
+	using IsTransferHandler = std::enable_if_t<check_signature<H, void(const Error&, size_t)>::value>;
 	template<typename H>
 	using IsSimpleHandler = std::enable_if_t<check_signature<H, void()>::value>;
 	template<typename H>
@@ -1150,7 +1151,7 @@ public:
 	}
 
 	template< typename H, typename = detail::IsTransferHandler<H> >
-	void asyncReceiveSome(char* buf, int len, int timeoutMs, H&& h)
+	void asyncReceiveSome(char* buf, size_t len, int timeoutMs, H&& h)
 	{
 		CZSPAS_ASSERT(isValid());
 		CZSPAS_ASSERT(!m_recv.handler); // There can be only one receive operation in flight
@@ -1160,7 +1161,7 @@ public:
 		m_owner.m_iodemux.registerReceive(m_s, &handleReceive, this, timeoutMs);
 	}
 	template< typename H, typename = detail::IsTransferHandler<H> >
-	void asyncSendSome(const char* buf, int len, int timeoutMs, H&& h)
+	void asyncSendSome(const char* buf, size_t len, int timeoutMs, H&& h)
 	{
 		CZSPAS_ASSERT(!m_send.handler); // There can be only one send operation in flight
 		m_send.buf = buf;
@@ -1200,7 +1201,9 @@ protected:
 	{
 		CZSPAS_ASSERT(m_recv.handler);
 
-		int len = ::recv(m_s, m_recv.buf, m_recv.len, 0);
+		// The interface allows size_t, but the implementation only allows int
+		int todo = m_recv.len > INT_MAX ? INT_MAX : static_cast<int>(m_recv.len);
+		int len = ::recv(m_s, m_recv.buf, todo, 0);
 		if (len == CZSPAS_SOCKET_ERROR)
 		{
 			detail::ErrorWrapper err;
@@ -1244,7 +1247,8 @@ protected:
 	{
 		CZSPAS_ASSERT(m_send.handler);
 
-		int len = ::send(m_s, m_send.buf, m_send.len, 0);
+		int todo = m_send.len > INT_MAX ? INT_MAX : static_cast<int>(m_send.len);
+		int len = ::send(m_s, m_send.buf, todo, 0);
 		if (len = CZSPAS_SOCKET_ERROR)
 		{
 			detail::ErrorWrapper err;
@@ -1312,7 +1316,7 @@ protected:
 	struct ReceiveData
 	{
 		char* buf = nullptr;
-		int len = 0;
+		size_t len = 0;
 		TransferHandler handler;
 		ReceiveData moveAndClear()
 		{
@@ -1327,7 +1331,7 @@ protected:
 	struct SendData
 	{
 		const char* buf = nullptr;
-		int len = 0;
+		size_t len = 0;
 		TransferHandler handler;
 		SendData moveAndClear()
 		{

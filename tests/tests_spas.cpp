@@ -365,10 +365,10 @@ TEST(Socket_asyncReceiveSome_ok)
 
 	// Test receiving all the data in one call
 	CHECK_EQUAL(6, ::send(server.socks[0]->getHandle(), "Hello", 6, 0));
-	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, int received)
+	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, int transfered)
 	{
 		CHECK(std::this_thread::get_id() == server.get_threadid());
-		CHECK_EQUAL(sizeof(buf), received);
+		CHECK_EQUAL(sizeof(buf), transfered);
 		CHECK_EQUAL("Hello", buf);
 		done.notify();
 	});
@@ -377,13 +377,13 @@ TEST(Socket_asyncReceiveSome_ok)
 	// Test receiving all the data in two calls
 	memset(buf, 0, sizeof(buf));
 	CHECK_EQUAL(6, ::send(server.socks[0]->getHandle(), "Hello", 6, 0));
-	s.asyncReceiveSome(&buf[0], 2, -1, [&](const Error& ec, int received)
+	s.asyncReceiveSome(&buf[0], 2, -1, [&](const Error& ec, int transfered)
 	{
 		CHECK(std::this_thread::get_id() == server.get_threadid());
-		CHECK_EQUAL(2, received);
-		s.asyncReceiveSome(&buf[2], 4, -1, [&](const Error& ec, int received)
+		CHECK_EQUAL(2, transfered);
+		s.asyncReceiveSome(&buf[2], 4, -1, [&](const Error& ec, int transfered)
 		{
-			CHECK_EQUAL(4, received);
+			CHECK_EQUAL(4, transfered);
 			CHECK_EQUAL("Hello", buf);
 			done.notify();
 		});
@@ -403,10 +403,10 @@ TEST(Socket_asyncReceiveSome_cancel)
 	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
 	char buf[6];
 	server.waitForAccept();
-	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, int received)
+	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, int transfered)
 	{
 		CHECK(std::this_thread::get_id() == server.get_threadid());
-		CHECK_EQUAL(0, received);
+		CHECK_EQUAL(0, transfered);
 		CHECK_CZSPAS_EQUAL(Cancelled, ec);
 		done.notify();
 	});
@@ -427,11 +427,11 @@ TEST(Socket_asyncReceiveSome_timeout)
 	char buf[6];
 	server.waitForAccept();
 	auto start = server.timer.GetTimeInMs();
-	s.asyncReceiveSome(buf, sizeof(buf), 100, [&](const Error& ec, int received)
+	s.asyncReceiveSome(buf, sizeof(buf), 100, [&](const Error& ec, int transfered)
 	{
 		CHECK_CLOSE(100, server.timer.GetTimeInMs() - start, 100);
 		CHECK(std::this_thread::get_id() == server.get_threadid());
-		CHECK_EQUAL(0, received);
+		CHECK_EQUAL(0, transfered);
 		CHECK_CZSPAS_EQUAL(Cancelled, ec);
 		done.notify();
 	});
@@ -447,10 +447,10 @@ TEST(Socket_asyncReceiveSome_peerDisconnect)
 	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
 	char buf[6];
 	server.waitForAccept();
-	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, int received)
+	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, int transfered)
 	{
 		CHECK(std::this_thread::get_id() == server.get_threadid());
-		CHECK_EQUAL(0, received);
+		CHECK_EQUAL(0, transfered);
 		CHECK_CZSPAS_EQUAL(Cancelled, ec);
 		done.notify();
 	});
@@ -471,17 +471,17 @@ TEST(Socket_asyncSendSome_ok)
 	char buf[6];
 	server.waitForAccept();
 
-	constexpr auto bigbufsize = (uint64_t)(1024) * 1024 * 1024 * 2 - 1;
+	constexpr auto bigbufsize = (uint64_t)(1024) * 1024 * 1024 * 2;
 	auto bigbuf = std::unique_ptr<char[]>(new char[bigbufsize]);
 	server.socks[0]->asyncSendSome(bigbuf.get(), bigbufsize, -1, [&](const Error& ec, int transfered)
 	{
 		CHECK_EQUAL(bigbufsize, transfered);
 	});
 
-	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, int received)
+	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, int transfered)
 	{
 		CHECK(std::this_thread::get_id() == server.get_threadid());
-		CHECK_EQUAL(sizeof(buf), received);
+		CHECK_EQUAL(sizeof(buf), transfered);
 		CHECK_EQUAL("Hello", buf);
 		done.notify();
 	});
@@ -489,13 +489,13 @@ TEST(Socket_asyncSendSome_ok)
 
 	memset(buf, 0, sizeof(buf));
 	CHECK_EQUAL(6, ::send(server.socks[0]->getHandle(), "Hello", 6, 0));
-	s.asyncReceiveSome(&buf[0], 2, -1, [&](const Error& ec, int received)
+	s.asyncReceiveSome(&buf[0], 2, -1, [&](const Error& ec, int transfered)
 	{
 		CHECK(std::this_thread::get_id() == server.get_threadid());
-		CHECK_EQUAL(2, received);
-		s.asyncReceiveSome(&buf[2], 4, -1, [&](const Error& ec, int received)
+		CHECK_EQUAL(2, transfered);
+		s.asyncReceiveSome(&buf[2], 4, -1, [&](const Error& ec, int transfered)
 		{
-			CHECK_EQUAL(4, received);
+			CHECK_EQUAL(4, transfered);
 			CHECK_EQUAL("Hello", buf);
 			done.notify();
 		});
