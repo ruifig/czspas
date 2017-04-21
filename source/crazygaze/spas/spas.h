@@ -190,7 +190,7 @@ class Acceptor;
 class Socket;
 class Service;
 using ConnectHandler = std::function<void(const Error&)>;
-using TransferHandler = std::function<void(const Error& ec, int bytesTransfered)>;
+using TransferHandler = std::function<void(const Error& ec, size_t transfered)>;
 using AcceptHandler = std::function<void(const Error& ec)>;
 
 #if _WIN32
@@ -1249,7 +1249,7 @@ protected:
 
 		int todo = m_send.len > INT_MAX ? INT_MAX : static_cast<int>(m_send.len);
 		int len = ::send(m_s, m_send.buf, todo, 0);
-		if (len = CZSPAS_SOCKET_ERROR)
+		if (len == CZSPAS_SOCKET_ERROR)
 		{
 			detail::ErrorWrapper err;
 			if (cancelled)
