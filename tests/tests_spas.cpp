@@ -365,7 +365,7 @@ TEST(Socket_asyncReceiveSome_ok)
 
 	// Test receiving all the data in one call
 	CHECK_EQUAL(6, ::send(server.socks[0]->getHandle(), "Hello", 6, 0));
-	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, int transfered)
+	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, size_t transfered)
 	{
 		CHECK(std::this_thread::get_id() == server.get_threadid());
 		CHECK_EQUAL(sizeof(buf), transfered);
@@ -377,11 +377,11 @@ TEST(Socket_asyncReceiveSome_ok)
 	// Test receiving all the data in two calls
 	memset(buf, 0, sizeof(buf));
 	CHECK_EQUAL(6, ::send(server.socks[0]->getHandle(), "Hello", 6, 0));
-	s.asyncReceiveSome(&buf[0], 2, -1, [&](const Error& ec, int transfered)
+	s.asyncReceiveSome(&buf[0], 2, -1, [&](const Error& ec, size_t transfered)
 	{
 		CHECK(std::this_thread::get_id() == server.get_threadid());
 		CHECK_EQUAL(2, transfered);
-		s.asyncReceiveSome(&buf[2], 4, -1, [&](const Error& ec, int transfered)
+		s.asyncReceiveSome(&buf[2], 4, -1, [&](const Error& ec, size_t transfered)
 		{
 			CHECK_EQUAL(4, transfered);
 			CHECK_EQUAL("Hello", buf);
@@ -403,7 +403,7 @@ TEST(Socket_asyncReceiveSome_cancel)
 	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
 	char buf[6];
 	server.waitForAccept();
-	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, int transfered)
+	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, size_t transfered)
 	{
 		CHECK(std::this_thread::get_id() == server.get_threadid());
 		CHECK_EQUAL(0, transfered);
@@ -427,7 +427,7 @@ TEST(Socket_asyncReceiveSome_timeout)
 	char buf[6];
 	server.waitForAccept();
 	auto start = server.timer.GetTimeInMs();
-	s.asyncReceiveSome(buf, sizeof(buf), 100, [&](const Error& ec, int transfered)
+	s.asyncReceiveSome(buf, sizeof(buf), 100, [&](const Error& ec, size_t transfered)
 	{
 		CHECK_CLOSE(100, server.timer.GetTimeInMs() - start, 100);
 		CHECK(std::this_thread::get_id() == server.get_threadid());
@@ -447,7 +447,7 @@ TEST(Socket_asyncReceiveSome_peerDisconnect)
 	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
 	char buf[6];
 	server.waitForAccept();
-	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, int transfered)
+	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, size_t transfered)
 	{
 		CHECK(std::this_thread::get_id() == server.get_threadid());
 		CHECK_EQUAL(0, transfered);
@@ -471,14 +471,15 @@ TEST(Socket_asyncSendSome_ok)
 	char buf[6];
 	server.waitForAccept();
 
-	constexpr auto bigbufsize = (uint64_t)(1024) * 1024 * 1024 * 2;
-	auto bigbuf = std::unique_ptr<char[]>(new char[bigbufsize]);
-	server.socks[0]->asyncSendSome(bigbuf.get(), bigbufsize, -1, [&](const Error& ec, int transfered)
+	// Test sending all the data with 1 call
+	server.socks[0]->asyncSendSome("Hello", 6, -1, [&](const Error& ec, size_t transfered)
 	{
-		CHECK_EQUAL(bigbufsize, transfered);
+		CHECK(std::this_thread::get_id() == server.get_threadid());
+		CHECK_CZSPAS(ec);
+		CHECK_EQUAL(6, transfered);
+		done.notify();
 	});
-
-	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, int transfered)
+	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, size_t transfered)
 	{
 		CHECK(std::this_thread::get_id() == server.get_threadid());
 		CHECK_EQUAL(sizeof(buf), transfered);
@@ -486,22 +487,66 @@ TEST(Socket_asyncSendSome_ok)
 		done.notify();
 	});
 	done.wait();
+	done.wait();
 
-	memset(buf, 0, sizeof(buf));
-	CHECK_EQUAL(6, ::send(server.socks[0]->getHandle(), "Hello", 6, 0));
-	s.asyncReceiveSome(&buf[0], 2, -1, [&](const Error& ec, int transfered)
+	// Test send the data in two calls
+	server.socks[0]->asyncSendSome("He", 2, -1, [&](const Error& ec, size_t transfered)
 	{
-		CHECK(std::this_thread::get_id() == server.get_threadid());
+		CHECK_CZSPAS(ec);
 		CHECK_EQUAL(2, transfered);
-		s.asyncReceiveSome(&buf[2], 4, -1, [&](const Error& ec, int transfered)
+		done.notify();
+		server.socks[0]->asyncSendSome("llo", 4, -1, [&](const Error& ec, size_t transfered)
 		{
+			CHECK_CZSPAS(ec);
 			CHECK_EQUAL(4, transfered);
-			CHECK_EQUAL("Hello", buf);
 			done.notify();
 		});
+	});
+	done.wait();
+	done.wait();
+
+	memset(buf, 0, sizeof(buf));
+	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, size_t transfered)
+	{
+		CHECK(std::this_thread::get_id() == server.get_threadid());
+		CHECK_EQUAL(sizeof(buf), transfered);
+		CHECK_EQUAL("Hello", buf);
 		done.notify();
 	});
+	done.wait();
+}
 
+TEST(Socket_asyncSendSome_timeout)
+{
+	TestServer server;
+	Semaphore done;
+
+	Socket s(server.io);
+	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
+	char buf[6];
+	server.waitForAccept();
+
+	constexpr size_t bigbufsize = size_t(INT_MAX)+1;
+	auto bigbuf = std::unique_ptr<char[]>(new char[bigbufsize]);
+	// Test sending all the data with 1 call
+	server.socks[0]->asyncSendSome(bigbuf.get(), bigbufsize, -1, [&](const Error& ec, size_t transfered)
+	{
+		CHECK(std::this_thread::get_id() == server.get_threadid());
+		CHECK_CZSPAS(ec);
+		CHECK_EQUAL(bigbufsize - 1, transfered);
+		done.notify();
+	});
+	UnitTest::TimeHelpers::SleepMs(500);
+	//::shutdown(server.socks[0]->getHandle(), SD_BOTH);
+	done.wait();
+
+	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, size_t transfered)
+	{
+		CHECK(std::this_thread::get_id() == server.get_threadid());
+		CHECK_EQUAL(sizeof(buf), transfered);
+		CHECK_EQUAL("Hello", buf);
+		done.notify();
+	});
 	done.wait();
 	done.wait();
 }
