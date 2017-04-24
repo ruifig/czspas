@@ -60,12 +60,12 @@ TEST(Acceptor_accept_timeout)
 	timer.Start();
 	ec = ac.accept(s, 50);
 	CHECK_CLOSE(50, timer.GetTimeInMs(), 20);
-	CHECK_CZSPAS_EQUAL(Cancelled, ec);
+	CHECK_CZSPAS_EQUAL(Timeout, ec);
 
 	timer.Start();
 	ec = ac.accept(s, 1050);
 	CHECK_CLOSE(1050, timer.GetTimeInMs(), 20);
-	CHECK_CZSPAS_EQUAL(Cancelled, ec);
+	CHECK_CZSPAS_EQUAL(Timeout, ec);
 }
 
 TEST(Acceptor_accept_break)
@@ -186,7 +186,7 @@ TEST(Socket_asyncConnect_timeout)
 	auto allowedThread = std::this_thread::get_id();
 	s.asyncConnect("127.0.0.1", SERVER_PORT, timeoutMs, [&](const Error& ec)
 	{
-		CHECK_CZSPAS_EQUAL(Cancelled, ec);
+		CHECK_CZSPAS_EQUAL(Timeout, ec);
 		CHECK_CLOSE(timeoutMs, timer.GetTimeInMs(), 100);
 		CHECK(std::this_thread::get_id() == allowedThread);
 		io.stop(); // stop the service, to finish this test
@@ -432,7 +432,7 @@ TEST(Socket_asyncReceiveSome_timeout)
 		CHECK_CLOSE(100, server.timer.GetTimeInMs() - start, 100);
 		CHECK(std::this_thread::get_id() == server.get_threadid());
 		CHECK_EQUAL(0, transfered);
-		CHECK_CZSPAS_EQUAL(Cancelled, ec);
+		CHECK_CZSPAS_EQUAL(Timeout, ec);
 		done.notify();
 	});
 	done.wait();
@@ -451,7 +451,7 @@ TEST(Socket_asyncReceiveSome_peerDisconnect)
 	{
 		CHECK(std::this_thread::get_id() == server.get_threadid());
 		CHECK_EQUAL(0, transfered);
-		CHECK_CZSPAS_EQUAL(Cancelled, ec);
+		CHECK_CZSPAS_EQUAL(ConnectionClosed, ec);
 		done.notify();
 	});
 	server.io.post([&]
@@ -516,6 +516,57 @@ TEST(Socket_asyncSendSome_ok)
 	done.wait();
 }
 
+#if 0
+TEST(Dummy)
+{
+	{
+		TestServer server;
+		Semaphore done;
+
+		Socket s(server.io);
+		CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
+		char buf[6];
+		server.waitForAccept();
+
+		s.asyncReceiveSome(buf, sizeof(buf), 10000, [&](const Error& ec, size_t transfered)
+		{
+			CHECK(std::this_thread::get_id() == server.get_threadid());
+			CHECK_EQUAL(sizeof(buf), transfered);
+			CHECK_EQUAL("Hello", buf);
+			done.notify();
+		});
+		UnitTest::TimeHelpers::SleepMs(1000);
+		//::shutdown(s.getHandle(), SD_BOTH);
+		::closesocket(s.getHandle());
+		done.wait();
+
+		server.socks[0]->asyncReceiveSome(buf, sizeof(buf), 10000, [&](const Error& ec, size_t transfered)
+		{
+			CHECK(std::this_thread::get_id() == server.get_threadid());
+			CHECK_EQUAL(sizeof(buf), transfered);
+			CHECK_EQUAL("Hello", buf);
+			done.notify();
+		});
+		done.wait();
+		UnitTest::TimeHelpers::SleepMs(1000);
+
+		server.socks[0]->asyncReceiveSome(buf, sizeof(buf), 10000, [&](const Error& ec, size_t transfered)
+		{
+			CHECK(std::this_thread::get_id() == server.get_threadid());
+			CHECK_EQUAL(sizeof(buf), transfered);
+			CHECK_EQUAL("Hello", buf);
+			done.notify();
+		});
+
+		UnitTest::TimeHelpers::SleepMs(1000);
+		//::shutdown(s.getHandle(), SD_BOTH);
+		//::shutdown(server.socks[0]->getHandle(), SD_BOTH);
+		done.wait();
+	}
+}
+#endif
+
+#if 0
 TEST(Socket_asyncSendSome_timeout)
 {
 	TestServer server;
@@ -526,9 +577,24 @@ TEST(Socket_asyncSendSome_timeout)
 	char buf[6];
 	server.waitForAccept();
 
+	s.asyncReceiveSome(buf, sizeof(buf), 5000, [&](const Error& ec, size_t transfered)
+	{
+		CHECK(std::this_thread::get_id() == server.get_threadid());
+		CHECK_EQUAL(sizeof(buf), transfered);
+		CHECK_EQUAL("Hello", buf);
+		done.notify();
+	});
+
 	constexpr size_t bigbufsize = size_t(INT_MAX)+1;
 	auto bigbuf = std::unique_ptr<char[]>(new char[bigbufsize]);
+
 	// Test sending all the data with 1 call
+	UnitTest::TimeHelpers::SleepMs(1000);
+	//::closesocket(server.socks[0]->getHandle());
+	::shutdown(s.getHandle(), SD_BOTH);
+	::closesocket(s.getHandle());
+	//::shutdown(server.socks[0]->getHandle(), SD_BOTH);
+	done.wait();
 	server.socks[0]->asyncSendSome(bigbuf.get(), bigbufsize, -1, [&](const Error& ec, size_t transfered)
 	{
 		CHECK(std::this_thread::get_id() == server.get_threadid());
@@ -536,10 +602,12 @@ TEST(Socket_asyncSendSome_timeout)
 		CHECK_EQUAL(bigbufsize - 1, transfered);
 		done.notify();
 	});
-	UnitTest::TimeHelpers::SleepMs(500);
-	//::shutdown(server.socks[0]->getHandle(), SD_BOTH);
+	UnitTest::TimeHelpers::SleepMs(200);
+	//::shutdown(s.getHandle(), SD_SEND);
+	//::shutdown(server.socks[0]->getHandle(), SD_RECEIVE);
 	done.wait();
 
+	UnitTest::TimeHelpers::SleepMs(200);
 	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, size_t transfered)
 	{
 		CHECK(std::this_thread::get_id() == server.get_threadid());
@@ -550,16 +618,6 @@ TEST(Socket_asyncSendSome_timeout)
 	done.wait();
 	done.wait();
 }
-
-// #TODO : Remove this
-TEST(Dummy)
-{
-	{
-		detail::IODemux demux;
-		UnitTest::TimeHelpers::SleepMs(1000);
-	}
-	printf("\n");
-}
-
+#endif
 
 }
