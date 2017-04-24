@@ -516,6 +516,67 @@ TEST(Socket_asyncSendSome_ok)
 	done.wait();
 }
 
+TEST(Socket_asyncSendSome_cancel)
+{
+	TestServer server;
+	Semaphore done;
+
+	Socket s(server.io);
+	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
+	server.waitForAccept();
+
+	constexpr size_t bigbufsize = size_t(INT_MAX);
+	auto bigbuf = std::unique_ptr<char[]>(new char[bigbufsize]);
+
+	// NOTE: By sending a really big buffer, the IODemux thread will be busy on the ::send, so our Service thread
+	// has time to do the cancel
+	std::atomic<bool> cancelDone(false);
+	s.asyncSendSome(bigbuf.get(), bigbufsize, -1, [&](const Error& ec, size_t transfered)
+	{
+		CHECK(cancelDone.load() == true); // make sure the cancel ran before this, otherwise the test doesn't make sense
+		CHECK_CZSPAS_EQUAL(Cancelled, ec);
+		done.notify();
+	});
+	server.io.post([&]
+	{
+		cancelDone = true;
+		s.cancel();
+	});
+
+	done.wait();
+}
+
+//
+// This test checks that a timeout on a send is actually very unlikely to happen.
+// This is because both the timeout calculations and the ::send (and ::recv) calls are done on the IODemux threads,
+// and so, once the call to ::send starts, the operation will not timeout even if it takes much longer to complete
+// than the specified timeout
+TEST(Socket_asyncSendSome_timeout)
+{
+	TestServer server;
+	Semaphore done;
+
+	Socket s(server.io);
+	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
+	server.waitForAccept();
+
+	constexpr size_t bigbufsize = size_t(INT_MAX)/4;
+	auto bigbuf = std::unique_ptr<char[]>(new char[bigbufsize]);
+
+	std::atomic<bool> cancelDone(false);
+	auto startTime = server.timer.GetTimeInMs();
+	constexpr int timeoutMs = 1;
+	s.asyncSendSome(bigbuf.get(), bigbufsize, timeoutMs, [&](const Error& ec, size_t transfered)
+	{
+		CHECK_CZSPAS_EQUAL(Success, ec);
+		// Make sure the operation took longer than the timeout
+		auto delta = server.timer.GetTimeInMs() - startTime;
+		CHECK(delta > timeoutMs);
+		done.notify();
+	});
+	done.wait();
+}
+
 #if 0
 TEST(Dummy)
 {
