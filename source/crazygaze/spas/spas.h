@@ -135,12 +135,14 @@ struct DefaultLog
 
 struct Error
 {
+	// #TODO : Revise if all error codes are being used (and used in the right places)
 	enum class Code
 	{
 		Success,
 		Cancelled,
+		Timeout,
 		ConnectionClosed,
-		ConnectFailed,
+		InvalidSocket,
 		Other
 	};
 
@@ -162,8 +164,9 @@ struct Error
 		{
 			case Code::Success: return "Success";
 			case Code::Cancelled: return "Cancelled";
+			case Code::Timeout: return "Timeout";
 			case Code::ConnectionClosed: return "ConnectionClosed";
-			case Code::ConnectFailed: return "ConnectFailed";
+			case Code::InvalidSocket: return "InvalidSocket";
 			default: return "Unknown";
 		}
 	}
@@ -540,7 +543,7 @@ namespace detail
 				return std::make_pair(detail::ErrorWrapper().getError(), CZSPAS_INVALID_SOCKET);
 			}
 			else if (res == 0) {
-				return std::make_pair(Error(Error::Code::Cancelled), CZSPAS_INVALID_SOCKET);
+				return std::make_pair(Error(Error::Code::Timeout), CZSPAS_INVALID_SOCKET);
 			}
 
 			CZSPAS_ASSERT(res == 1);
@@ -633,16 +636,7 @@ namespace detail
 	class IODemux
 	{
 	public:
-		using EventHandler = void(*)(bool cancelled, void* cookie);
-
-		enum class Reason
-		{
-			Ok,
-			Cancel,
-			Timeout,
-			Disconnect,
-			Error
-		};
+		using EventHandler = void(*)(Error::Code, void* cookie);
 
 		IODemux()
 		{
@@ -832,13 +826,13 @@ namespace detail
 			{
 				// We handle 1 single event of this type, so disable the request for this type of event
 				f.first->events &= ~flag; 
-				f.second->evtHandler(false, f.second->cookie);
+				f.second->evtHandler(Error::Code::Success, f.second->cookie);
 				f.second->evtHandler = nullptr;
 				f.second->cookie = nullptr;
 			}
 		}
 
-		void cancelEvent(int idx, short flag, Reason reason)
+		void cancelEvent(int idx, short flag, Error::Code code)
 		{
 			// #TODO : Pass the reason to the handler somehow
 
@@ -847,7 +841,7 @@ namespace detail
 			{
 				// We handle 1 single event of this type, so disable the request for this type of event
 				f.first->events &= ~flag; 
-				f.second->evtHandler(true, f.second->cookie);
+				f.second->evtHandler(code, f.second->cookie);
 				f.second->evtHandler = nullptr;
 				f.second->cookie = nullptr;
 			}
@@ -862,12 +856,12 @@ namespace detail
 				auto f = m_sockets.getAt(idx, POLLRDNORM);
 				if (f.second->evtHandler && now > f.second->timeoutPoint)
 				{
-					cancelEvent(idx, POLLRDNORM, Reason::Timeout);
+					cancelEvent(idx, POLLRDNORM, Error::Code::Timeout);
 				}
 				f = m_sockets.getAt(idx, POLLWRNORM);
 				if (f.second->evtHandler && now > f.second->timeoutPoint)
 				{
-					cancelEvent(idx, POLLWRNORM, Reason::Timeout);
+					cancelEvent(idx, POLLWRNORM, Error::Code::Timeout);
 				}
 
 				// If we are not interested in any more request from this handler, remove it
@@ -924,8 +918,8 @@ namespace detail
 					auto&& f = m_sockets.fds[idx];
 					if (f.revents & (POLLERR | POLLHUP | POLLNVAL))
 					{
-						cancelEvent(idx, POLLRDNORM, (f.revents & POLLHUP) ? Reason::Disconnect : Reason::Error);
-						cancelEvent(idx, POLLWRNORM, (f.revents & POLLHUP) ? Reason::Disconnect : Reason::Error);
+						cancelEvent(idx, POLLRDNORM, (f.revents & POLLHUP) ? Error::Code::ConnectionClosed : Error::Code::InvalidSocket);
+						cancelEvent(idx, POLLWRNORM, (f.revents & POLLHUP) ? Error::Code::ConnectionClosed : Error::Code::InvalidSocket);
 					}
 					else
 					{
@@ -963,8 +957,8 @@ namespace detail
 						{
 							if (m_sockets.fds[idx].fd == op.fd)
 							{
-								cancelEvent(idx, POLLRDNORM, Reason::Cancel);
-								cancelEvent(idx, POLLWRNORM, Reason::Cancel);
+								cancelEvent(idx, POLLRDNORM, Error::Code::Cancelled);
+								cancelEvent(idx, POLLWRNORM, Error::Code::Cancelled);
 								m_sockets.remove(idx);
 							}
 						}
@@ -1095,9 +1089,10 @@ public:
 		CZSPAS_ASSERT(!isValid());
 		CZSPAS_INFO("Socket %p: asyncConnect(%s,%d, H, %d)", this, ip, port, timeoutMs);
 
+		m_connect.cancelled = false;
 		m_connect.handler = std::move(h);
-		m_s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-		if (m_s == CZSPAS_INVALID_SOCKET)
+		m_connect.sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (m_connect.sock == CZSPAS_INVALID_SOCKET)
 		{
 			auto ec = detail::ErrorWrapper().getError();
 			CZSPAS_ERROR("Socket %p: %s", this, ec.msg());
@@ -1110,9 +1105,9 @@ public:
 		}
 
 		// Enable any loopback optimizations (in case this socket is used in loopback)
-		detail::utils::optimizeLoopback(m_s);
+		detail::utils::optimizeLoopback(m_connect.sock);
 		// Set to non-blocking, so we can do an asynchronous connect
-		detail::utils::setBlocking(m_s, false);
+		detail::utils::setBlocking(m_connect.sock, false);
 
 		sockaddr_in addr;
 		memset(&addr, 0, sizeof(addr));
@@ -1120,17 +1115,19 @@ public:
 		addr.sin_port = htons(port);
 		inet_pton(AF_INET, ip, &(addr.sin_addr));
 
-		if (::connect(m_s, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR)
+		if (::connect(m_connect.sock, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR)
 		{
 			detail::ErrorWrapper err;
 			if (err.isBlockError())
 			{
 				// Normal behavior, so setup the connect detection with select
 				// A asynchronous connect is done when we receive a write event on the socket
-				m_owner.m_iodemux.registerSend(m_s, &handleConnect, this, timeoutMs);
+				m_owner.m_iodemux.registerSend(m_connect.sock, &handleConnect, this, timeoutMs);
 			}
 			else
 			{
+				detail::utils::closeSocket(m_connect.sock);
+				m_connect.sock = CZSPAS_INVALID_SOCKET;
 				// #TODO : Do a unit test to cover this code path
 				m_owner.queueReadyHandler([this, ec = err.getError()]
 				{
@@ -1145,6 +1142,7 @@ public:
 			m_owner.queueReadyHandler([this]
 			{
 				auto data = m_connect.moveAndClear();
+				m_s = data.sock;
 				data.handler(Error());
 			});
 		}
@@ -1155,6 +1153,7 @@ public:
 	{
 		CZSPAS_ASSERT(isValid());
 		CZSPAS_ASSERT(!m_recv.handler); // There can be only one receive operation in flight
+		m_recv.cancelled = false;
 		m_recv.buf = buf;
 		m_recv.len = len;
 		m_recv.handler = std::move(h);
@@ -1164,6 +1163,7 @@ public:
 	void asyncSendSome(const char* buf, size_t len, int timeoutMs, H&& h)
 	{
 		CZSPAS_ASSERT(!m_send.handler); // There can be only one send operation in flight
+		m_send.cancelled = false;
 		m_send.buf = buf;
 		m_send.len = len;
 		m_send.handler = std::move(h);
@@ -1178,7 +1178,12 @@ public:
 	void cancel()
 	{
 		if (m_connect.handler || m_recv.handler || m_send.handler)
-			m_owner.m_iodemux.cancelRequests(m_s);
+		{
+			m_connect.cancelled = true;
+			m_recv.cancelled = true;
+			m_send.cancelled = true;
+			m_owner.m_iodemux.cancelRequests(m_connect.sock == CZSPAS_INVALID_SOCKET ? m_s : m_connect.sock);
+		}
 	}
 
 	const std::pair<std::string, int>& getLocalAddress() const
@@ -1193,108 +1198,109 @@ public:
 
 protected:
 
-	static void handleReceive(bool cancelled, void* cookie)
+	static void handleConnect(Error::Code code, void* cookie)
 	{
-		reinterpret_cast<Socket*>(cookie)->handleReceiveImpl(cancelled);
+		reinterpret_cast<Socket*>(cookie)->handleConnectImpl(code);
 	}
-	void handleReceiveImpl(bool cancelled)
+	void handleConnectImpl(Error::Code code)
+	{
+		CZSPAS_ASSERT(m_connect.handler);
+		m_owner.queueReadyHandler([this, code]
+		{
+			auto data = m_connect.moveAndClear();
+			Error ec(code);
+			if (data.cancelled)
+			{
+				// Even if the connect succeeded in the IODemux thread, the operation might have been cancelled,
+				// so instead of figuring out a thread safe way to keep the connect, its easier just to cancel it
+				// and close the socket
+				ec = Error(Error::Code::Cancelled);
+				detail::utils::closeSocket(m_s);
+			}
+			data.handler(ec);
+		});
+	}
+
+	static void handleReceive(Error::Code code, void* cookie)
+	{
+		reinterpret_cast<Socket*>(cookie)->handleReceiveImpl(code);
+	}
+	void handleReceiveImpl(Error::Code code)
 	{
 		CZSPAS_ASSERT(m_recv.handler);
 
-		// The interface allows size_t, but the implementation only allows int
-		int todo = m_recv.len > INT_MAX ? INT_MAX : static_cast<int>(m_recv.len);
-		int len = ::recv(m_s, m_recv.buf, todo, 0);
-		if (len == CZSPAS_SOCKET_ERROR)
+		int len = 0;
+		Error ec(code);
+		if (code == Error::Code::Success)
 		{
-			detail::ErrorWrapper err;
-			if (cancelled)
+			// The interface allows size_t, but the implementation only allows int
+			int todo = m_recv.len > INT_MAX ? INT_MAX : static_cast<int>(m_recv.len);
+			len = ::recv(m_s, m_recv.buf, todo, 0);
+			if (len == CZSPAS_SOCKET_ERROR)
 			{
-				m_owner.queueReadyHandler([this, ec=err.getError()]
+				detail::ErrorWrapper err;
+				ec = err.getError();
+				if (err.isBlockError())
 				{
-					auto data = m_recv.moveAndClear();
-					data.handler(Error(Error::Code::Cancelled), 0);
-				});
-			}
-			else if (err.isBlockError())
-			{
-				CZSPAS_FATAL("Blocking not expected at this point.");
-			}
-			else
-			{
-				CZSPAS_ERROR(err.msg().c_str());
-				m_owner.queueReadyHandler([this, ec=err.getError()]
-				{
-					auto data = m_recv.moveAndClear();
-					data.handler(ec, 0);
-				});
+					CZSPAS_FATAL("Blocking not expected at this point.");
+				}
 			}
 		}
-		else
+
+		m_owner.queueReadyHandler([this, len, ec]() mutable
 		{
-			m_owner.queueReadyHandler([this, len, cancelled]
+			auto data = m_recv.moveAndClear();
+			if (data.cancelled)
 			{
-				auto data = m_recv.moveAndClear();
-				data.handler(Error(cancelled ? Error::Code::Cancelled : Error::Code::Success), len);
-			});
-		}
+				// The read might have succeeded in the IODemux thread, but meanwhile the operation might have been
+				// cancelled, so consider it cancelled instead of trying to figure out a thread safe way to accept
+				// the read as successful.
+				ec = Error(Error::Code::Cancelled);
+				len = 0;
+			}
+			data.handler(ec, len);
+		});
 	}
 
-	static void handleSend(bool cancelled, void* cookie)
+	static void handleSend(Error::Code code, void* cookie)
 	{
-		reinterpret_cast<Socket*>(cookie)->handleSendImpl(cancelled);
+		reinterpret_cast<Socket*>(cookie)->handleSendImpl(code);
 	}
-	void handleSendImpl(bool cancelled)
+	void handleSendImpl(Error::Code code)
 	{
 		CZSPAS_ASSERT(m_send.handler);
 
-		int todo = m_send.len > INT_MAX ? INT_MAX : static_cast<int>(m_send.len);
-		int len = ::send(m_s, m_send.buf, todo, 0);
-		if (len == CZSPAS_SOCKET_ERROR)
+		int len = 0;
+		Error ec(code);
+		if (code == Error::Code::Success)
 		{
-			detail::ErrorWrapper err;
-			if (cancelled)
+			// The interface allows size_t, but the implementation only allows int
+			int todo = m_send.len > INT_MAX ? INT_MAX : static_cast<int>(m_send.len);
+			len = ::send(m_s, m_send.buf, todo, 0);
+			if (len == CZSPAS_SOCKET_ERROR)
 			{
-				m_owner.queueReadyHandler([this, ec=err.getError()]
+				detail::ErrorWrapper err;
+				ec = err.getError();
+				if (err.isBlockError())
 				{
-					auto data = m_send.moveAndClear();
-					data.handler(Error(Error::Code::Cancelled), 0);
-				});
-			}
-			else if (err.isBlockError())
-			{
-				CZSPAS_FATAL("Blocking not expected at this point.");
-			}
-			else
-			{
-				CZSPAS_ERROR(err.msg().c_str());
-				m_owner.queueReadyHandler([this, ec=err.getError()]
-				{
-					auto data = m_send.moveAndClear();
-					data.handler(ec, 0);
-				});
+					CZSPAS_FATAL("Blocking not expected at this point.");
+				}
 			}
 		}
-		else
-		{
-			m_owner.queueReadyHandler([this, len, cancelled]
-			{
-				auto data = m_send.moveAndClear();
-				data.handler(Error(cancelled ? Error::Code::Cancelled : Error::Code::Success), len);
-			});
-		}
-	}
 
-	static void handleConnect(bool cancelled, void* cookie)
-	{
-		reinterpret_cast<Socket*>(cookie)->handleConnectImpl(cancelled);
-	}
-	void handleConnectImpl(bool cancelled)
-	{
-		CZSPAS_ASSERT(m_connect.handler);
-		m_owner.queueReadyHandler([this, cancelled]
+		m_owner.queueReadyHandler([this, len, ec]() mutable
 		{
-			auto data = m_connect.moveAndClear();
-			data.handler(Error(cancelled ? Error::Code::Cancelled : Error::Code::Success));
+			auto data = m_send.moveAndClear();
+			if (data.cancelled)
+			{
+				// The send might have succeeded in the IODemux thread, but meanwhile the operation might have been
+				// cancelled, so consider it cancelled instead of trying to figure out a thread safe way to accept
+				// the send as successful.
+				ec = Error(Error::Code::Cancelled);
+				len = 0;
+			}
+
+			data.handler(ec, len);
 		});
 	}
 
@@ -1304,23 +1310,29 @@ protected:
 
 	struct ConnectData
 	{
+		bool cancelled = false;
 		ConnectHandler handler;
+		SocketHandle sock = CZSPAS_INVALID_SOCKET;
 		ConnectData moveAndClear()
 		{
 			ConnectData res = std::move(*this);
+			cancelled = false;
 			handler = nullptr;
+			sock = CZSPAS_INVALID_SOCKET;
 			return res;
 		}
 	} m_connect;
 
 	struct ReceiveData
 	{
+		bool cancelled = false;
 		char* buf = nullptr;
 		size_t len = 0;
 		TransferHandler handler;
 		ReceiveData moveAndClear()
 		{
 			ReceiveData res = std::move(*this);
+			cancelled = false;
 			buf = nullptr;
 			len = 0;
 			handler = nullptr;
@@ -1330,12 +1342,14 @@ protected:
 
 	struct SendData
 	{
+		bool cancelled = false;
 		const char* buf = nullptr;
 		size_t len = 0;
 		TransferHandler handler;
 		SendData moveAndClear()
 		{
 			SendData res = std::move(*this);
+			cancelled = false;
 			buf = nullptr;
 			len = 0;
 			handler = nullptr;
@@ -1418,6 +1432,7 @@ public:
 		CZSPAS_ASSERT(!m_accept.handler && "There is already a pending accept operation");
 		CZSPAS_ASSERT(!sock.isValid());
 
+		m_accept.cancelled = false;
 		m_accept.handler = std::move(h);
 		m_accept.sock = &sock;
 		m_owner.m_iodemux.registerReceive(m_s, &handleAccept, this, timeoutMs);
@@ -1431,7 +1446,10 @@ public:
 	void cancel()
 	{
 		if (m_accept.handler)
+		{
+			m_accept.cancelled = true;
 			m_owner.m_iodemux.cancelRequests(m_s);
+		}
 	}
 
 	const std::pair<std::string, int>& getLocalAddress() const
@@ -1441,53 +1459,59 @@ public:
 
 protected:
 
-	static void handleAccept(bool cancelled, void* cookie)
+	static void handleAccept(Error::Code code, void* cookie)
 	{
-		reinterpret_cast<Acceptor*>(cookie)->handleAcceptImpl(cancelled);
+		reinterpret_cast<Acceptor*>(cookie)->handleAcceptImpl(code);
 	}
-	void handleAcceptImpl(bool cancelled)
+	void handleAcceptImpl(Error::Code code)
 	{
 		CZSPAS_ASSERT(m_accept.handler);
 		CZSPAS_ASSERT(m_accept.sock && !m_accept.sock->isValid());
 
-		if (cancelled)
-		{
-			m_owner.queueReadyHandler([this]
-			{
-				auto data = m_accept.moveAndClear();
-				data.handler(Error(Error::Code::Cancelled));
-			});
-		}
-		else
+		SocketHandle sock = CZSPAS_INVALID_SOCKET;
+		Error ec(code);
+		if (code == Error::Code::Success)
 		{
 			sockaddr_in addr;
 			socklen_t size = sizeof(addr);
-			SocketHandle sock = ::accept(m_s, (struct sockaddr*)&addr, &size);
-			m_owner.queueReadyHandler([this, sock]
-			{
-				auto data = m_accept.moveAndClear();
-				data.sock->m_s = sock;
-				if (data.sock->m_s == CZSPAS_INVALID_SOCKET)
-				{
-					data.handler(detail::ErrorWrapper().getError());
-				}
-				else
-				{
-					detail::utils::setBlocking(data.sock->m_s, false);
-					data.handler(Error());
-				}
-			});
+			sock = ::accept(m_s, (struct sockaddr*)&addr, &size);
+			if (sock == CZSPAS_INVALID_SOCKET)
+				ec = detail::ErrorWrapper().getError();
 		}
+
+		m_owner.queueReadyHandler([this, ec, sock]() mutable
+		{
+			auto data = m_accept.moveAndClear();
+			if (data.cancelled)
+			{
+				// Even if the accept was successful in the IODemux thread, the operation might have been cancelled,
+				// so instead of trying to figure out the right way to still accept it, its easier to just consider it
+				// cancelled and destroy the socket we accepted.
+				ec = Error(Error::Code::Cancelled);
+				detail::utils::closeSocket(sock);
+				data.sock->m_s = CZSPAS_INVALID_SOCKET;
+			}
+			else
+			{
+				data.sock->m_s = sock;
+				if (data.sock->m_s != CZSPAS_INVALID_SOCKET)
+					detail::utils::setBlocking(data.sock->m_s, false);
+			}
+
+			data.handler(ec);
+		});
 	}
 
 	std::pair<std::string, int> m_localAddr;
 	struct AcceptData
 	{
+		bool cancelled = false;
 		AcceptHandler handler = nullptr;
 		Socket* sock = nullptr;
 		AcceptData moveAndClear()
 		{
 			AcceptData res = std::move(*this);
+			cancelled = false;
 			handler = nullptr;
 			sock = nullptr;
 			return res;
