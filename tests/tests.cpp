@@ -1,6 +1,52 @@
 #include "testsPCH.h"
+#include "UnitTest++/TestReporterStdout.h"
 
 #define LOOP_TESTS 1
+
+namespace UnitTest
+{
+	class czspasTestReporter : public TestReporter
+	{
+		virtual void ReportFailure(TestDetails const& details, char const* failure) override
+		{
+			CZSPAS_DEBUG_BREAK();
+			using namespace std;
+#if defined(__APPLE__) || defined(__GNUG__)
+			char const* const errorFormat = "%s:%d:%d: error: Failure in %s: %s\n";
+			fprintf(stderr, errorFormat, details.filename, details.lineNumber, 1, details.testName, failure);
+#else
+			char const* const errorFormat = "%s(%d): error: Failure in %s: %s\n";
+			fprintf(stderr, errorFormat, details.filename, details.lineNumber, details.testName, failure);
+#endif
+		}
+
+		virtual void ReportTestStart(TestDetails const& /*test*/) override
+		{}
+
+		virtual void ReportTestFinish(TestDetails const& /*test*/, float) override
+		{}
+
+		virtual void ReportSummary(int totalTestCount, int failedTestCount, int failureCount, float secondsElapsed) override
+		{
+			using namespace std;
+
+			if (failureCount > 0)
+				printf("FAILURE: %d out of %d tests failed (%d failures).\n", failedTestCount, totalTestCount, failureCount);
+			else
+				printf("Success: %d tests passed.\n", totalTestCount);
+
+			printf("Test time: %.2f seconds.\n", secondsElapsed);
+		}
+	};
+
+	int czspasRunAllTests()
+	{
+		czspasTestReporter reporter;
+		TestRunner runner(reporter);
+		return runner.RunTestsIf(Test::GetTestList(), NULL, True(), 0);
+	}
+} // namespace UnitTest
+
 
 namespace cz
 {
@@ -47,7 +93,7 @@ int main()
 	{
 		counter++;
 		printf("Run %d\n", counter);
-		res = UnitTest::RunAllTests();
+		res = UnitTest::czspasRunAllTests();
 		//return res;
 		if (res != 0)
 			break;

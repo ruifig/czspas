@@ -389,17 +389,21 @@ namespace detail
 #endif
 		}
 
-		static void closeSocket(SocketHandle s)
+		static void closeSocket(SocketHandle& s, bool doshutdown=true)
 		{
 			if (s == CZSPAS_INVALID_SOCKET)
 				return;
 #if _WIN32
-			::shutdown(s, SD_BOTH);
+			if (doshutdown)
+				::shutdown(s, SD_BOTH);
 			::closesocket(s);
 #else
-			::shutdown(s, SHUT_RDWR);
+			if (doshutdown)
+				::shutdown(s, SHUT_RDWR);
 			::close(s);
 #endif
+			//printf("%d: Closed at %s\n", (int)s, __FUNCTION__);
+			s = CZSPAS_INVALID_SOCKET;
 		}
 
 		static void disableNagle(SocketHandle s)
@@ -419,6 +423,17 @@ namespace detail
 		{
 			int optval = 1;
 			int res = setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char*)&optval, sizeof(optval));
+			if (res != 0)
+				CZSPAS_FATAL(ErrorWrapper().msg().c_str());
+		}
+
+		// Set the linger option, in seconds
+		static void setLinger(SocketHandle s, bool enabled, u_short timeout)
+		{
+			linger l;
+			l.l_onoff = enabled ? 1 : 0;
+			l.l_linger = timeout;
+			int res = setsockopt(s, SOL_SOCKET, SO_LINGER, (const char*)&l, sizeof(l));
 			if (res != 0)
 				CZSPAS_FATAL(ErrorWrapper().msg().c_str());
 		}
@@ -472,6 +487,7 @@ namespace detail
 		static std::pair<Error, SocketHandle> createListenSocket(int port, int backlog)
 		{
 			SocketHandle s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+			//printf("%d: Created at %s\n", (int)s, __FUNCTION__);
 			if (s == CZSPAS_INVALID_SOCKET)
 				return std::make_pair(detail::ErrorWrapper().getError(), s);
 
@@ -501,6 +517,7 @@ namespace detail
 		static std::pair<Error, SocketHandle> createConnectSocket(const char* ip, int port)
 		{
 			SocketHandle s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+			//printf("%d: Created at %s\n", (int)s, __FUNCTION__);
 			if (s == CZSPAS_INVALID_SOCKET)
 				return std::make_pair(detail::ErrorWrapper().getError(), s);
 
@@ -985,12 +1002,24 @@ namespace detail
 		BaseSocket(detail::BaseService& owner) : m_owner(owner) {}
 		virtual ~BaseSocket()
 		{
-			releaseHandle();
+			detail::utils::closeSocket(m_s);
 		}
 
 		SocketHandle getHandle()
 		{
 			return m_s;
+		}
+
+		void setLinger(bool enabled, unsigned short timeout)
+		{
+			detail::utils::setLinger(m_s, enabled, timeout);
+		}
+
+
+		// For internal use in the unit tests. DO NOT USE
+		void _forceClose(bool doshutdown)
+		{
+			detail::utils::closeSocket(m_s, doshutdown);
 		}
 
 	protected:
@@ -1003,12 +1032,6 @@ namespace detail
 		bool isValid() const
 		{
 			return m_s != CZSPAS_INVALID_SOCKET;
-		}
-
-		void releaseHandle()
-		{
-			detail::utils::closeSocket(m_s);
-			m_s = CZSPAS_INVALID_SOCKET;
 		}
 
 		detail::BaseService& m_owner;
@@ -1092,6 +1115,7 @@ public:
 		m_connect.cancelled = false;
 		m_connect.handler = std::move(h);
 		m_connect.sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		//printf("%d: Created at %s\n", (int)m_connect.sock, __FUNCTION__);
 		if (m_connect.sock == CZSPAS_INVALID_SOCKET)
 		{
 			auto ec = detail::ErrorWrapper().getError();
@@ -1127,7 +1151,6 @@ public:
 			else
 			{
 				detail::utils::closeSocket(m_connect.sock);
-				m_connect.sock = CZSPAS_INVALID_SOCKET;
 				// #TODO : Do a unit test to cover this code path
 				m_owner.queueReadyHandler([this, ec = err.getError()]
 				{
@@ -1482,18 +1505,17 @@ protected:
 		m_owner.queueReadyHandler([this, ec, sock]() mutable
 		{
 			auto data = m_accept.moveAndClear();
+			data.sock->m_s = sock;
 			if (data.cancelled)
 			{
 				// Even if the accept was successful in the IODemux thread, the operation might have been cancelled,
 				// so instead of trying to figure out the right way to still accept it, its easier to just consider it
 				// cancelled and destroy the socket we accepted.
 				ec = Error(Error::Code::Cancelled);
-				detail::utils::closeSocket(sock);
-				data.sock->m_s = CZSPAS_INVALID_SOCKET;
+				detail::utils::closeSocket(data.sock->m_s);
 			}
 			else
 			{
-				data.sock->m_s = sock;
 				if (data.sock->m_s != CZSPAS_INVALID_SOCKET)
 					detail::utils::setBlocking(data.sock->m_s, false);
 			}

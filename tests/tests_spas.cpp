@@ -20,6 +20,96 @@ using namespace cz::spas;
 	}
 #define CHECK_CZSPAS(ec) CHECK_CZSPAS_EQUAL(Success, ec)
 
+struct TestServer
+{
+	Service io;
+	std::thread th;
+	Acceptor* acceptor;
+	Semaphore accepted;
+	ZeroSemaphore pendingOps;
+	std::vector<std::shared_ptr<Socket>> socks;
+	UnitTest::Timer timer;
+	bool detectDisconnect;
+
+	explicit TestServer(bool detectDisconnect=false)
+	{
+		this->detectDisconnect = detectDisconnect;
+		timer.Start();
+		th = std::thread([this]
+		{
+			io.run();
+		});
+
+		auto ac = std::make_shared<Acceptor>(io);
+		acceptor = ac.get();
+		CHECK_CZSPAS(ac->listen(SERVER_PORT, 100));
+		doAccept(ac, detectDisconnect);
+	}
+
+	~TestServer()
+	{
+		io.post([ac=acceptor]
+		{
+			ac->cancel();
+		});
+
+		if (!detectDisconnect)
+		{
+			io.post([&]
+			{
+				for (auto&& s : socks)
+					s->cancel();
+			});
+		}
+
+		pendingOps.wait();
+		io.stop();
+		if (th.joinable())
+			th.join();
+	}
+
+	void doAccept(std::shared_ptr<Acceptor> ac, bool detectDisconnect = false)
+	{
+		pendingOps.increment();
+		auto sock = std::make_shared<Socket>(io);
+		ac->asyncAccept(*sock, -1, [this, ac, sock, detectDisconnect](const Error& ec)
+		{
+			pendingOps.decrement();
+			if (ec.code == Error::Code::Cancelled)
+				return;
+			CHECK_CZSPAS(ec);
+			socks.push_back(sock);
+			accepted.notify();
+			if (detectDisconnect)
+				setDisconnectDetection(sock);
+			doAccept(ac, detectDisconnect);
+		});
+	}
+
+	void setDisconnectDetection(std::shared_ptr<Socket> sock)
+	{
+		static char buf[1];
+		pendingOps.increment();
+		sock->asyncReceiveSome(buf, 1, -1, [this, sock](const Error& ec, size_t transfered)
+		{
+			pendingOps.decrement();
+			CHECK_CZSPAS_EQUAL(ConnectionClosed, ec);
+			socks.erase(std::remove(socks.begin(), socks.end(), sock), socks.end());
+		});
+	}
+
+	void waitForAccept()
+	{
+		accepted.wait();
+	}
+	
+	auto get_threadid() const
+	{
+		return th.get_id();
+	}
+
+};
+
 SUITE(CZSPAS)
 {
 
@@ -68,6 +158,15 @@ TEST(Acceptor_accept_timeout)
 	CHECK_CZSPAS_EQUAL(Timeout, ec);
 }
 
+
+// What this test tests doesn't make sense in a real use case, but nevertheless it checks some different code paths.
+// It does the following:
+//		- Thread 1 does a synchronous accept (it blocks waiting for the accept to finish)
+//		- Thread 2 does an explicit close on the acceptor socket,
+//		- Thread 1 detects the broken accept call and gives an error.
+// The reason this is not a real use case is because there is no need to have an API to break out of a synchronous accept call.
+//
+#if 0
 TEST(Acceptor_accept_break)
 {
 	Service io;
@@ -85,7 +184,8 @@ TEST(Acceptor_accept_break)
 	auto ft2 = std::async(std::launch::async, [&ac]
 	{
 		// Give it some time for the other thread to start the accept
-		UnitTest::TimeHelpers::SleepMs(100);
+		//
+		UnitTest::TimeHelpers::SleepMs(200);
 
 		// Closing the socket on our own, to cause the accept to break
 		// Initially I was calling spas::detail::utils::closeSocket(ac.getHandle()), which works fine on Windows.
@@ -93,7 +193,7 @@ TEST(Acceptor_accept_break)
 		// SD_RDWR doesn't cause the ::select used internally by Acceptor::accept to break. It hangs forever.
         // So, I need to do a manual shutdown with SHUT_RD
 #if _WIN32
-		spas::detail::utils::closeSocket(ac.getHandle());
+		ac._forceClose(false);
 #else
 		::shutdown(ac.getHandle(), SHUT_RD);
 #endif
@@ -102,6 +202,7 @@ TEST(Acceptor_accept_break)
 	ft1.get();
 	ft2.get();
 }
+#endif
 
 //////////////////////////////////////////////////////////////////////////
 // Socket tests
@@ -283,76 +384,6 @@ TEST(Acceptor_asyncAccept_cancel)
 	ioth.join();
 }
 
-struct TestServer
-{
-	Service io;
-	std::thread th;
-	Acceptor* acceptor;
-	Semaphore accepted;
-	ZeroSemaphore pendingOps;
-	std::vector<std::shared_ptr<Socket>> socks;
-	UnitTest::Timer timer;
-
-	TestServer()
-	{
-		timer.Start();
-		th = std::thread([this]
-		{
-			io.run();
-		});
-
-		auto ac = std::make_shared<Acceptor>(io);
-		acceptor = ac.get();
-		CHECK_CZSPAS(ac->listen(SERVER_PORT, 100));
-		doAccept(ac);
-	}
-
-	~TestServer()
-	{
-		io.post([ac=acceptor]
-		{
-			ac->cancel();
-		});
-
-		io.post([&]
-		{
-			for (auto&& s : socks)
-				s->cancel();
-		});
-		pendingOps.wait();
-		io.stop();
-		if (th.joinable())
-			th.join();
-	}
-
-	void doAccept(std::shared_ptr<Acceptor> ac)
-	{
-		pendingOps.increment();
-		auto sock = std::make_shared<Socket>(io);
-		ac->asyncAccept(*sock, -1, [this, ac, sock](const Error& ec)
-		{
-			pendingOps.decrement();
-			if (ec.code == Error::Code::Cancelled)
-				return;
-			CHECK_CZSPAS(ec);
-			socks.push_back(sock);
-			accepted.notify();
-			doAccept(ac);
-		});
-	}
-
-	void waitForAccept()
-	{
-		accepted.wait();
-	}
-	
-	auto get_threadid() const
-	{
-		return th.get_id();
-	}
-
-};
-
 TEST(Socket_asyncReceiveSome_ok)
 {
 	TestServer server;
@@ -456,7 +487,7 @@ TEST(Socket_asyncReceiveSome_peerDisconnect)
 	});
 	server.io.post([&]
 	{
-		detail::utils::closeSocket(server.socks[0]->getHandle());
+		server.socks[0]->_forceClose(false);
 	});
 	done.wait();
 }
@@ -577,7 +608,34 @@ TEST(Socket_asyncSendSome_timeout)
 	done.wait();
 }
 
+
+// Create and destroy lots of connections really fast, to make sure we can set lingering off
+TEST(Socket_multiple_connections)
+{
+	TestServer server(true);
+	Semaphore done;
+
+	int todo = 70000;
+	int count = 0;
+	while (todo--)
+	{
+		count++;
+		Socket s(server.io);
+		auto res = s.connect("127.0.0.1", SERVER_PORT);
+		if (res)
+		{
+			CHECK_CZSPAS(res);
+		}
+		//detail::utils::setBlocking(s.getHandle(), true);
+		s.setLinger(true, 0);
+		//printf("%d: Closed at %s\n", (int)s.getHandle(), __FUNCTION__);
+		s._forceClose(false);
+	}
+	//UnitTest::TimeHelpers::SleepMs(100000000);
+}
+
 #if 0
+
 TEST(Dummy)
 {
 	{
@@ -625,9 +683,7 @@ TEST(Dummy)
 		done.wait();
 	}
 }
-#endif
 
-#if 0
 TEST(Socket_asyncSendSome_timeout)
 {
 	TestServer server;
