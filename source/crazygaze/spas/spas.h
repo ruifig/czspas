@@ -438,6 +438,26 @@ namespace detail
 				CZSPAS_FATAL(ErrorWrapper().msg().c_str());
 		}
 
+		static int getSendBufSize(SocketHandle s)
+		{
+			int sndbuf;
+			socklen_t optlen = sizeof(sndbuf);
+			auto res = getsockopt(s, SOL_SOCKET, SO_SNDBUF, (char*)&sndbuf, &optlen);
+			if (res != 0)
+				CZSPAS_FATAL(ErrorWrapper().msg().c_str());
+			return sndbuf;
+		}
+
+		static int getReceiveBufSize(SocketHandle s)
+		{
+			int sndbuf;
+			socklen_t optlen = sizeof(sndbuf);
+			auto res = getsockopt(s, SOL_SOCKET, SO_RCVBUF, (char*)&sndbuf, &optlen);
+			if (res != 0)
+				CZSPAS_FATAL(ErrorWrapper().msg().c_str());
+			return sndbuf;
+		}
+
 		static std::pair<std::string, int> addrToPair(sockaddr_in& addr)
 		{
 			std::pair<std::string, int> res;
@@ -1010,6 +1030,11 @@ namespace detail
 			return m_s;
 		}
 
+		Service& getService()
+		{
+			return *((Service*)&m_owner);
+		}
+
 		void setLinger(bool enabled, unsigned short timeout)
 		{
 			detail::utils::setLinger(m_s, enabled, timeout);
@@ -1166,6 +1191,8 @@ public:
 			{
 				auto data = m_connect.moveAndClear();
 				m_s = data.sock;
+				m_localAddr = detail::utils::getLocalAddr(m_s);
+				m_peerAddr = detail::utils::getRemoteAddr(m_s);
 				data.handler(Error());
 			});
 		}
@@ -1232,13 +1259,24 @@ protected:
 		{
 			auto data = m_connect.moveAndClear();
 			Error ec(code);
+			m_s = data.sock;
 			if (data.cancelled)
 			{
 				// Even if the connect succeeded in the IODemux thread, the operation might have been cancelled,
 				// so instead of figuring out a thread safe way to keep the connect, its easier just to cancel it
 				// and close the socket
 				ec = Error(Error::Code::Cancelled);
+			}
+
+			if (ec)
+			{
 				detail::utils::closeSocket(m_s);
+			}
+			else
+			{
+				CZSPAS_ASSERT(isValid());
+				m_localAddr = detail::utils::getLocalAddr(m_s);
+				m_peerAddr = detail::utils::getRemoteAddr(m_s);
 			}
 			data.handler(ec);
 		});
@@ -1380,6 +1418,57 @@ protected:
 		}
 	} m_send;
 };
+
+namespace detail
+{
+	template< typename H, typename = detail::IsTransferHandler<H> >
+	void asyncSendHelper(Socket& sock, const char* buf, size_t len, int timeoutMs, const Error& ec, size_t totalDone, H&& h)
+	{
+		CZSPAS_ASSERT(totalDone <= len);
+		if (ec || totalDone==len)
+		{
+			h(ec, totalDone);
+			return;
+		}
+
+		sock.asyncSendSome(buf+totalDone, len-totalDone, timeoutMs,
+			[&sock,buf,len,timeoutMs,totalDone,h=std::move(h)](const Error& ec, size_t transfered) mutable
+		{
+			printf("Sent %llu (%llu/%llu)\n", transfered, totalDone + transfered, len);
+			asyncSendHelper(sock, buf, len, timeoutMs, ec, totalDone + transfered, h);
+		});
+	}
+
+	template< typename H, typename = detail::IsTransferHandler<H> >
+	void asyncReceiveHelper(Socket& sock, char* buf, size_t len, int timeoutMs, const Error& ec, size_t totalDone, H&& h)
+	{
+		CZSPAS_ASSERT(totalDone <= len);
+		if (ec || totalDone==len)
+		{
+			h(ec, totalDone);
+			return;
+		}
+
+		sock.asyncReceiveSome(buf+totalDone, len-totalDone, timeoutMs,
+			[&sock,buf,len,timeoutMs,totalDone,h=std::move(h)](const Error& ec, size_t transfered) mutable
+		{
+			printf("Received %llu (%llu/%llu)\n", transfered, totalDone + transfered, len);
+			asyncReceiveHelper(sock, buf, len, timeoutMs, ec, totalDone + transfered, h);
+		});
+	}
+}
+template< typename H, typename = detail::IsTransferHandler<H> >
+void asyncSend(Socket& sock, const char* buf, size_t len, int timeoutMs, H&& h)
+{
+	asyncSendHelper(sock, buf, len, timeoutMs, Error(), 0, std::forward<H>(h));
+}
+
+template< typename H, typename = detail::IsTransferHandler<H> >
+void asyncReceive(Socket& sock, char* buf, size_t len, int timeoutMs, H&& h)
+{
+	asyncReceiveHelper(sock, buf, len, timeoutMs, Error(), 0, std::forward<H>(h));
+}
+
 
 //////////////////////////////////////////////////////////////////////////
 // Acceptor
