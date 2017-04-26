@@ -265,6 +265,7 @@ TEST(Socket_asyncConnect_ok)
 	s.asyncConnect("127.0.0.1", SERVER_PORT, -1, [&](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
+		CHECK(s.getHandle() != CZSPAS_INVALID_SOCKET);
 		CHECK(std::this_thread::get_id() == allowedThread);
 		io.stop(); // stop the service, to finish this test
 		done.notify();
@@ -632,6 +633,237 @@ TEST(Socket_multiple_connections)
 		s._forceClose(false);
 	}
 	//UnitTest::TimeHelpers::SleepMs(100000000);
+}
+
+static std::vector<size_t> gDumped;
+ZeroSemaphore gDumpedPending;
+size_t gDumpedTotal;
+
+void dumpReceive(Socket& sock, size_t totalExpected)
+{
+	static char buf[10000];
+	gDumpedPending.increment();
+	sock.asyncReceiveSome(buf, sizeof(buf), -1, [&sock, totalExpected, buf=&buf[0]](const Error& ec, size_t transfered)
+	{
+		gDumped.push_back(transfered);
+
+		for (size_t i = 0; i < transfered; i++)
+		{
+			auto expected = char(gDumpedTotal + i);
+			CHECK_EQUAL((int)expected, (int)buf[i]);
+		}
+
+		gDumpedTotal += transfered;
+		if (gDumpedTotal < totalExpected && !ec)
+			dumpReceive(sock, totalExpected);
+		gDumpedPending.decrement();
+	});
+}
+
+struct StandaloneHelper
+{
+	Service io;
+	std::thread th;
+	StandaloneHelper()
+	{
+		th = std::thread([this]
+		{
+			io.run();
+		});
+	}
+	~StandaloneHelper()
+	{
+		th.join();
+	}
+
+	struct ClientReceiveConnection : std::enable_shared_from_this<ClientReceiveConnection>
+	{
+		explicit ClientReceiveConnection(Service& io, size_t bufsize)
+			: sock(io)
+			, bufsize(bufsize)
+		{
+			buf = std::unique_ptr<char[]>(new char[bufsize]);
+		}
+
+		~ClientReceiveConnection()
+		{
+			sock.getService().stop();
+			CZSPAS_ASSERT(totalDone == expectedLen);
+		}
+		size_t bufsize=0;
+		std::unique_ptr<char[]> buf;
+		size_t expectedLen;
+		size_t totalDone = 0;
+		char next = 0;
+		int intervalMs = 0;
+		Socket sock;
+		Error ec;
+		void receiveHelper()
+		{
+			sock.asyncReceiveSome(buf.get(), bufsize, -1, [this_ = shared_from_this()](const Error& ec, size_t transfered)
+			{
+				this_->totalDone += transfered;
+				CZSPAS_ASSERT(this_->totalDone <= this_->expectedLen);
+				if (ec)
+				{
+					this_->ec = ec;
+					return;
+				}
+
+				printf("%llu received: %llu/%llu\n", transfered, this_->totalDone, this_->expectedLen);
+				// Check received data
+				char* ptr = this_->buf.get();
+				for (size_t i = 0; i < transfered; i++)
+				{
+					CHECK_EQUAL((int)this_->next, (int)ptr[i]);
+					++this_->next;
+				}
+
+				if (this_->totalDone == this_->expectedLen)
+					return;
+
+				if (this_->intervalMs)
+					std::this_thread::sleep_for(std::chrono::milliseconds(this_->intervalMs));
+				this_->receiveHelper();
+			});
+		}
+	};
+
+	struct ServerSendConnection : std::enable_shared_from_this<ServerSendConnection>
+	{
+		explicit ServerSendConnection(Service& io, size_t bufsize)
+			: sock(io)
+			, acceptor(io)
+			, bufsize(bufsize)
+		{
+			buf = std::unique_ptr<char[]>(new char[bufsize]);
+		}
+		~ServerSendConnection()
+		{
+			sock.getService().stop();
+			CZSPAS_ASSERT(totalDone == expectedLen);
+		}
+		size_t bufsize=0;
+		std::unique_ptr<char[]> buf;
+		size_t expectedLen;
+		size_t totalDone = 0;
+		char next = 0;
+		int intervalMs = 0;
+		Socket sock;
+		Acceptor acceptor;
+		Error ec;
+		void sendHelper()
+		{
+			auto todo = std::min(bufsize, expectedLen - totalDone);
+			char* ptr = buf.get();
+			for (size_t i = 0; i < todo; i++)
+				ptr[i] = next++;
+
+			sock.asyncSendSome(buf.get(), todo, -1, [this_ = shared_from_this()](const Error& ec, size_t transfered)
+			{
+				this_->totalDone += transfered;
+				CZSPAS_ASSERT(this_->totalDone <= this_->expectedLen);
+				if (ec)
+				{
+					this_->ec = ec;
+					return;
+				}
+
+				printf("%llu sent: %llu/%llu\n", transfered, this_->totalDone, this_->expectedLen);
+
+				if (this_->totalDone == this_->expectedLen)
+				{
+					// Setup a receive just to keep this alive until the client disconnects
+					this_->sock.asyncReceiveSome(this_->buf.get(), 1, -1, [this_](const Error& ec, size_t transfered)
+					{
+					});
+					return;
+				}
+
+				if (this_->intervalMs)
+					std::this_thread::sleep_for(std::chrono::milliseconds(this_->intervalMs));
+				this_->sendHelper();
+			});
+		}
+	};
+};
+
+std::shared_ptr<StandaloneHelper> standaloneClientReceive(size_t len, int intervalMs, size_t bufsize)
+{
+	auto hlp = std::make_shared<StandaloneHelper>();
+	auto con = std::make_shared<StandaloneHelper::ClientReceiveConnection>(hlp->io, bufsize);
+	con->expectedLen = len;
+	con->intervalMs = intervalMs;
+	con->sock.asyncConnect("127.0.0.1", SERVER_PORT, -1, [con](const Error& ec)
+	{
+		CHECK_CZSPAS(ec);
+		con->receiveHelper();
+	});
+	return hlp;
+}
+
+std::shared_ptr<StandaloneHelper> standaloneServerSend(size_t len, int intervalMs, size_t bufsize)
+{
+	auto hlp = std::make_shared<StandaloneHelper>();
+	auto con = std::make_shared<StandaloneHelper::ServerSendConnection>(hlp->io, bufsize);
+	con->expectedLen = len;
+	con->intervalMs = intervalMs;
+	con->acceptor.listen(SERVER_PORT, 1);
+	con->acceptor.asyncAccept(con->sock, -1, [con](const Error& ec)
+	{
+		CHECK_CZSPAS(ec);
+		con->sendHelper();
+	});
+
+	return hlp;
+}
+
+TEST(standaloneClient_and_Server)
+{
+	{
+		constexpr size_t expected = 1024 * 16;
+		auto server = standaloneServerSend(expected, 0, 2000);
+		auto client = standaloneClientReceive(expected, 1, 4096);
+	}
+}
+
+TEST(asyncSend_big)
+{
+	TestServer server;
+	Semaphore done;
+
+	Socket s(server.io);
+	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
+	server.waitForAccept();
+
+
+	constexpr size_t bigbufsize = size_t(INT_MAX) * 2;
+	auto bigbufSend = std::unique_ptr<char[]>(new char[bigbufsize]);
+	auto bigbufReceive = std::unique_ptr<char[]>(new char[bigbufsize]);
+	auto ptr = bigbufSend.get();
+	for (size_t i = 0; i < bigbufsize; i++)
+		ptr[i] = (char)i;
+
+	asyncSend(s, bigbufSend.get(), bigbufsize, -1, [&](const Error& ec, size_t transfered)
+	{
+		CHECK_CZSPAS_EQUAL(Success, ec);
+		CHECK_EQUAL(bigbufsize, transfered);
+		done.notify();
+	});
+
+	asyncReceive(*server.socks[0].get(), bigbufReceive.get(), bigbufsize, -1, [&](const Error& ec, size_t transfered)
+	{
+		CHECK_CZSPAS_EQUAL(Success, ec);
+		CHECK_EQUAL(bigbufsize, transfered);
+		done.notify();
+	});
+	done.wait();
+	done.wait();
+	ptr = bigbufReceive.get();
+	for (size_t i = 0; i < bigbufsize; i++)
+	{
+		CHECK_EQUAL(int(char(i)), int(ptr[i]));
+	}
 }
 
 #if 0
