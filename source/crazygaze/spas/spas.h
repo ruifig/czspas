@@ -1209,9 +1209,11 @@ public:
 		m_recv.handler = std::move(h);
 		m_owner.m_iodemux.registerReceive(m_s, &handleReceive, this, timeoutMs);
 	}
+
 	template< typename H, typename = detail::IsTransferHandler<H> >
 	void asyncSendSome(const char* buf, size_t len, int timeoutMs, H&& h)
 	{
+		CZSPAS_ASSERT(isValid());
 		CZSPAS_ASSERT(!m_send.handler); // There can be only one send operation in flight
 		m_send.cancelled = false;
 		m_send.buf = buf;
@@ -1384,39 +1386,29 @@ protected:
 		}
 	} m_connect;
 
-	struct ReceiveData
+	// All the data necessary to process a receive or send.
+	// This is handy, so we have an easy way to copy to a temporary object and clear before calling user handlers
+	// Template parameter T is just to specify char* or const char*
+	template<typename T>
+	struct TransferInfo
 	{
 		bool cancelled = false;
-		char* buf = nullptr;
+		T buf = nullptr;
 		size_t len = 0;
 		TransferHandler handler;
-		ReceiveData moveAndClear()
+		TransferInfo moveAndClear()
 		{
-			ReceiveData res = std::move(*this);
+			TransferInfo res = std::move(*this);
 			cancelled = false;
 			buf = nullptr;
 			len = 0;
 			handler = nullptr;
 			return res;
 		}
-	} m_recv;
-
-	struct SendData
-	{
-		bool cancelled = false;
-		const char* buf = nullptr;
-		size_t len = 0;
-		TransferHandler handler;
-		SendData moveAndClear()
-		{
-			SendData res = std::move(*this);
-			cancelled = false;
-			buf = nullptr;
-			len = 0;
-			handler = nullptr;
-			return res;
-		}
-	} m_send;
+	};
+	
+	TransferInfo<char*> m_recv;
+	TransferInfo<const char*> m_send;
 };
 
 namespace detail
@@ -1575,6 +1567,7 @@ protected:
 	{
 		reinterpret_cast<Acceptor*>(cookie)->handleAcceptImpl(code);
 	}
+
 	void handleAcceptImpl(Error::Code code)
 	{
 		CZSPAS_ASSERT(m_accept.handler);
@@ -1680,20 +1673,12 @@ public:
 		});
 	}
 
-	// Request to invoke the specified handler
+	//! Request to invoke the specified handler
 	// The handler is NOT called from inside this function.
 	template< typename H, typename = detail::IsSimpleHandler<H> >
 	void post(H&& handler)
 	{
 		m_readyHandlers.push(std::forward<H>(handler));
-	}
-
-	// Request to invoke the specified handler
-	// The handler can be invoked from inside this function (if the current thread is executing tick)
-	template< typename H, typename = detail::IsSimpleHandler<H> >
-	void dispatch(H&& handler)
-	{
-		// #TODO : Fill me
 	}
 
 protected:
