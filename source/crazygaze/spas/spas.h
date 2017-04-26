@@ -222,7 +222,6 @@ namespace detail
 	{
 	};
 
-
 	//
 	// Multiple producer, multiple consumer thread safe queue
 	//
@@ -402,7 +401,6 @@ namespace detail
 				::shutdown(s, SHUT_RDWR);
 			::close(s);
 #endif
-			//printf("%d: Closed at %s\n", (int)s, __FUNCTION__);
 			s = CZSPAS_INVALID_SOCKET;
 		}
 
@@ -507,7 +505,6 @@ namespace detail
 		static std::pair<Error, SocketHandle> createListenSocket(int port, int backlog)
 		{
 			SocketHandle s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-			//printf("%d: Created at %s\n", (int)s, __FUNCTION__);
 			if (s == CZSPAS_INVALID_SOCKET)
 				return std::make_pair(detail::ErrorWrapper().getError(), s);
 
@@ -537,7 +534,6 @@ namespace detail
 		static std::pair<Error, SocketHandle> createConnectSocket(const char* ip, int port)
 		{
 			SocketHandle s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-			//printf("%d: Created at %s\n", (int)s, __FUNCTION__);
 			if (s == CZSPAS_INVALID_SOCKET)
 				return std::make_pair(detail::ErrorWrapper().getError(), s);
 
@@ -1104,9 +1100,9 @@ public:
 
 	virtual ~Socket()
 	{
-		CZSPAS_ASSERT(m_connect.handler == nullptr && "There is a pending connect operation");
-		CZSPAS_ASSERT(m_recv.handler == nullptr && "There is a pending receive operation");
-		CZSPAS_ASSERT(m_send.handler == nullptr && "There is a pending send operation");
+		CZSPAS_ASSERT(m_connectInfo.handler == nullptr && "There is a pending connect operation");
+		CZSPAS_ASSERT(m_recvInfo.handler == nullptr && "There is a pending receive operation");
+		CZSPAS_ASSERT(m_sendInfo.handler == nullptr && "There is a pending send operation");
 	}
 
 	//! Synchronous connect
@@ -1137,26 +1133,25 @@ public:
 		CZSPAS_ASSERT(!isValid());
 		CZSPAS_INFO("Socket %p: asyncConnect(%s,%d, H, %d)", this, ip, port, timeoutMs);
 
-		m_connect.cancelled = false;
-		m_connect.handler = std::move(h);
-		m_connect.sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-		//printf("%d: Created at %s\n", (int)m_connect.sock, __FUNCTION__);
-		if (m_connect.sock == CZSPAS_INVALID_SOCKET)
+		m_connectInfo.cancelled = false;
+		m_connectInfo.handler = std::move(h);
+		m_connectInfo.sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (m_connectInfo.sock == CZSPAS_INVALID_SOCKET)
 		{
 			auto ec = detail::ErrorWrapper().getError();
 			CZSPAS_ERROR("Socket %p: %s", this, ec.msg());
 			m_owner.queueReadyHandler([this, ec = std::move(ec)]
 			{
-				auto data = m_connect.moveAndClear();
+				auto data = m_connectInfo.moveAndClear();
 				data.handler(ec);
 			});
 			return;
 		}
 
 		// Enable any loopback optimizations (in case this socket is used in loopback)
-		detail::utils::optimizeLoopback(m_connect.sock);
+		detail::utils::optimizeLoopback(m_connectInfo.sock);
 		// Set to non-blocking, so we can do an asynchronous connect
-		detail::utils::setBlocking(m_connect.sock, false);
+		detail::utils::setBlocking(m_connectInfo.sock, false);
 
 		sockaddr_in addr;
 		memset(&addr, 0, sizeof(addr));
@@ -1164,22 +1159,22 @@ public:
 		addr.sin_port = htons(port);
 		inet_pton(AF_INET, ip, &(addr.sin_addr));
 
-		if (::connect(m_connect.sock, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR)
+		if (::connect(m_connectInfo.sock, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR)
 		{
 			detail::ErrorWrapper err;
 			if (err.isBlockError())
 			{
 				// Normal behavior, so setup the connect detection with select
 				// A asynchronous connect is done when we receive a write event on the socket
-				m_owner.m_iodemux.registerSend(m_connect.sock, &handleConnect, this, timeoutMs);
+				m_owner.m_iodemux.registerSend(m_connectInfo.sock, &handleConnect, this, timeoutMs);
 			}
 			else
 			{
-				detail::utils::closeSocket(m_connect.sock);
+				detail::utils::closeSocket(m_connectInfo.sock);
 				// #TODO : Do a unit test to cover this code path
 				m_owner.queueReadyHandler([this, ec = err.getError()]
 				{
-					auto data = m_connect.moveAndClear();
+					auto data = m_connectInfo.moveAndClear();
 					data.handler(ec);
 				});
 			}
@@ -1189,7 +1184,7 @@ public:
 			// It may happen that the connect succeeds right away.
 			m_owner.queueReadyHandler([this]
 			{
-				auto data = m_connect.moveAndClear();
+				auto data = m_connectInfo.moveAndClear();
 				m_s = data.sock;
 				m_localAddr = detail::utils::getLocalAddr(m_s);
 				m_peerAddr = detail::utils::getRemoteAddr(m_s);
@@ -1202,11 +1197,11 @@ public:
 	void asyncReceiveSome(char* buf, size_t len, int timeoutMs, H&& h)
 	{
 		CZSPAS_ASSERT(isValid());
-		CZSPAS_ASSERT(!m_recv.handler); // There can be only one receive operation in flight
-		m_recv.cancelled = false;
-		m_recv.buf = buf;
-		m_recv.len = len;
-		m_recv.handler = std::move(h);
+		CZSPAS_ASSERT(!m_recvInfo.handler); // There can be only one receive operation in flight
+		m_recvInfo.cancelled = false;
+		m_recvInfo.buf = buf;
+		m_recvInfo.len = len;
+		m_recvInfo.handler = std::move(h);
 		m_owner.m_iodemux.registerReceive(m_s, &handleReceive, this, timeoutMs);
 	}
 
@@ -1214,28 +1209,28 @@ public:
 	void asyncSendSome(const char* buf, size_t len, int timeoutMs, H&& h)
 	{
 		CZSPAS_ASSERT(isValid());
-		CZSPAS_ASSERT(!m_send.handler); // There can be only one send operation in flight
-		m_send.cancelled = false;
-		m_send.buf = buf;
-		m_send.len = len;
-		m_send.handler = std::move(h);
+		CZSPAS_ASSERT(!m_sendInfo.handler); // There can be only one send operation in flight
+		m_sendInfo.cancelled = false;
+		m_sendInfo.buf = buf;
+		m_sendInfo.len = len;
+		m_sendInfo.handler = std::move(h);
 		m_owner.m_iodemux.registerSend(m_s, &handleSend, this, timeoutMs);
-	}
-
-	void close()
-	{
-		// #TODO : Implement this ???
 	}
 
 	void cancel()
 	{
-		if (m_connect.handler || m_recv.handler || m_send.handler)
+		if (m_connectInfo.handler || m_recvInfo.handler || m_sendInfo.handler)
 		{
-			m_connect.cancelled = true;
-			m_recv.cancelled = true;
-			m_send.cancelled = true;
-			m_owner.m_iodemux.cancelRequests(m_connect.sock == CZSPAS_INVALID_SOCKET ? m_s : m_connect.sock);
+			m_connectInfo.cancelled = true;
+			m_recvInfo.cancelled = true;
+			m_sendInfo.cancelled = true;
+			m_owner.m_iodemux.cancelRequests(m_connectInfo.sock == CZSPAS_INVALID_SOCKET ? m_s : m_connectInfo.sock);
 		}
+	}
+
+	void close()
+	{
+		cancel();
 	}
 
 	const std::pair<std::string, int>& getLocalAddress() const
@@ -1256,10 +1251,10 @@ protected:
 	}
 	void handleConnectImpl(Error::Code code)
 	{
-		CZSPAS_ASSERT(m_connect.handler);
+		CZSPAS_ASSERT(m_connectInfo.handler);
 		m_owner.queueReadyHandler([this, code]
 		{
-			auto data = m_connect.moveAndClear();
+			auto data = m_connectInfo.moveAndClear();
 			Error ec(code);
 			m_s = data.sock;
 			if (data.cancelled)
@@ -1290,15 +1285,15 @@ protected:
 	}
 	void handleReceiveImpl(Error::Code code)
 	{
-		CZSPAS_ASSERT(m_recv.handler);
+		CZSPAS_ASSERT(m_recvInfo.handler);
 
 		int len = 0;
 		Error ec(code);
 		if (code == Error::Code::Success)
 		{
 			// The interface allows size_t, but the implementation only allows int
-			int todo = m_recv.len > INT_MAX ? INT_MAX : static_cast<int>(m_recv.len);
-			len = ::recv(m_s, m_recv.buf, todo, 0);
+			int todo = m_recvInfo.len > INT_MAX ? INT_MAX : static_cast<int>(m_recvInfo.len);
+			len = ::recv(m_s, m_recvInfo.buf, todo, 0);
 			if (len == CZSPAS_SOCKET_ERROR)
 			{
 				detail::ErrorWrapper err;
@@ -1312,7 +1307,7 @@ protected:
 
 		m_owner.queueReadyHandler([this, len, ec]() mutable
 		{
-			auto data = m_recv.moveAndClear();
+			auto data = m_recvInfo.moveAndClear();
 			if (data.cancelled)
 			{
 				// The read might have succeeded in the IODemux thread, but meanwhile the operation might have been
@@ -1331,15 +1326,15 @@ protected:
 	}
 	void handleSendImpl(Error::Code code)
 	{
-		CZSPAS_ASSERT(m_send.handler);
+		CZSPAS_ASSERT(m_sendInfo.handler);
 
 		int len = 0;
 		Error ec(code);
 		if (code == Error::Code::Success)
 		{
 			// The interface allows size_t, but the implementation only allows int
-			int todo = m_send.len > INT_MAX ? INT_MAX : static_cast<int>(m_send.len);
-			len = ::send(m_s, m_send.buf, todo, 0);
+			int todo = m_sendInfo.len > INT_MAX ? INT_MAX : static_cast<int>(m_sendInfo.len);
+			len = ::send(m_s, m_sendInfo.buf, todo, 0);
 			if (len == CZSPAS_SOCKET_ERROR)
 			{
 				detail::ErrorWrapper err;
@@ -1353,7 +1348,7 @@ protected:
 
 		m_owner.queueReadyHandler([this, len, ec]() mutable
 		{
-			auto data = m_send.moveAndClear();
+			auto data = m_sendInfo.moveAndClear();
 			if (data.cancelled)
 			{
 				// The send might have succeeded in the IODemux thread, but meanwhile the operation might have been
@@ -1371,20 +1366,20 @@ protected:
 	std::pair<std::string, int> m_localAddr;
 	std::pair<std::string, int> m_peerAddr;
 
-	struct ConnectData
+	struct ConnectInfo
 	{
 		bool cancelled = false;
 		ConnectHandler handler;
 		SocketHandle sock = CZSPAS_INVALID_SOCKET;
-		ConnectData moveAndClear()
+		ConnectInfo moveAndClear()
 		{
-			ConnectData res = std::move(*this);
+			ConnectInfo res = std::move(*this);
 			cancelled = false;
 			handler = nullptr;
 			sock = CZSPAS_INVALID_SOCKET;
 			return res;
 		}
-	} m_connect;
+	} m_connectInfo;
 
 	// All the data necessary to process a receive or send.
 	// This is handy, so we have an easy way to copy to a temporary object and clear before calling user handlers
@@ -1407,8 +1402,8 @@ protected:
 		}
 	};
 	
-	TransferInfo<char*> m_recv;
-	TransferInfo<const char*> m_send;
+	TransferInfo<char*> m_recvInfo;
+	TransferInfo<const char*> m_sendInfo;
 };
 
 namespace detail
@@ -1426,7 +1421,6 @@ namespace detail
 		sock.asyncSendSome(buf+totalDone, len-totalDone, timeoutMs,
 			[&sock,buf,len,timeoutMs,totalDone,h=std::move(h)](const Error& ec, size_t transfered) mutable
 		{
-			printf("Sent %llu (%llu/%llu)\n", transfered, totalDone + transfered, len);
 			asyncSendHelper(sock, buf, len, timeoutMs, ec, totalDone + transfered, h);
 		});
 	}
@@ -1444,7 +1438,6 @@ namespace detail
 		sock.asyncReceiveSome(buf+totalDone, len-totalDone, timeoutMs,
 			[&sock,buf,len,timeoutMs,totalDone,h=std::move(h)](const Error& ec, size_t transfered) mutable
 		{
-			printf("Received %llu (%llu/%llu)\n", transfered, totalDone + transfered, len);
 			asyncReceiveHelper(sock, buf, len, timeoutMs, ec, totalDone + transfered, h);
 		});
 	}
@@ -1476,7 +1469,7 @@ public:
 
 	virtual ~Acceptor()
 	{
-		CZSPAS_ASSERT(m_accept.handler==nullptr && "There is a pending accept operation");
+		CZSPAS_ASSERT(m_acceptInfo.handler==nullptr && "There is a pending accept operation");
 	}
 
 	//! Starts listening for new connections at the specified port
@@ -1533,12 +1526,12 @@ public:
 	void asyncAccept(Socket& sock, int timeoutMs, H&& h)
 	{
 		CZSPAS_ASSERT(isValid());
-		CZSPAS_ASSERT(!m_accept.handler && "There is already a pending accept operation");
+		CZSPAS_ASSERT(!m_acceptInfo.handler && "There is already a pending accept operation");
 		CZSPAS_ASSERT(!sock.isValid());
 
-		m_accept.cancelled = false;
-		m_accept.handler = std::move(h);
-		m_accept.sock = &sock;
+		m_acceptInfo.cancelled = false;
+		m_acceptInfo.handler = std::move(h);
+		m_acceptInfo.sock = &sock;
 		m_owner.m_iodemux.registerReceive(m_s, &handleAccept, this, timeoutMs);
 	}
 
@@ -1549,9 +1542,9 @@ public:
 
 	void cancel()
 	{
-		if (m_accept.handler)
+		if (m_acceptInfo.handler)
 		{
-			m_accept.cancelled = true;
+			m_acceptInfo.cancelled = true;
 			m_owner.m_iodemux.cancelRequests(m_s);
 		}
 	}
@@ -1570,8 +1563,8 @@ protected:
 
 	void handleAcceptImpl(Error::Code code)
 	{
-		CZSPAS_ASSERT(m_accept.handler);
-		CZSPAS_ASSERT(m_accept.sock && !m_accept.sock->isValid());
+		CZSPAS_ASSERT(m_acceptInfo.handler);
+		CZSPAS_ASSERT(m_acceptInfo.sock && !m_acceptInfo.sock->isValid());
 
 		SocketHandle sock = CZSPAS_INVALID_SOCKET;
 		Error ec(code);
@@ -1586,7 +1579,7 @@ protected:
 
 		m_owner.queueReadyHandler([this, ec, sock]() mutable
 		{
-			auto data = m_accept.moveAndClear();
+			auto data = m_acceptInfo.moveAndClear();
 			data.sock->m_s = sock;
 			if (data.cancelled)
 			{
@@ -1607,20 +1600,20 @@ protected:
 	}
 
 	std::pair<std::string, int> m_localAddr;
-	struct AcceptData
+	struct AcceptInfo
 	{
 		bool cancelled = false;
 		AcceptHandler handler = nullptr;
 		Socket* sock = nullptr;
-		AcceptData moveAndClear()
+		AcceptInfo moveAndClear()
 		{
-			AcceptData res = std::move(*this);
+			AcceptInfo res = std::move(*this);
 			cancelled = false;
 			handler = nullptr;
 			sock = nullptr;
 			return res;
 		}
-	} m_accept;
+	} m_acceptInfo;
 };
 
 
