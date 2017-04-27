@@ -60,7 +60,7 @@ namespace cz
 			if (!ms_logEnabled && !fatal)
 				return;
 			char buf[256];
-			copyStrToFixedBuffer(buf, type);
+			detail::copyStrToFixedBuffer(buf, type);
 			va_list args;
 			va_start(args, fmt);
 			vsnprintf(buf + strlen(buf), sizeof(buf) - strlen(buf) - 1, fmt, args);

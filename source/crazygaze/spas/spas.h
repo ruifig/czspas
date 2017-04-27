@@ -84,48 +84,17 @@ namespace cz
 namespace spas
 {
 
-// To work around the Windows vs Linux shenanigans with strncpy/strcpy/strlcpy, etc.
-template<unsigned int N>
-inline void copyStrToFixedBuffer(char (&dst)[N], const char* src)
-{
-#if _WIN32
-	strncpy_s(dst, sizeof(dst), src, sizeof(dst)-1);
-#else
-	strncpy(dst, src, sizeof(dst));
-	dst[sizeof(dst)-1] = 0;
-#endif
-}
-
-struct DefaultLog
-{
-	static void out(bool fatal, const char* type, const char* fmt, ...)
-	{
-		char buf[512];
-		copyStrToFixedBuffer(buf, type);
-		va_list args;
-		va_start(args, fmt);
-		vsnprintf(buf + strlen(buf), sizeof(buf) - strlen(buf) - 1, fmt, args);
-		va_end(args);
-		printf("%s\n",buf);
-		if (fatal)
-		{
-			CZSPAS_DEBUG_BREAK();
-			exit(1);
-		}
-	}
-};
-
 #ifndef CZSPAS_INFO
-	#define CZSPAS_INFO(fmt, ...) DefaultLog::out(false, "Info: ", fmt, ##__VA_ARGS__)
+	#define CZSPAS_INFO(fmt, ...) detail::DefaultLog::out(false, "Info: ", fmt, ##__VA_ARGS__)
 #endif
 #ifndef CZSPAS_WARN
-	#define CZSPAS_WARN(fmt, ...) DefaultLog::out(false, "Warning: ", fmt, ##__VA_ARGS__)
+	#define CZSPAS_WARN(fmt, ...) detail::DefaultLog::out(false, "Warning: ", fmt, ##__VA_ARGS__)
 #endif
 #ifndef CZSPAS_ERROR
-	#define CZSPAS_ERROR(fmt, ...) DefaultLog::out(false, "Error: ", fmt, ##__VA_ARGS__)
+	#define CZSPAS_ERROR(fmt, ...) detail::DefaultLog::out(false, "Error: ", fmt, ##__VA_ARGS__)
 #endif
 #ifndef CZSPAS_FATAL
-	#define CZSPAS_FATAL(fmt, ...) DefaultLog::out(true, "Fatal: ", fmt, ##__VA_ARGS__)
+	#define CZSPAS_FATAL(fmt, ...) detail::DefaultLog::out(true, "Fatal: ", fmt, ##__VA_ARGS__)
 #endif
 
 #ifndef CZSPAS_ASSERT
@@ -209,6 +178,37 @@ using AcceptHandler = std::function<void(const Error& ec)>;
 
 namespace detail
 {
+	// To work around the Windows vs Linux shenanigans with strncpy/strcpy/strlcpy, etc.
+	template<unsigned int N>
+	inline void copyStrToFixedBuffer(char (&dst)[N], const char* src)
+	{
+	#if _WIN32
+		strncpy_s(dst, sizeof(dst), src, sizeof(dst)-1);
+	#else
+		strncpy(dst, src, sizeof(dst));
+		dst[sizeof(dst)-1] = 0;
+	#endif
+	}
+
+	struct DefaultLog
+	{
+		static void out(bool fatal, const char* type, const char* fmt, ...)
+		{
+			char buf[512];
+			copyStrToFixedBuffer(buf, type);
+			va_list args;
+			va_start(args, fmt);
+			vsnprintf(buf + strlen(buf), sizeof(buf) - strlen(buf) - 1, fmt, args);
+			va_end(args);
+			printf("%s\n",buf);
+			if (fatal)
+			{
+				CZSPAS_DEBUG_BREAK();
+				exit(1);
+			}
+		}
+	};
+
 	// Checks if a specified "Func" type is callable and with the specified signature
 	template <typename, typename, typename = void>
 	struct check_signature : std::false_type {};
@@ -267,7 +267,6 @@ namespace detail
 		}
 	};
 
-	// #TODO : Are these needed?
 	template<typename H>
 	using IsTransferHandler = std::enable_if_t<check_signature<H, void(const Error&, size_t)>::value>;
 	template<typename H>
@@ -436,6 +435,8 @@ namespace detail
 				CZSPAS_FATAL(ErrorWrapper().msg().c_str());
 		}
 
+
+#if 0
 		static int getSendBufSize(SocketHandle s)
 		{
 			int sndbuf;
@@ -455,6 +456,7 @@ namespace detail
 				CZSPAS_FATAL(ErrorWrapper().msg().c_str());
 			return sndbuf;
 		}
+#endif
 
 		static std::pair<std::string, int> addrToPair(sockaddr_in& addr)
 		{
@@ -628,15 +630,6 @@ namespace detail
 			c.erase(c.cend() - 1);
 			return it;
 		}
-	}
-
-	/*
-	Same as std::find_if, but uses the full container range.
-	*/
-	template<typename C, typename F>
-	auto find_if(C& c, const F& f) -> decltype(c.begin())
-	{
-		return std::find_if(c.begin(), c.end(), f);
 	}
 
 #if _WIN32
