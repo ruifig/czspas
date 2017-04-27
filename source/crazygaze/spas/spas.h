@@ -656,13 +656,19 @@ namespace detail
 	};
 #endif
 
+
 	// 
 	// Runs a poll()/WSAPoll() on a different thread, and calls registered handlers whenever there is a event available.
 	//
 	class IODemux
 	{
 	public:
-		using EventHandler = void(*)(Error::Code, void* cookie);
+
+		struct Listener
+		{
+			virtual void onWriteReady(Error::Code code) = 0;
+			virtual void onReadReady(Error::Code code) = 0;
+		};
 
 		IODemux()
 		{
@@ -683,7 +689,7 @@ namespace detail
 			m_signalOut = connectFt.get();
 
 			// We reserve index 0 for the signalIn socket. This never gets changed or removed
-			m_sockets.get(m_signalIn, POLLRDNORM);
+			m_sockets.reserveSignalIn(m_signalIn);
 
 			m_th = std::thread([this] {
 				run();
@@ -699,29 +705,21 @@ namespace detail
 			detail::utils::closeSocket(m_signalIn);
 		}
 
-		void registerReceive(SocketHandle s, EventHandler h, void* cookie, int timeoutMs = -1)
+		void registerHandler(Listener* listener, SocketHandle sock, short flag, int timeoutMs = -1)
 		{
+			CZSPAS_ASSERT(flag == POLLRDNORM || flag == POLLWRNORM);
 			m_newOps([&](auto& q)
 			{
-				q.push({ s, h, cookie, POLLRDNORM, timeoutMs });
+				q.push({ listener, sock, flag, timeoutMs });
 			});
 			signal();
 		}
 
-		void registerSend(SocketHandle s, EventHandler h, void* cookie, int timeoutMs = -1)
+		void cancelHandlers(Listener* listener)
 		{
 			m_newOps([&](auto& q)
 			{
-				q.push({ s, h, cookie, POLLWRNORM, timeoutMs});
-			});
-			signal();
-		}
-
-		void cancelRequests(SocketHandle s)
-		{
-			m_newOps([&](auto& q)
-			{
-				q.push({ s, nullptr, nullptr, 0, -1});
+				q.push({ listener, 0, 0, -1 });
 			});
 			signal();
 		}
@@ -735,65 +733,64 @@ namespace detail
 
 		struct NewOp
 		{
-			SocketHandle fd;
-			EventHandler evtHandler;
-			void* cookie;
+			Listener* listener;
+			SocketHandle sock;
 			short flag; // POLLRDNORM, POLLWRNORM, or 0 (cancel)
 			int timeoutMs;
 		};
 
 		struct Handler
 		{
-			EventHandler evtHandler = nullptr;
-			void* cookie = nullptr;
-			TimePoint timeoutPoint;
+			Listener* listener;
+			TimePoint readTimeoutPoint;
+			TimePoint writeTimeoutPoint;
 		};
 
 		struct Set
 		{
-			std::pair<pollfd*, Handler*> getAt(int idx , short flag)
+			void reserveSignalIn(SocketHandle s)
 			{
-				CZSPAS_ASSERT(flag == POLLWRNORM || flag == POLLRDNORM);
-				CZSPAS_ASSERT(idx < static_cast<int>(fds.size()) && handlers.size() == fds.size() * 2);
-				return std::make_pair(&fds[idx], &handlers[idx * 2 + (flag == POLLRDNORM ? 0 : 1)]);
+				// Reserve index 0 for the IODemux signalIn socket
+				fds.push_back({ s, POLLRDNORM, 0 });
+				handlers.push_back({ nullptr, TimePoint::max(), TimePoint::max() });
 			}
 
-			std::pair<pollfd*, Handler*> get(SocketHandle fd, short flag)
+			std::pair<pollfd*, Handler*> getAt(int idx)
 			{
-				CZSPAS_ASSERT(flag == POLLWRNORM || flag == POLLRDNORM);
+				return std::make_pair(&fds[idx], &handlers[idx]);
+			}
+
+			// Retrieves an existing entry for the specified socket, or creates one if it doesn't exist
+			std::pair<pollfd*, Handler*> get(Listener* listener, SocketHandle sock)
+			{
 				size_t idx;
-				for (idx = 0; idx < fds.size(); idx++)
+				for (idx = 0; idx < handlers.size(); idx++)
 				{
-					if (fds[idx].fd == fd)
+					if (handlers[idx].listener == listener)
 						break;
 				}
 
-				if (idx == fds.size())
+				if (idx == handlers.size()) // Not found, so create entry for this socket
 				{
-					fds.push_back({ fd, flag , 0 });
-					handlers.emplace_back();
-					handlers.emplace_back();
+					fds.push_back({ sock, 0 , 0 });
+					handlers.push_back({ listener, TimePoint::max(), TimePoint::max() });
 				}
 
-				return getAt(static_cast<int>(idx), flag);
+				return getAt(static_cast<int>(idx));
 			}
 			
 			void remove(int idx)
 			{
-				CZSPAS_ASSERT(idx < static_cast<int>(fds.size()) && handlers.size() == fds.size() * 2);
 				detail::removeAndReplaceWithLast(fds, fds.begin() + idx);
-				// #TODO : Replace this with something that removes 2 elements in one go
-				detail::removeAndReplaceWithLast(handlers, handlers.begin() + idx * 2 + 1);
-				detail::removeAndReplaceWithLast(handlers, handlers.begin() + idx * 2);
+				detail::removeAndReplaceWithLast(handlers, handlers.begin() + idx);
 			}
 
-			// These two vector have the following relation:
-			// For a given element at index I in m_fds, there are two entries in m_handlers (at indexes I*2 and I*2+1)
 			std::vector<pollfd> fds;
 			std::vector<Handler> handlers;
 		};
 
 		detail::Monitor<std::queue<NewOp>> m_newOps;
+		std::queue<NewOp> m_tmpOps;
 		Set m_sockets;
 		std::thread m_th;
 		SocketHandle m_signalIn;
@@ -830,46 +827,53 @@ namespace detail
 			}
 		}
 
-		std::queue<NewOp> m_tmpOps;
-
 		void setEventHandler(const NewOp& op)
 		{
-			auto f = m_sockets.get(op.fd, op.flag);
+			CZSPAS_ASSERT(op.flag==POLLRDNORM || op.flag==POLLWRNORM);
+			auto f = m_sockets.get(op.listener, op.sock);
 			f.first->events |= op.flag;
-			CZSPAS_ASSERT(f.second->evtHandler == nullptr);
-			f.second->evtHandler = op.evtHandler;
-			f.second->cookie = op.cookie;
-			if (op.timeoutMs == -1)
-				f.second->timeoutPoint = TimePoint::max();
-			else
-				f.second->timeoutPoint = std::chrono::high_resolution_clock::now() + std::chrono::milliseconds(op.timeoutMs);
+			auto t = (op.timeoutMs == -1) ? TimePoint::max() : std::chrono::high_resolution_clock::now() + std::chrono::milliseconds(op.timeoutMs);
+			if (op.flag == POLLRDNORM)
+				f.second->readTimeoutPoint = t;
+			else if (op.flag)
+				f.second->writeTimeoutPoint = t;
 		}
 
-		void handleEvent(int idx, short flag)
+		void handleEvent(std::pair<pollfd*,Handler*> f, short flag)
 		{
-			auto f = m_sockets.getAt(idx, flag);
 			if (f.first->revents & flag)
 			{
 				// We handle 1 single event of this type, so disable the request for this type of event
 				f.first->events &= ~flag; 
-				f.second->evtHandler(Error::Code::Success, f.second->cookie);
-				f.second->evtHandler = nullptr;
-				f.second->cookie = nullptr;
+				if (flag == POLLRDNORM)
+				{
+					f.second->listener->onReadReady(Error::Code::Success);
+					f.second->readTimeoutPoint = TimePoint::max();
+				}
+				else
+				{
+					f.second->listener->onWriteReady(Error::Code::Success);
+					f.second->writeTimeoutPoint = TimePoint::max();
+				}
 			}
 		}
 
-		void cancelEvent(int idx, short flag, Error::Code code)
+		void cancelEvent(std::pair<pollfd*, Handler*> f, short flag, Error::Code code)
 		{
-			// #TODO : Pass the reason to the handler somehow
-
-			auto f = m_sockets.getAt(idx, flag);
 			if (f.first->events & flag)
 			{
 				// We handle 1 single event of this type, so disable the request for this type of event
 				f.first->events &= ~flag; 
-				f.second->evtHandler(code, f.second->cookie);
-				f.second->evtHandler = nullptr;
-				f.second->cookie = nullptr;
+				if (flag == POLLRDNORM)
+				{
+					f.second->listener->onReadReady(code);
+					f.second->readTimeoutPoint = TimePoint::max();
+				}
+				else
+				{
+					f.second->listener->onWriteReady(code);
+					f.second->writeTimeoutPoint = TimePoint::max();
+				}
 			}
 		}
 
@@ -878,27 +882,17 @@ namespace detail
 			auto now = std::chrono::high_resolution_clock::now();
 			for (int idx = 1; idx < static_cast<int>(m_sockets.fds.size());)
 			{
-				// #TODO : Improve this by possibly iterating the 2 handler entries?
-				auto f = m_sockets.getAt(idx, POLLRDNORM);
-				if (f.second->evtHandler && now > f.second->timeoutPoint)
-				{
-					cancelEvent(idx, POLLRDNORM, Error::Code::Timeout);
-				}
-				f = m_sockets.getAt(idx, POLLWRNORM);
-				if (f.second->evtHandler && now > f.second->timeoutPoint)
-				{
-					cancelEvent(idx, POLLWRNORM, Error::Code::Timeout);
-				}
+				auto f = m_sockets.getAt(idx);
+				if ((f.first->events & POLLRDNORM) && (now > f.second->readTimeoutPoint))
+					cancelEvent(f, POLLRDNORM, Error::Code::Timeout);
+				if ((f.first->events & POLLWRNORM) && (now > f.second->writeTimeoutPoint))
+					cancelEvent(f, POLLWRNORM, Error::Code::Timeout);
 
 				// If we are not interested in any more request from this handler, remove it
 				if ((f.first->events & (POLLRDNORM | POLLWRNORM)) == 0)
-				{
 					m_sockets.remove(idx);
-				}
 				else
-				{
 					++idx;
-				}
 			}
 		}
 
@@ -907,13 +901,14 @@ namespace detail
 			TimePoint timeoutPoint = TimePoint::max();
 			while (!m_finish)
 			{
-
 				// 
 				// Calculate the timeout we need for the poll()
 				for (auto&& h : m_sockets.handlers)
 				{
-					if (h.evtHandler && h.timeoutPoint < timeoutPoint)
-						timeoutPoint = h.timeoutPoint;
+					if (h.readTimeoutPoint < timeoutPoint)
+						timeoutPoint = h.readTimeoutPoint;
+					if (h.writeTimeoutPoint < timeoutPoint)
+						timeoutPoint = h.writeTimeoutPoint;
 				}
 
 				int timeoutMs = -1;
@@ -941,20 +936,20 @@ namespace detail
 				//
 				for (int idx = 1; idx < static_cast<int>(m_sockets.fds.size()); )
 				{
-					auto&& f = m_sockets.fds[idx];
-					if (f.revents & (POLLERR | POLLHUP | POLLNVAL))
+					auto f = m_sockets.getAt(idx);
+					if (f.first->revents & (POLLERR | POLLHUP | POLLNVAL))
 					{
-						cancelEvent(idx, POLLRDNORM, (f.revents & POLLHUP) ? Error::Code::ConnectionClosed : Error::Code::InvalidSocket);
-						cancelEvent(idx, POLLWRNORM, (f.revents & POLLHUP) ? Error::Code::ConnectionClosed : Error::Code::InvalidSocket);
+						cancelEvent(f, POLLRDNORM, (f.first->revents & POLLHUP) ? Error::Code::ConnectionClosed : Error::Code::InvalidSocket);
+						cancelEvent(f, POLLWRNORM, (f.first->revents & POLLHUP) ? Error::Code::ConnectionClosed : Error::Code::InvalidSocket);
 					}
 					else
 					{
-						handleEvent(idx, POLLRDNORM);
-						handleEvent(idx, POLLWRNORM);
+						handleEvent(f, POLLRDNORM);
+						handleEvent(f, POLLWRNORM);
 					}
 
 					// If we are not interested in any more request from this handler, remove it
-					if ((f.events & (POLLRDNORM | POLLWRNORM)) == 0)
+					if ((f.first->events & (POLLRDNORM | POLLWRNORM)) == 0)
 					{
 						m_sockets.remove(idx);
 					}
@@ -981,11 +976,13 @@ namespace detail
 						// If the handler is not found, we don't need to do anything
 						for (int idx = 1; idx < static_cast<int>(m_sockets.fds.size()); ++idx)
 						{
-							if (m_sockets.fds[idx].fd == op.fd)
+							auto f = m_sockets.getAt(idx);
+							if (f.second->listener == op.listener)
 							{
-								cancelEvent(idx, POLLRDNORM, Error::Code::Cancelled);
-								cancelEvent(idx, POLLWRNORM, Error::Code::Cancelled);
+								cancelEvent(f, POLLRDNORM, Error::Code::Cancelled);
+								cancelEvent(f, POLLWRNORM, Error::Code::Cancelled);
 								m_sockets.remove(idx);
+								break;
 							}
 						}
 					}
@@ -1005,7 +1002,7 @@ namespace detail
 	//////////////////////////////////////////////////////////////////////////
 	// BaseSocket
 	//////////////////////////////////////////////////////////////////////////
-	class BaseSocket
+	class BaseSocket : public IODemux::Listener
 	{
 	public:
 		BaseSocket(detail::BaseService& owner) : m_owner(owner) {}
@@ -1037,7 +1034,7 @@ namespace detail
 		}
 
 	protected:
-		
+
 		BaseSocket(const BaseSocket&) = delete;
 		void operator=(const BaseSocket&) = delete;
 
@@ -1159,7 +1156,7 @@ public:
 			{
 				// Normal behavior, so setup the connect detection with select
 				// A asynchronous connect is done when we receive a write event on the socket
-				m_owner.m_iodemux.registerSend(m_connectInfo.sock, &handleConnect, this, timeoutMs);
+				m_owner.m_iodemux.registerHandler(this, m_connectInfo.sock, POLLWRNORM, timeoutMs);
 			}
 			else
 			{
@@ -1195,7 +1192,7 @@ public:
 		m_recvInfo.buf = buf;
 		m_recvInfo.len = len;
 		m_recvInfo.handler = std::move(h);
-		m_owner.m_iodemux.registerReceive(m_s, &handleReceive, this, timeoutMs);
+		m_owner.m_iodemux.registerHandler(this, m_s, POLLRDNORM, timeoutMs);
 	}
 
 	template< typename H, typename = detail::IsTransferHandler<H> >
@@ -1207,7 +1204,7 @@ public:
 		m_sendInfo.buf = buf;
 		m_sendInfo.len = len;
 		m_sendInfo.handler = std::move(h);
-		m_owner.m_iodemux.registerSend(m_s, &handleSend, this, timeoutMs);
+		m_owner.m_iodemux.registerHandler(this, m_s, POLLWRNORM, timeoutMs);
 	}
 
 	void cancel()
@@ -1217,7 +1214,7 @@ public:
 			m_connectInfo.cancelled = true;
 			m_recvInfo.cancelled = true;
 			m_sendInfo.cancelled = true;
-			m_owner.m_iodemux.cancelRequests(m_connectInfo.sock == CZSPAS_INVALID_SOCKET ? m_s : m_connectInfo.sock);
+			m_owner.m_iodemux.cancelHandlers(this);
 		}
 	}
 
@@ -1238,45 +1235,7 @@ public:
 
 protected:
 
-	static void handleConnect(Error::Code code, void* cookie)
-	{
-		reinterpret_cast<Socket*>(cookie)->handleConnectImpl(code);
-	}
-	void handleConnectImpl(Error::Code code)
-	{
-		CZSPAS_ASSERT(m_connectInfo.handler);
-		m_owner.queueReadyHandler([this, code]
-		{
-			auto data = m_connectInfo.moveAndClear();
-			Error ec(code);
-			m_s = data.sock;
-			if (data.cancelled)
-			{
-				// Even if the connect succeeded in the IODemux thread, the operation might have been cancelled,
-				// so instead of figuring out a thread safe way to keep the connect, its easier just to cancel it
-				// and close the socket
-				ec = Error(Error::Code::Cancelled);
-			}
-
-			if (ec)
-			{
-				detail::utils::closeSocket(m_s);
-			}
-			else
-			{
-				CZSPAS_ASSERT(isValid());
-				m_localAddr = detail::utils::getLocalAddr(m_s);
-				m_peerAddr = detail::utils::getRemoteAddr(m_s);
-			}
-			data.handler(ec);
-		});
-	}
-
-	static void handleReceive(Error::Code code, void* cookie)
-	{
-		reinterpret_cast<Socket*>(cookie)->handleReceiveImpl(code);
-	}
-	void handleReceiveImpl(Error::Code code)
+	virtual void onReadReady(Error::Code code) override
 	{
 		CZSPAS_ASSERT(m_recvInfo.handler);
 
@@ -1313,11 +1272,45 @@ protected:
 		});
 	}
 
-	static void handleSend(Error::Code code, void* cookie)
+	virtual void onWriteReady(Error::Code code) override
 	{
-		reinterpret_cast<Socket*>(cookie)->handleSendImpl(code);
+		if (m_connectInfo.handler)
+			handleConnect(code);
+		else
+			handleSend(code);
 	}
-	void handleSendImpl(Error::Code code)
+
+	void handleConnect(Error::Code code)
+	{
+		CZSPAS_ASSERT(m_connectInfo.handler);
+		m_owner.queueReadyHandler([this, code]
+		{
+			auto data = m_connectInfo.moveAndClear();
+			Error ec(code);
+			m_s = data.sock;
+			if (data.cancelled)
+			{
+				// Even if the connect succeeded in the IODemux thread, the operation might have been cancelled,
+				// so instead of figuring out a thread safe way to keep the connect, its easier just to cancel it
+				// and close the socket
+				ec = Error(Error::Code::Cancelled);
+			}
+
+			if (ec)
+			{
+				detail::utils::closeSocket(m_s);
+			}
+			else
+			{
+				CZSPAS_ASSERT(isValid());
+				m_localAddr = detail::utils::getLocalAddr(m_s);
+				m_peerAddr = detail::utils::getRemoteAddr(m_s);
+			}
+			data.handler(ec);
+		});
+	}
+
+	void handleSend(Error::Code code)
 	{
 		CZSPAS_ASSERT(m_sendInfo.handler);
 
@@ -1525,7 +1518,7 @@ public:
 		m_acceptInfo.cancelled = false;
 		m_acceptInfo.handler = std::move(h);
 		m_acceptInfo.sock = &sock;
-		m_owner.m_iodemux.registerReceive(m_s, &handleAccept, this, timeoutMs);
+		m_owner.m_iodemux.registerHandler(this, m_s, POLLRDNORM, timeoutMs);
 	}
 
 	void close()
@@ -1538,7 +1531,7 @@ public:
 		if (m_acceptInfo.handler)
 		{
 			m_acceptInfo.cancelled = true;
-			m_owner.m_iodemux.cancelRequests(m_s);
+			m_owner.m_iodemux.cancelHandlers(this);
 		}
 	}
 
@@ -1549,12 +1542,7 @@ public:
 
 protected:
 
-	static void handleAccept(Error::Code code, void* cookie)
-	{
-		reinterpret_cast<Acceptor*>(cookie)->handleAcceptImpl(code);
-	}
-
-	void handleAcceptImpl(Error::Code code)
+	virtual void onReadReady(Error::Code code) override
 	{
 		CZSPAS_ASSERT(m_acceptInfo.handler);
 		CZSPAS_ASSERT(m_acceptInfo.sock && !m_acceptInfo.sock->isValid());
@@ -1591,6 +1579,7 @@ protected:
 			data.handler(ec);
 		});
 	}
+	virtual void onWriteReady(Error::Code code) override { }
 
 	std::pair<std::string, int> m_localAddr;
 	struct AcceptInfo
