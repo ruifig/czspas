@@ -548,6 +548,8 @@ TEST(Socket_asyncSendSome_ok)
 	done.wait();
 }
 
+
+#if 0
 TEST(Socket_asyncSendSome_cancel)
 {
 	TestServer server;
@@ -557,32 +559,36 @@ TEST(Socket_asyncSendSome_cancel)
 	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
 	server.waitForAccept();
 
-	constexpr size_t bigbufsize = size_t(INT_MAX);
-	auto bigbuf = std::unique_ptr<char[]>(new char[bigbufsize]);
-
-	// NOTE: By sending a really big buffer, the IODemux thread will be busy on the ::send, so our Service thread
-	// has time to do the cancel
+	// NOTE: This unit test can actually fail without being an error, if the IODemux thread marks the send as ready
+	// to execute before processing the cancel.
+	// If the unit test doe indeed fail, consider removing it
+	char buf[1024];
 	std::atomic<bool> cancelDone(false);
-	s.asyncSendSome(bigbuf.get(), bigbufsize, -1, [&](const Error& ec, size_t transfered)
-	{
-		CHECK(cancelDone.load() == true); // make sure the cancel ran before this, otherwise the test doesn't make sense
-		CHECK_CZSPAS_EQUAL(Cancelled, ec);
-		done.notify();
-	});
 	server.io.post([&]
 	{
-		cancelDone = true;
-		s.cancel();
+		s.asyncSendSome(buf, sizeof(buf), -1, [&](const Error& ec, size_t transfered)
+		{
+			CHECK(cancelDone.load() == true); // make sure the cancel ran before this, otherwise the test doesn't make sense
+			CHECK_CZSPAS_EQUAL(Cancelled, ec);
+			done.notify();
+		});
+		server.io.post([&]
+		{
+			cancelDone = true;
+			s.cancel();
+		});
 	});
 
 	done.wait();
 }
+#endif
 
 //
 // This test checks that a timeout on a send is actually very unlikely to happen.
-// This is because both the timeout calculations and the ::send (and ::recv) calls are done on the IODemux threads,
-// and so, once the call to ::send starts, the operation will not timeout even if it takes much longer to complete
-// than the specified timeout
+// This is because sockets are ready to write most of the time (the OS buffers sent data). As such, the IODemux
+// thread marks the send operation as ready to execute before any timeouts can occur.
+// For example, even if the send itself takes longer than the timeout, it started before before the timeout and therefore
+// is not marked as timed out.
 TEST(Socket_asyncSendSome_timeout)
 {
 	TestServer server;
@@ -600,15 +606,17 @@ TEST(Socket_asyncSendSome_timeout)
 	constexpr int timeoutMs = 1;
 	s.asyncSendSome(bigbuf.get(), bigbufsize, timeoutMs, [&](const Error& ec, size_t transfered)
 	{
-		CHECK_CZSPAS_EQUAL(Success, ec);
 		// Make sure the operation took longer than the timeout
+		// If that's not the case it means the send size needs to be increased so that this test makes sense
 		auto delta = server.timer.GetTimeInMs() - startTime;
 		CHECK(delta > timeoutMs);
+
+		// This only makes sense if the operation time was longer than the timeout as explained above
+		CHECK_CZSPAS_EQUAL(Success, ec);
 		done.notify();
 	});
 	done.wait();
 }
-
 
 // Create and destroy lots of connections really fast, to make sure we can set lingering off
 TEST(Socket_multiple_connections)
@@ -627,12 +635,9 @@ TEST(Socket_multiple_connections)
 		{
 			CHECK_CZSPAS(res);
 		}
-		//detail::utils::setBlocking(s.getHandle(), true);
 		s.setLinger(true, 0);
-		//printf("%d: Closed at %s\n", (int)s.getHandle(), __FUNCTION__);
 		s._forceClose(false);
 	}
-	//UnitTest::TimeHelpers::SleepMs(100000000);
 }
 
 static std::vector<size_t> gDumped;

@@ -924,7 +924,6 @@ namespace detail
 				{
 					CZSPAS_FATAL("IODemux %p: %s", this, detail::ErrorWrapper().msg().c_str());
 				}
-				// else if (res>0) // Number of elements in the fds array for which an revents nember is nonzero
 
 				if (m_sockets.fds[0].revents & POLLRDNORM)
 				{
@@ -1116,14 +1115,11 @@ public:
 		return Error();
 	}
 	 
-	// #TODO : Remove the timeout parameter, and assume a default
-	// 
 	void asyncConnect(const char* ip, int port, int timeoutMs, ConnectHandler h)
 	{
 		CZSPAS_ASSERT(!isValid());
 		CZSPAS_INFO("Socket %p: asyncConnect(%s,%d, H, %d)", this, ip, port, timeoutMs);
 
-		m_connectInfo.cancelled = false;
 		m_connectInfo.handler = std::move(h);
 		m_connectInfo.sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 		if (m_connectInfo.sock == CZSPAS_INVALID_SOCKET)
@@ -1160,10 +1156,11 @@ public:
 			}
 			else
 			{
+				// Any other error is a real error, so queue the handler for execution
 				detail::utils::closeSocket(m_connectInfo.sock);
-				// #TODO : Do a unit test to cover this code path
 				m_owner.queueReadyHandler([this, ec = err.getError()]
 				{
+					// #TODO : Do a unit test to cover this code path ?
 					auto data = m_connectInfo.moveAndClear();
 					data.handler(ec);
 				});
@@ -1171,7 +1168,7 @@ public:
 		}
 		else
 		{
-			// It may happen that the connect succeeds right away.
+			// It may happen that the connect succeeds right away...
 			m_owner.queueReadyHandler([this]
 			{
 				auto data = m_connectInfo.moveAndClear();
@@ -1188,7 +1185,6 @@ public:
 	{
 		CZSPAS_ASSERT(isValid());
 		CZSPAS_ASSERT(!m_recvInfo.handler); // There can be only one receive operation in flight
-		m_recvInfo.cancelled = false;
 		m_recvInfo.buf = buf;
 		m_recvInfo.len = len;
 		m_recvInfo.handler = std::move(h);
@@ -1200,7 +1196,6 @@ public:
 	{
 		CZSPAS_ASSERT(isValid());
 		CZSPAS_ASSERT(!m_sendInfo.handler); // There can be only one send operation in flight
-		m_sendInfo.cancelled = false;
 		m_sendInfo.buf = buf;
 		m_sendInfo.len = len;
 		m_sendInfo.handler = std::move(h);
@@ -1211,15 +1206,13 @@ public:
 	{
 		if (m_connectInfo.handler || m_recvInfo.handler || m_sendInfo.handler)
 		{
-			m_connectInfo.cancelled = true;
-			m_recvInfo.cancelled = true;
-			m_sendInfo.cancelled = true;
 			m_owner.m_iodemux.cancelHandlers(this);
 		}
 	}
 
 	void close()
 	{
+		// #TODO : Implement this
 		cancel();
 	}
 
@@ -1238,36 +1231,26 @@ protected:
 	virtual void onReadReady(Error::Code code) override
 	{
 		CZSPAS_ASSERT(m_recvInfo.handler);
-
-		int len = 0;
-		Error ec(code);
-		if (code == Error::Code::Success)
+		m_owner.queueReadyHandler([this, code]() mutable
 		{
-			// The interface allows size_t, but the implementation only allows int
-			int todo = m_recvInfo.len > INT_MAX ? INT_MAX : static_cast<int>(m_recvInfo.len);
-			len = ::recv(m_s, m_recvInfo.buf, todo, 0);
-			if (len == CZSPAS_SOCKET_ERROR)
+			int len = 0;
+			Error ec(code);
+			if (code == Error::Code::Success)
 			{
-				detail::ErrorWrapper err;
-				ec = err.getError();
-				if (err.isBlockError())
+				// The interface allows size_t, but the implementation only allows int
+				int todo = m_recvInfo.len > INT_MAX ? INT_MAX : static_cast<int>(m_recvInfo.len);
+				len = ::recv(m_s, m_recvInfo.buf, todo, 0);
+				if (len == CZSPAS_SOCKET_ERROR)
 				{
-					CZSPAS_FATAL("Blocking not expected at this point.");
+					detail::ErrorWrapper err;
+					ec = err.getError();
+					if (err.isBlockError()) // Blocking can't happen at this point, since we got an event saying it's ready to read
+					{
+						CZSPAS_FATAL("Blocking not expected at this point.");
+					}
 				}
 			}
-		}
-
-		m_owner.queueReadyHandler([this, len, ec]() mutable
-		{
 			auto data = m_recvInfo.moveAndClear();
-			if (data.cancelled)
-			{
-				// The read might have succeeded in the IODemux thread, but meanwhile the operation might have been
-				// cancelled, so consider it cancelled instead of trying to figure out a thread safe way to accept
-				// the read as successful.
-				ec = Error(Error::Code::Cancelled);
-				len = 0;
-			}
 			data.handler(ec, len);
 		});
 	}
@@ -1287,22 +1270,13 @@ protected:
 		{
 			auto data = m_connectInfo.moveAndClear();
 			Error ec(code);
-			m_s = data.sock;
-			if (data.cancelled)
-			{
-				// Even if the connect succeeded in the IODemux thread, the operation might have been cancelled,
-				// so instead of figuring out a thread safe way to keep the connect, its easier just to cancel it
-				// and close the socket
-				ec = Error(Error::Code::Cancelled);
-			}
-
 			if (ec)
 			{
-				detail::utils::closeSocket(m_s);
+				detail::utils::closeSocket(data.sock);
 			}
 			else
 			{
-				CZSPAS_ASSERT(isValid());
+				m_s = data.sock;
 				m_localAddr = detail::utils::getLocalAddr(m_s);
 				m_peerAddr = detail::utils::getRemoteAddr(m_s);
 			}
@@ -1313,37 +1287,27 @@ protected:
 	void handleSend(Error::Code code)
 	{
 		CZSPAS_ASSERT(m_sendInfo.handler);
-
-		int len = 0;
-		Error ec(code);
-		if (code == Error::Code::Success)
+		m_owner.queueReadyHandler([this, code]() mutable
 		{
-			// The interface allows size_t, but the implementation only allows int
-			int todo = m_sendInfo.len > INT_MAX ? INT_MAX : static_cast<int>(m_sendInfo.len);
-			len = ::send(m_s, m_sendInfo.buf, todo, 0);
-			if (len == CZSPAS_SOCKET_ERROR)
+			int len = 0;
+			Error ec(code);
+			if (code == Error::Code::Success)
 			{
-				detail::ErrorWrapper err;
-				ec = err.getError();
-				if (err.isBlockError())
+				// The interface allows size_t, but the implementation only allows int
+				int todo = m_sendInfo.len > INT_MAX ? INT_MAX : static_cast<int>(m_sendInfo.len);
+				len = ::send(m_s, m_sendInfo.buf, todo, 0);
+				if (len == CZSPAS_SOCKET_ERROR)
 				{
-					CZSPAS_FATAL("Blocking not expected at this point.");
+					detail::ErrorWrapper err;
+					ec = err.getError();
+					if (err.isBlockError()) // Blocking can't happen at this point, since we got the event saying we can send
+					{
+						CZSPAS_FATAL("Blocking not expected at this point.");
+					}
 				}
 			}
-		}
 
-		m_owner.queueReadyHandler([this, len, ec]() mutable
-		{
 			auto data = m_sendInfo.moveAndClear();
-			if (data.cancelled)
-			{
-				// The send might have succeeded in the IODemux thread, but meanwhile the operation might have been
-				// cancelled, so consider it cancelled instead of trying to figure out a thread safe way to accept
-				// the send as successful.
-				ec = Error(Error::Code::Cancelled);
-				len = 0;
-			}
-
 			data.handler(ec, len);
 		});
 	}
@@ -1354,13 +1318,11 @@ protected:
 
 	struct ConnectInfo
 	{
-		bool cancelled = false;
 		ConnectHandler handler;
 		SocketHandle sock = CZSPAS_INVALID_SOCKET;
 		ConnectInfo moveAndClear()
 		{
 			ConnectInfo res = std::move(*this);
-			cancelled = false;
 			handler = nullptr;
 			sock = CZSPAS_INVALID_SOCKET;
 			return res;
@@ -1373,14 +1335,12 @@ protected:
 	template<typename T>
 	struct TransferInfo
 	{
-		bool cancelled = false;
 		T buf = nullptr;
 		size_t len = 0;
 		TransferHandler handler;
 		TransferInfo moveAndClear()
 		{
 			TransferInfo res = std::move(*this);
-			cancelled = false;
 			buf = nullptr;
 			len = 0;
 			handler = nullptr;
@@ -1515,7 +1475,6 @@ public:
 		CZSPAS_ASSERT(!m_acceptInfo.handler && "There is already a pending accept operation");
 		CZSPAS_ASSERT(!sock.isValid());
 
-		m_acceptInfo.cancelled = false;
 		m_acceptInfo.handler = std::move(h);
 		m_acceptInfo.sock = &sock;
 		m_owner.m_iodemux.registerHandler(this, m_s, POLLRDNORM, timeoutMs);
@@ -1530,7 +1489,6 @@ public:
 	{
 		if (m_acceptInfo.handler)
 		{
-			m_acceptInfo.cancelled = true;
 			m_owner.m_iodemux.cancelHandlers(this);
 		}
 	}
@@ -1546,33 +1504,19 @@ protected:
 	{
 		CZSPAS_ASSERT(m_acceptInfo.handler);
 		CZSPAS_ASSERT(m_acceptInfo.sock && !m_acceptInfo.sock->isValid());
-
-		SocketHandle sock = CZSPAS_INVALID_SOCKET;
-		Error ec(code);
-		if (code == Error::Code::Success)
+		m_owner.queueReadyHandler([this, code]() mutable
 		{
-			sockaddr_in addr;
-			socklen_t size = sizeof(addr);
-			sock = ::accept(m_s, (struct sockaddr*)&addr, &size);
-			if (sock == CZSPAS_INVALID_SOCKET)
-				ec = detail::ErrorWrapper().getError();
-		}
-
-		m_owner.queueReadyHandler([this, ec, sock]() mutable
-		{
+			SocketHandle sock = CZSPAS_INVALID_SOCKET;
+			Error ec(code);
 			auto data = m_acceptInfo.moveAndClear();
-			data.sock->m_s = sock;
-			if (data.cancelled)
+			if (code == Error::Code::Success)
 			{
-				// Even if the accept was successful in the IODemux thread, the operation might have been cancelled,
-				// so instead of trying to figure out the right way to still accept it, its easier to just consider it
-				// cancelled and destroy the socket we accepted.
-				ec = Error(Error::Code::Cancelled);
-				detail::utils::closeSocket(data.sock->m_s);
-			}
-			else
-			{
-				if (data.sock->m_s != CZSPAS_INVALID_SOCKET)
+				sockaddr_in addr;
+				socklen_t size = sizeof(addr);
+				data.sock->m_s = ::accept(m_s, (struct sockaddr*)&addr, &size);
+				if (data.sock->m_s == CZSPAS_INVALID_SOCKET)
+					ec = detail::ErrorWrapper().getError();
+				else
 					detail::utils::setBlocking(data.sock->m_s, false);
 			}
 
@@ -1584,13 +1528,11 @@ protected:
 	std::pair<std::string, int> m_localAddr;
 	struct AcceptInfo
 	{
-		bool cancelled = false;
 		AcceptHandler handler = nullptr;
 		Socket* sock = nullptr;
 		AcceptInfo moveAndClear()
 		{
 			AcceptInfo res = std::move(*this);
-			cancelled = false;
 			handler = nullptr;
 			sock = nullptr;
 			return res;
