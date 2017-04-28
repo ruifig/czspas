@@ -286,10 +286,18 @@ TEST(Socket_asyncConnect_timeout)
 	timer.Start();
 	int timeoutMs = 200;
 	auto allowedThread = std::this_thread::get_id();
-	s.asyncConnect("127.0.0.1", SERVER_PORT, timeoutMs, [&](const Error& ec)
+	// Initially I was using "127.0.0.1" to test the asynchronous connect timeout, but it seems that on linux
+	// it fails right away. Probably the kernel treats connections to the localhost in a different way, detecting
+	// right away that if a connect is not possible, without taking into consideration the timeout specified in
+	// the "select" function.
+	// On Windows, connect attempts to localhost still take into consideration the timeout.
+	// The solution is to try an connect to some external ip, like "254.254.254.254". This causes Linux to
+	// to actually wait for the connect attempt.
+	s.asyncConnect("254.254.254.254", SERVER_PORT, timeoutMs, [&](const Error& ec)
 	{
 		CHECK_CZSPAS_EQUAL(Timeout, ec);
-		CHECK_CLOSE(timeoutMs, timer.GetTimeInMs(), 100);
+		// Need a big error of margin for the timeout, since it will depend on the load the computer had at the moment.
+		CHECK_CLOSE(timeoutMs, timer.GetTimeInMs(), 1000);
 		CHECK(std::this_thread::get_id() == allowedThread);
 		io.stop(); // stop the service, to finish this test
 		done.notify();
@@ -644,27 +652,6 @@ static std::vector<size_t> gDumped;
 ZeroSemaphore gDumpedPending;
 size_t gDumpedTotal;
 
-void dumpReceive(Socket& sock, size_t totalExpected)
-{
-	static char buf[10000];
-	gDumpedPending.increment();
-	sock.asyncReceiveSome(buf, sizeof(buf), -1, [&sock, totalExpected, buf=&buf[0]](const Error& ec, size_t transfered)
-	{
-		gDumped.push_back(transfered);
-
-		for (size_t i = 0; i < transfered; i++)
-		{
-			auto expected = char(gDumpedTotal + i);
-			CHECK_EQUAL((int)expected, (int)buf[i]);
-		}
-
-		gDumpedTotal += transfered;
-		if (gDumpedTotal < totalExpected && !ec)
-			dumpReceive(sock, totalExpected);
-		gDumpedPending.decrement();
-	});
-}
-
 struct StandaloneHelper
 {
 	Service io;
@@ -715,7 +702,7 @@ struct StandaloneHelper
 					return;
 				}
 
-				printf("%llu received: %llu/%llu\n", transfered, this_->totalDone, this_->expectedLen);
+				printf("%zu received: %zu/%zu\n", transfered, this_->totalDone, this_->expectedLen);
 				// Check received data
 				char* ptr = this_->buf.get();
 				for (size_t i = 0; i < transfered; i++)
@@ -774,7 +761,7 @@ struct StandaloneHelper
 					return;
 				}
 
-				printf("%llu sent: %llu/%llu\n", transfered, this_->totalDone, this_->expectedLen);
+				printf("%zu sent: %zu/%zu\n", transfered, this_->totalDone, this_->expectedLen);
 
 				if (this_->totalDone == this_->expectedLen)
 				{
@@ -813,7 +800,7 @@ std::shared_ptr<StandaloneHelper> standaloneServerSend(size_t len, int intervalM
 	auto con = std::make_shared<StandaloneHelper::ServerSendConnection>(hlp->io, bufsize);
 	con->expectedLen = len;
 	con->intervalMs = intervalMs;
-	con->acceptor.listen(SERVER_PORT, 1);
+	CHECK_CZSPAS(con->acceptor.listen(SERVER_PORT, 1));
 	con->acceptor.asyncAccept(con->sock, -1, [con](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
