@@ -48,6 +48,7 @@
 	#include <netinet/ip.h>
 	#include <netinet/tcp.h>
 	#include <arpa/inet.h>
+	#include <poll.h>
 	#include <unistd.h>
 	#include <fcntl.h>
 #endif
@@ -58,6 +59,7 @@
 #include <atomic>
 #include <chrono>
 #include <assert.h>
+#include <limits.h>
 #include <unordered_map>
 #include <mutex>
 #include <future>
@@ -239,10 +241,10 @@ namespace detail
 	public:
 		SharedQueue() {}
 
-		template<typename T>
-		void push(T&& item) {
+		template<typename Item>
+		void push(Item&& item) {
 			std::lock_guard<std::mutex> lock(m_mtx);
-			m_queue.push(std::forward<T>(item));
+			m_queue.push(std::forward<Item>(item));
 			m_data_cond.notify_one();
 		}
 
@@ -915,7 +917,11 @@ namespace detail
 				if (timeoutPoint != TimePoint::max())
 					timeoutMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(timeoutPoint - std::chrono::high_resolution_clock::now()).count());
 
+#if _WIN32
 				auto res = WSAPoll(&m_sockets.fds.front(), static_cast<unsigned long>(m_sockets.fds.size()), timeoutMs);
+#else
+				auto res = poll(&m_sockets.fds.front(), static_cast<unsigned long>(m_sockets.fds.size()), timeoutMs);
+#endif
 				if (res == 0) // Timeout
 				{
 					checkTimeouts();
@@ -1248,6 +1254,16 @@ protected:
 					{
 						CZSPAS_FATAL("Blocking not expected at this point.");
 					}
+				}
+				else if (len==0) // A disconnect
+				{
+					// On Windows, we never get here, since WSAPoll doesn't work exactly the same way has poll, according to what I've seen with my tests
+					// Example, while on a WSAPoll, when a peer disconnects, the following happens:
+					//	- Windows:
+					//		- WSAPoll reports an error (POLLUP)
+					//	- Linux:
+					//		- poll reports ready to ready (success), and then recv reads 0 (which means the peer disconnected)
+					ec = Error(Error::Code::ConnectionClosed);
 				}
 			}
 			auto data = m_recvInfo.moveAndClear();
