@@ -20,11 +20,15 @@ namespace UnitTest
 #endif
 		}
 
-		virtual void ReportTestStart(TestDetails const& /*test*/) override
-		{}
+		virtual void ReportTestStart(TestDetails const& test) override
+		{
+			printf("TEST START: %s\n", test.testName);
+		}
 
-		virtual void ReportTestFinish(TestDetails const& /*test*/, float) override
-		{}
+		virtual void ReportTestFinish(TestDetails const& test, float) override
+		{
+			printf("TEST FINISH: %s\n", test.testName);
+		}
 
 		virtual void ReportSummary(int totalTestCount, int failedTestCount, int failureCount, float secondsElapsed) override
 		{
@@ -57,7 +61,7 @@ namespace cz
 
 		void MyTCPLog::out(bool fatal, const char* type, const char* fmt, ...)
 		{
-			if (!ms_logEnabled && !fatal)
+			if (!ms_logEnabled && !fatal && type[0]!='E')
 				return;
 			char buf[256];
 			detail::copyStrToFixedBuffer(buf, type);
@@ -92,7 +96,7 @@ int main()
 	while (true)
 	{
 		counter++;
-		printf("Run %d\n", counter);
+		printf("*** Run %d ***\n", counter);
 		res = UnitTest::czspasRunAllTests();
 		//return res;
 		if (res != 0)
