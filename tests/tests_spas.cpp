@@ -3,6 +3,8 @@
 using namespace cz;
 using namespace spas;
 
+#define ONLY_DEBUG 1
+
 // Default port to use for the tests
 #define SERVER_PORT 9000
 
@@ -533,7 +535,8 @@ TEST(Socket_asyncReceiveSome_peerDisconnect)
 	});
 	server.io.post([&]
 	{
-		server.socks[0]->_forceClose(false);
+		::closesocket(server.socks[0]->getHandle());
+		//server.socks[0]->_forceClose(false);
 	});
 	done.wait();
 }
@@ -674,7 +677,7 @@ TEST(Socket_multiple_connections)
 {
 	TestServer server(true);
 
-	int todo = 70000;
+	int todo = 7000;
 	int count = 0;
 	while (todo--)
 	{
@@ -689,6 +692,9 @@ TEST(Socket_multiple_connections)
 		s._forceClose(false);
 	}
 }
+
+
+#if !ONLY_DEBUG
 
 static std::vector<size_t> gDumped;
 ZeroSemaphore gDumpedPending;
@@ -904,55 +910,6 @@ TEST(asyncSend_big)
 #endif
 
 #if 0
-
-TEST(Dummy)
-{
-	{
-		TestServer server;
-		Semaphore done;
-
-		Socket s(server.io);
-		CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
-		char buf[6];
-		server.waitForAccept();
-
-		s.asyncReceiveSome(buf, sizeof(buf), 10000, [&](const Error& ec, size_t transfered)
-		{
-			CHECK(std::this_thread::get_id() == server.get_threadid());
-			CHECK_EQUAL(sizeof(buf), transfered);
-			CHECK_EQUAL("Hello", buf);
-			done.notify();
-		});
-		UnitTest::TimeHelpers::SleepMs(1000);
-		//::shutdown(s.getHandle(), SD_BOTH);
-		::closesocket(s.getHandle());
-		done.wait();
-
-		server.socks[0]->asyncReceiveSome(buf, sizeof(buf), 10000, [&](const Error& ec, size_t transfered)
-		{
-			CHECK(std::this_thread::get_id() == server.get_threadid());
-			CHECK_EQUAL(sizeof(buf), transfered);
-			CHECK_EQUAL("Hello", buf);
-			done.notify();
-		});
-		done.wait();
-		UnitTest::TimeHelpers::SleepMs(1000);
-
-		server.socks[0]->asyncReceiveSome(buf, sizeof(buf), 10000, [&](const Error& ec, size_t transfered)
-		{
-			CHECK(std::this_thread::get_id() == server.get_threadid());
-			CHECK_EQUAL(sizeof(buf), transfered);
-			CHECK_EQUAL("Hello", buf);
-			done.notify();
-		});
-
-		UnitTest::TimeHelpers::SleepMs(1000);
-		//::shutdown(s.getHandle(), SD_BOTH);
-		//::shutdown(server.socks[0]->getHandle(), SD_BOTH);
-		done.wait();
-	}
-}
-
 TEST(Socket_asyncSendSome_timeout)
 {
 	TestServer server;
@@ -1004,6 +961,7 @@ TEST(Socket_asyncSendSome_timeout)
 	done.wait();
 	done.wait();
 }
+#endif
 #endif
 
 }
