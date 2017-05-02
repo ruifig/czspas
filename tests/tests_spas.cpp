@@ -87,6 +87,7 @@ struct TestServer
 
 		//finish = true;
 		pendingOps.wait();
+		UnitTest::TimeHelpers::SleepMs(1000);
 		io.stop();
 		if (th.joinable())
 			th.join();
@@ -116,7 +117,7 @@ struct TestServer
 			if (detectDisconnect)
 				setDisconnectDetection(sock);
 			doAccept(ac, detectDisconnect);
-		});
+		}, __LINE__);
 	}
 
 	void setDisconnectDetection(std::shared_ptr<Socket> sock)
@@ -677,7 +678,7 @@ TEST(Socket_multiple_connections)
 {
 	TestServer server(true);
 
-	int todo = 7000;
+	int todo = 0;
 	int count = 0;
 	while (todo--)
 	{
