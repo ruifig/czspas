@@ -3,8 +3,6 @@
 using namespace cz;
 using namespace spas;
 
-#define ONLY_DEBUG 1
-
 // Default port to use for the tests
 #define SERVER_PORT 9000
 
@@ -22,132 +20,6 @@ using namespace cz::spas;
 	}
 #define CHECK_CZSPAS(ec) CHECK_CZSPAS_EQUAL(Success, ec)
 
-#define ONLY_BUG 1
-
-struct TestServer
-{
-	Service io;
-	std::thread th;
-	Acceptor* acceptor;
-	Semaphore accepted;
-	bool finish = false;
-	ZeroSemaphore pendingOps;
-	ZeroSemaphore p1,p2,p3,p4;
-	std::vector<std::shared_ptr<Socket>> socks;
-	UnitTest::Timer timer;
-	bool detectDisconnect;
-	std::atomic<int> p1a{0}, p1b{0}, p2a{0}, p2b{0}, p3a{0}, p3b{0}, p4a{0}, p4b{0};
-
-	explicit TestServer(bool detectDisconnect=false)
-	{
-		printf("TestServer::TestServer() %p\n", this);
-		this->detectDisconnect = detectDisconnect;
-		timer.Start();
-		th = std::thread([this]
-		{
-			io.run();
-		});
-
-		auto ac = std::make_shared<Acceptor>(io);
-		acceptor = ac.get();
-		CHECK_CZSPAS(ac->listen(SERVER_PORT, 100));
-		doAccept(ac, detectDisconnect);
-	}
-
-	~TestServer()
-	{
-		printf("TestServer::~TestServer() %p\n", this);
-		#if 1
-		p1.increment();
-		++p1a;
-		pendingOps.increment();
-		io.post(__LINE__, [ac=acceptor, this]
-		{
-			p1.decrement();
-			++p1b;
-			pendingOps.decrement();
-			ac->cancel(__LINE__);
-		});
-		#endif
-
-		if (!detectDisconnect)
-		{
-			p2.increment();
-			++p2a;
-			pendingOps.increment();
-			io.post(__LINE__, [&]
-			{
-				p2.decrement();
-				++p2b;
-				pendingOps.decrement();
-				for (auto&& s : socks)
-					s->cancel();
-			});
-		}
-
-		//finish = true;
-		pendingOps.wait();
-		UnitTest::TimeHelpers::SleepMs(1000);
-		io.stop();
-		if (th.joinable())
-			th.join();
-	}
-
-	void doAccept(std::shared_ptr<Acceptor> ac, bool detectDisconnect = false)
-	{
-		p3.increment();
-		++p3a;
-		pendingOps.increment();
-		auto sock = std::make_shared<Socket>(io);
-		ac->asyncAccept(*sock, -1, [this, ac, sock, detectDisconnect](const Error& ec)
-		{
-			p3.decrement();
-			++p3b;
-			pendingOps.decrement();
-			if (finish)
-				return;
-			if (ec.code == Error::Code::Cancelled)
-			{
-				printf("TestServer::doAccept: cancelled **********************************\n");
-				return;
-			}
-			CHECK_CZSPAS(ec);
-			socks.push_back(sock);
-			accepted.notify();
-			if (detectDisconnect)
-				setDisconnectDetection(sock);
-			doAccept(ac, detectDisconnect);
-		}, __LINE__);
-	}
-
-	void setDisconnectDetection(std::shared_ptr<Socket> sock)
-	{
-		static char buf[1];
-		p4.increment();
-		++p4a;
-		pendingOps.increment();
-		sock->asyncReceiveSome(buf, 1, -1, [this, sock](const Error& ec, size_t transfered)
-		{
-			p4.decrement();
-			++p4b;
-			pendingOps.decrement();
-			CHECK_EQUAL(0, transfered);
-			CHECK(ec);
-			socks.erase(std::remove(socks.begin(), socks.end(), sock), socks.end());
-		});
-	}
-
-	void waitForAccept()
-	{
-		accepted.wait();
-	}
-	
-	auto get_threadid() const
-	{
-		return th.get_id();
-	}
-
-};
 
 SUITE(CZSPAS)
 {
@@ -155,7 +27,6 @@ SUITE(CZSPAS)
 //////////////////////////////////////////////////////////////////////////
 // Acceptor tests
 //////////////////////////////////////////////////////////////////////////
-#if !ONLY_BUG
 // Checks behavior for a simple listen
 TEST(Acceptor_listen_ok)
 {
@@ -175,8 +46,8 @@ TEST(Acceptor_listen_failure)
 }
 
 // Tests the accept timeout behavior
-// Because internally the timeout is split in two fields (microseconds and seconds), we need to test something below
-// 1 second, and something above, to make sure the split is done correctly
+// Because internally the timeout is split in two fields (microseconds and seconds, because it uses select), we need to
+// test something below 1 second, and something above, to make sure the split is done correctly
 TEST(Acceptor_accept_timeout)
 {
 	Service io;
@@ -196,52 +67,6 @@ TEST(Acceptor_accept_timeout)
 	CHECK_CLOSE(1050, timer.GetTimeInMs(), 200);
 	CHECK_CZSPAS_EQUAL(Timeout, ec);
 }
-
-
-// What this test tests doesn't make sense in a real use case, but nevertheless it checks some different code paths.
-// It does the following:
-//		- Thread 1 does a synchronous accept (it blocks waiting for the accept to finish)
-//		- Thread 2 does an explicit close on the acceptor socket,
-//		- Thread 1 detects the broken accept call and gives an error.
-// The reason this is not a real use case is because there is no need to have an API to break out of a synchronous accept call.
-//
-#if 0
-TEST(Acceptor_accept_break)
-{
-	Service io;
-	Acceptor ac(io);
-	auto ec = ac.listen(SERVER_PORT, 1);
-	CHECK_CZSPAS(ec);
-
-	auto ft1 = std::async(std::launch::async, [&ac, &io]
-	{
-		Socket s(io);
-		auto ec = ac.accept(s);
-		CHECK_CZSPAS_EQUAL(Other, ec);
-	});
-
-	auto ft2 = std::async(std::launch::async, [&ac]
-	{
-		// Give it some time for the other thread to start the accept
-		//
-		UnitTest::TimeHelpers::SleepMs(200);
-
-		// Closing the socket on our own, to cause the accept to break
-		// Initially I was calling spas::detail::utils::closeSocket(ac.getHandle()), which works fine on Windows.
-		// It does a shutdown with SD_BOTH on Windows, and SD_RDWR on Linux, but it seems on Linux, using a shutdown with
-		// SD_RDWR doesn't cause the ::select used internally by Acceptor::accept to break. It hangs forever.
-        // So, I need to do a manual shutdown with SHUT_RD
-#if _WIN32
-		ac._forceClose(false);
-#else
-		::shutdown(ac.getHandle(), SHUT_RD);
-#endif
-	});
-
-	ft1.get();
-	ft2.get();
-}
-#endif
 
 //////////////////////////////////////////////////////////////////////////
 // Socket tests
@@ -266,6 +91,8 @@ TEST(Socket_connect_ok)
 	ac.accept(s, 1000);
 	ft.get();
 }
+
+#if 0
 
 TEST(Socket_connect_failure)
 {
@@ -670,7 +497,6 @@ TEST(Socket_asyncSendSome_timeout)
 	done.wait();
 }
 
-#endif
 
 
 // Create and destroy lots of connections really fast, to make sure we can set lingering off
@@ -694,8 +520,6 @@ TEST(Socket_multiple_connections)
 	}
 }
 
-
-#if !ONLY_DEBUG
 
 static std::vector<size_t> gDumped;
 ZeroSemaphore gDumpedPending;
@@ -860,7 +684,6 @@ std::shared_ptr<StandaloneHelper> standaloneServerSend(size_t len, int intervalM
 	return hlp;
 }
 
-#if 0
 TEST(standaloneClient_and_Server)
 {
 	{
@@ -908,9 +731,7 @@ TEST(asyncSend_big)
 		CHECK_EQUAL(int(char(i)), int(ptr[i]));
 	}
 }
-#endif
 
-#if 0
 TEST(Socket_asyncSendSome_timeout)
 {
 	TestServer server;
@@ -962,7 +783,6 @@ TEST(Socket_asyncSendSome_timeout)
 	done.wait();
 	done.wait();
 }
-#endif
 #endif
 
 }
