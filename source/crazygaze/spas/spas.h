@@ -89,6 +89,11 @@ namespace cz
 namespace spas
 {
 
+// Forward declarations
+class Acceptor;
+class Socket;
+class Service;
+
 #ifndef CZSPAS_INFO
 	#define CZSPAS_INFO(fmt, ...) detail::DefaultLog::out(false, "Info: ", fmt, ##__VA_ARGS__)
 #endif
@@ -107,6 +112,16 @@ namespace spas
 		if (!(expr)) CZSPAS_FATAL(#expr)
 #endif
 
+#if _WIN32
+	using SocketHandle = SOCKET;
+	#define CZSPAS_INVALID_SOCKET INVALID_SOCKET
+	#define CZSPAS_SOCKET_ERROR SOCKET_ERROR
+#else
+	using SocketHandle = int;
+	#define CZSPAS_INVALID_SOCKET -1
+	#define CZSPAS_SOCKET_ERROR -1
+#endif
+
 struct Error
 {
 	// #TODO : Revise if all error codes are being used (and used in the right places)
@@ -117,7 +132,8 @@ struct Error
 		Timeout,
 		ConnectionClosed,
 		InvalidSocket,
-		Other
+		Other,
+		Max // Only used internally
 	};
 
 	Error(Code c = Code::Success) : code(c) {}
@@ -163,22 +179,9 @@ struct Error
 	std::shared_ptr<std::string> optionalMsg;
 };
 
-class Acceptor;
-class Socket;
-class Service;
 using ConnectHandler = std::function<void(const Error&)>;
 using TransferHandler = std::function<void(const Error& ec, size_t transfered)>;
 using AcceptHandler = std::function<void(const Error& ec)>;
-
-#if _WIN32
-	using SocketHandle = SOCKET;
-	#define CZSPAS_INVALID_SOCKET INVALID_SOCKET
-	#define CZSPAS_SOCKET_ERROR SOCKET_ERROR
-#else
-	using SocketHandle = int;
-	#define CZSPAS_INVALID_SOCKET -1
-	#define CZSPAS_SOCKET_ERROR -1
-#endif
 
 
 namespace detail
@@ -676,389 +679,27 @@ namespace detail
 	};
 #endif
 
+	struct AcceptOperation;
+	struct ConnectOperation;
 
-	// 
-	// Runs a poll()/WSAPoll() on a different thread, and calls registered handlers whenever there is a event available.
-	//
-	class IODemux
+	class BaseService
 	{
-	public:
-
-		struct Listener
-		{
-			virtual void onWriteReady(Error::Code code) = 0;
-			virtual void onReadReady(Error::Code code) = 0;
-		};
-
-		IODemux()
-		{
-			auto acceptor = utils::createListenSocket(0, 1);
-			CZSPAS_ASSERT(!acceptor.first);
-
-			auto connectFt = std::async(std::launch::async, [this, port=detail::utils::getLocalAddr(acceptor.second).second]
-			{
-				auto res = detail::utils::createConnectSocket("127.0.0.1", port);
-				CZSPAS_ASSERT(!res.first);
-				return res.second;
-			});
-
-			auto res = detail::utils::accept(acceptor.second);
-			printf("Closing listen socket %d\n", (int)acceptor.second);
-			detail::utils::closeSocket(acceptor.second);
-			CZSPAS_ASSERT(!res.first);
-			m_signalIn = res.second;
-			m_signalOut = connectFt.get();
-
-			// We reserve index 0 for the signalIn socket. This never gets changed or removed
-			m_sockets.reserveSignalIn(m_signalIn);
-
-			m_th = std::thread([this] {
-				run();
-			});
-		}
-
-		~IODemux()
-		{
-			printf("IODemux::~IODemux() %p\n", this);
-			m_finish = true;
-			signal();
-			m_th.join();
-			detail::utils::closeSocket(m_signalOut);
-			detail::utils::closeSocket(m_signalIn);
-			CZSPAS_ASSERT(m_tmpOps.size()==0);
-
-			// #TODO : Remove this +
-			m_newOps([&](auto &q) {
-				std::swap(q, m_tmpOps);
-			});
-			if (m_tmpOps.size())
-			{
-				printf("IODemux::~IODemux() %p : %zu items left in queue\n", this, m_tmpOps.size());
-			}
-			// -
-		}
-
-		void registerHandler(Listener* listener, SocketHandle sock, short flag, int timeoutMs = -1, int debug = 0)
-		{
-			CZSPAS_ASSERT(flag == POLLRDNORM || flag == POLLWRNORM);
-			m_newOps([&](auto& q)
-			{
-				q.push({ listener, sock, flag, timeoutMs, debug});
-			});
-			signal();
-		}
-
-		// #TODO : Remove this
-		void cancelHandlers(Listener* listener, int debug=0)
-		{
-			m_newOps([&](auto& q)
-			{
-				q.push({ listener, 0, 0, -1, debug});
-			});
-			signal();
-		}
-
-	private:
-
-#if _WIN32
-		detail::WSAInstance m_wsaInstance;
-#endif
-		using TimePoint = std::chrono::time_point<std::chrono::high_resolution_clock>;
-
-		struct NewOp
-		{
-			Listener* listener;
-			SocketHandle sock;
-			short flag; // POLLRDNORM, POLLWRNORM, or 0 (cancel)
-			int timeoutMs;
-			int debug;
-		};
-
-		struct Handler
-		{
-			Listener* listener;
-			SocketHandle sock;
-			TimePoint readTimeoutPoint;
-			TimePoint writeTimeoutPoint;
-		};
-
-		struct Set
-		{
-			void reserveSignalIn(SocketHandle s)
-			{
-				// Reserve index 0 for the IODemux signalIn socket
-				fds.push_back({ s, POLLRDNORM, 0 });
-				handlers.push_back({ nullptr, s, TimePoint::max(), TimePoint::max() });
-			}
-
-			std::pair<pollfd*, Handler*> getAt(int idx)
-			{
-				return std::make_pair(&fds[idx], &handlers[idx]);
-			}
-
-			// Retrieves an existing entry for the specified socket, or creates one if it doesn't exist
-			std::pair<pollfd*, Handler*> get_(Listener* listener, SocketHandle sock)
-			{
-				size_t idx;
-				for (idx = 0; idx < handlers.size(); idx++)
-				{
-					if (handlers[idx].listener == listener)
-						break;
-				}
-
-				if (idx == handlers.size()) // Not found, so create entry for this socket
-				{
-					fds.push_back({ CZSPAS_INVALID_SOCKET, 0 , 0 });
-					handlers.push_back({ listener, sock, TimePoint::max(), TimePoint::max() });
-				}
-
-				return getAt(static_cast<int>(idx));
-			}
-			
-			void remove(int idx)
-			{
-				detail::removeAndReplaceWithLast(fds, fds.begin() + idx);
-				detail::removeAndReplaceWithLast(handlers, handlers.begin() + idx);
-			}
-
-			std::vector<pollfd> fds;
-			std::vector<Handler> handlers;
-		};
-
-		detail::Monitor<std::queue<NewOp>> m_newOps;
-		std::queue<NewOp> m_tmpOps;
-		Set m_sockets;
-		std::thread m_th;
-		SocketHandle m_signalIn;
-		SocketHandle m_signalOut;
-		bool m_finish = false;
-
-		// Sends data to signal socket, to cause poll to break
-		void signal()
-		{
-			char buf = 0;
-			if (::send(m_signalOut, &buf, 1, 0) != 1)
-				CZSPAS_FATAL("IODemux %p", this, detail::ErrorWrapper().msg().c_str());
-		}
-
-		// Read as much data as possible from the signalIn socket
-		void readSignalIn()
-		{
-			char buf[64];
-			bool done = false;
-			while (!done)
-			{
-				if (recv(m_signalIn, buf, sizeof(buf), 0) == CZSPAS_SOCKET_ERROR)
-				{
-					detail::ErrorWrapper err;
-					if (err.isBlockError()) // This is expected, and it means there is no more data to read
-					{
-						done = true;
-					}
-					else
-					{
-						CZSPAS_FATAL("IODemux %p: %s", this, err.msg().c_str());
-					}
-				}
-			}
-		}
-
-		void setEventHandler(const NewOp& op)
-		{
-			CZSPAS_ASSERT(op.flag==POLLRDNORM || op.flag==POLLWRNORM);
-			auto f = m_sockets.get_(op.listener, op.sock);
-			f.first->fd = f.second->sock;
-			f.first->events |= op.flag;
-			auto t = (op.timeoutMs == -1) ? TimePoint::max() : std::chrono::high_resolution_clock::now() + std::chrono::milliseconds(op.timeoutMs);
-			if (op.flag == POLLRDNORM)
-				f.second->readTimeoutPoint = t;
-			else if (op.flag)
-				f.second->writeTimeoutPoint = t;
-		}
-
-		void handleEvent(std::pair<pollfd*,Handler*> f, short flag)
-		{
-			if (f.first->revents & flag)
-			{
-				// We handle 1 single event of this type, so disable the request for this type of event
-				f.first->events &= ~flag; 
-				if (flag == POLLRDNORM)
-				{
-					f.second->listener->onReadReady(Error::Code::Success);
-					f.second->readTimeoutPoint = TimePoint::max();
-				}
-				else
-				{
-					f.second->listener->onWriteReady(Error::Code::Success);
-					f.second->writeTimeoutPoint = TimePoint::max();
-				}
-			}
-		}
-
-		void cancelEvent(std::pair<pollfd*, Handler*> f, short flag, Error::Code code, int debug = 0)
-		{
-			if (f.first->events & flag)
-			{
-				// We handle 1 single event of this type, so disable the request for this type of event
-				f.first->events &= ~flag; 
-				if (flag == POLLRDNORM)
-				{
-					f.second->listener->onReadReady(code);
-					f.second->readTimeoutPoint = TimePoint::max();
-				}
-				else
-				{
-					f.second->listener->onWriteReady(code);
-					f.second->writeTimeoutPoint = TimePoint::max();
-				}
-			}
-		}
-
-		void checkTimeouts()
-		{
-			auto now = std::chrono::high_resolution_clock::now();
-			for (int idx = 1; idx < static_cast<int>(m_sockets.fds.size());)
-			{
-				auto f = m_sockets.getAt(idx);
-				if ((f.first->events & POLLRDNORM) && (now > f.second->readTimeoutPoint))
-					cancelEvent(f, POLLRDNORM, Error::Code::Timeout);
-				if ((f.first->events & POLLWRNORM) && (now > f.second->writeTimeoutPoint))
-					cancelEvent(f, POLLWRNORM, Error::Code::Timeout);
-
-				// If we are not interested in any more request from this handler, remove it
-				if ((f.first->events & (POLLRDNORM | POLLWRNORM)) == 0)
-					m_sockets.remove(idx);
-				else
-					++idx;
-			}
-		}
-
-		void run()
-		{
-			TimePoint timeoutPoint = TimePoint::max();
-			while (!m_finish)
-			{
-				// 
-				// Calculate the timeout we need for the poll()
-				for (auto&& h : m_sockets.handlers)
-				{
-					if (h.readTimeoutPoint < timeoutPoint)
-						timeoutPoint = h.readTimeoutPoint;
-					if (h.writeTimeoutPoint < timeoutPoint)
-						timeoutPoint = h.writeTimeoutPoint;
-				}
-
-				int timeoutMs = -1;
-				if (timeoutPoint != TimePoint::max())
-					timeoutMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(timeoutPoint - std::chrono::high_resolution_clock::now()).count());
-
-#if _WIN32
-				auto res = WSAPoll(&m_sockets.fds.front(), static_cast<unsigned long>(m_sockets.fds.size()), timeoutMs);
-#else
-				auto res = poll(&m_sockets.fds.front(), static_cast<unsigned long>(m_sockets.fds.size()), timeoutMs);
-#endif
-				if (res == 0) // Timeout
-				{
-					checkTimeouts();
-				}
-				else if (res == CZSPAS_SOCKET_ERROR)
-				{
-					CZSPAS_FATAL("IODemux %p: %s", this, detail::ErrorWrapper().msg().c_str());
-				}
-
-				if (m_sockets.fds[0].revents & POLLRDNORM)
-				{
-					readSignalIn();
-				}
-
-				//
-				// Process received events
-				//
-				for (int idx = 1; idx < static_cast<int>(m_sockets.fds.size()); )
-				{
-					auto f = m_sockets.getAt(idx);
-					if (f.first->revents & (POLLERR | POLLHUP | POLLNVAL))
-					{
-						cancelEvent(f, POLLRDNORM, (f.first->revents & POLLHUP) ? Error::Code::ConnectionClosed : Error::Code::InvalidSocket);
-						cancelEvent(f, POLLWRNORM, (f.first->revents & POLLHUP) ? Error::Code::ConnectionClosed : Error::Code::InvalidSocket);
-					}
-					else
-					{
-						handleEvent(f, POLLRDNORM);
-						handleEvent(f, POLLWRNORM);
-					}
-
-					// If we are not interested in any more request from this handler, remove it
-					if ((f.first->events & (POLLRDNORM | POLLWRNORM)) == 0)
-					{
-						m_sockets.remove(idx);
-					}
-					else
-					{
-						++idx;
-					}
-				}
-
-				//
-				// Process new operations
-				//
-				m_newOps([&](auto& q)
-				{
-					std::swap(q, m_tmpOps);
-				});
-
-				while (m_tmpOps.size())
-				{
-					NewOp op = m_tmpOps.front();
-					m_tmpOps.pop();
-					if (op.debug) printf("IODemux::run() %p: Running op %d (flag %d)\n", this, op.debug, op.flag);
-					if (op.flag == 0) // 0 means Cancel
-					{
-						bool found = false;
-						// If the handler is not found, we don't need to do anything
-						for (int idx = 1; idx < static_cast<int>(m_sockets.fds.size()); ++idx)
-						{
-							auto f = m_sockets.getAt(idx);
-							if (f.second->listener == op.listener)
-							{
-								found = true;
-								if (op.debug) printf("IODemux::run() %p: cancel found\n", this);
-								cancelEvent(f, POLLRDNORM, Error::Code::Cancelled, op.debug);
-								cancelEvent(f, POLLWRNORM, Error::Code::Cancelled, op.debug);
-								m_sockets.remove(idx);
-								break;
-							}
-						}
-						 if (!found && op.debug)
-						 {
-							 printf("\n");
-						 }
-					}
-					else
-					{
-						setEventHandler(op);
-					}
-					if (op.debug) printf("IODemux::run() %p: Finishing running op %d (flag %d)\n", this, op.debug, op.flag);
-				}
-
-			}
-		}
-
 	};
 
-	class BaseService;
-
-	//////////////////////////////////////////////////////////////////////////
-	// BaseSocket
-	//////////////////////////////////////////////////////////////////////////
-	class BaseSocket : public IODemux::Listener
+	class BaseSocket
 	{
 	public:
-		BaseSocket(detail::BaseService& owner) : m_owner(owner) {}
-		virtual ~BaseSocket()
+		BaseSocket(detail::BaseService& owner)
+			: m_owner(owner)
+			, m_pendingOps(0)
 		{
 		}
+		virtual ~BaseSocket()
+		{
+			CZSPAS_ASSERT(m_pendingOps.load() == 0);
+		}
 
+		//! Only to be used with care, if the user wants to access the underlying socket handle
 		SocketHandle getHandle()
 		{
 			return m_s;
@@ -1073,437 +714,438 @@ namespace detail
 		{
 			detail::utils::setLinger(m_s, enabled, timeout);
 		}
-
-
-		// For internal use in the unit tests. DO NOT USE
-		void _forceClose(bool doshutdown)
-		{
-			detail::utils::closeSocket(m_s, doshutdown);
-		}
-
 	protected:
-
 		BaseSocket(const BaseSocket&) = delete;
 		void operator=(const BaseSocket&) = delete;
 
+		friend AcceptOperation;
+		friend ConnectOperation;
 		friend Acceptor;
-		friend Service;
 		bool isValid() const
 		{
 			return m_s != CZSPAS_INVALID_SOCKET;
 		}
 
+		void resolveAddrs()
+		{
+			m_localAddr = detail::utils::getLocalAddr(m_s);
+			m_peerAddr = detail::utils::getRemoteAddr(m_s);
+		}
+
 		detail::BaseService& m_owner;
 		SocketHandle m_s = CZSPAS_INVALID_SOCKET;
+		std::atomic<int> m_pendingOps; // Only for debugging: #TODO : Add a define to have it available only on Debug build
+		std::pair<std::string, int> m_localAddr;
+		std::pair<std::string, int> m_peerAddr;
 	};
 
-	// This is not part of the Service class, so that we can break the circular dependency
-	// between Acceptor/Socket and Service
-	class BaseService
+	struct Operation
 	{
-	public:
-		BaseService()
-		{
-			printf("BaseService::BaseService(): %p\n", this);
-		}
-
-		~BaseService()
-		{
-			// #TODO : Remove this +
-			printf("BaseService::~BaseService(): %p: %d items in queue\n", this, m_readyHandlers._getSize());
-			if (m_readyHandlers._getSize())
-			{
-				std::vector<std::pair<int,std::function<void()>>> v;
-				std::queue<std::pair<int, std::function<void()>>> q;
-				m_readyHandlers.swap(q, false); 
-				while(q.size())
-				{
-					v.push_back(q.front());
-					q.pop();
-				}
-				printf("\n");
-			}
-			// -
-		}
-
-	protected:
-		IODemux m_iodemux;
-
-		friend class cz::spas::Socket;
-		friend class cz::spas::Acceptor;
-
-		template< typename H, typename = IsSimpleHandler<H> >
-		void queueReadyHandler(int line, H&& h)
-		{
-			std::function<void()> fn = h;
-			m_readyHandlers.push(std::pair<int,std::function<void()>>(line, fn));
-		}
-
-		SharedQueue<std::pair<int, std::function<void()>>> m_readyHandlers;
+		Error ec;
+		virtual void exec(SocketHandle fd) = 0;
+		virtual void callUserHandler() = 0;
 	};
+
+	struct PostOperation : Operation
+	{
+		std::function<void()> userHandler;
+		template<typename H>
+		PostOperation(H&& h)
+			: userHandler(std::forward<H>(h)) {}
+		virtual void exec(SocketHandle fd) override {}
+		virtual void callUserHandler() { userHandler(); }
+	};
+
+	struct SocketOperation : public Operation
+	{
+		BaseSocket& owner;
+		explicit SocketOperation(BaseSocket& owner) : owner(owner) {}
+	};
+
+	struct AcceptOperation : public SocketOperation
+	{
+		std::function<void(const Error& ec)> userHandler;
+		BaseSocket& sock;
+
+		template<typename H>
+		AcceptOperation(BaseSocket& owner, BaseSocket& dst, H&& h)
+			: SocketOperation(owner)
+			, dst(dst)
+			, userHandler(std::forward<H>(h))
+		{
+		}
+
+		virtual void exec(SocketHandle fd) override
+		{
+			sockaddr_in addr;
+			socklen_t size = sizeof(addr);
+			sock.m_s = ::accept(fd, (struct sockaddr*)&addr, &size);
+			if (sock.m_s == CZSPAS_INVALID_SOCKET)
+				ec = detail::ErrorWrapper().getError();
+			else
+			{
+				detail::utils::setBlocking(sock.m_s, false);
+				sock.resolveAddrs();
+			}
+		}
+
+		virtual void callUserHandler() override
+		{
+			--owner.m_pendingOps;
+			userHandler(ec);
+		}
+	};
+
+	struct ConnectOperation : public SocketOperation
+	{
+		std::function<void(const Error& ec)> userHandler;
+
+		template<typename H>
+		ConnectOperation(BaseSocket& owner, H&& h)
+			: SocketOperation(owner)
+			, userHandler(std::forward<H>(h))
+		{
+		}
+
+		virtual void exec(SocketHandle fd) override
+		{
+			CZSPAS_ASSERT(fd == owner.getHandle());
+			owner.resolveAddrs();
+		}
+
+		virtual void callUserHandler() override
+		{
+			--owner.m_pendingOps;
+			userHandler(ec);
+		}
+	};
+
+	struct TransferOperation : public SocketOperation
+	{
+		char* buf;
+		size_t bufSize;
+		size_t transfered = 0;
+		std::function<void(const Error& ec, size_t transfered)> userHandler;
+	};
+
+	struct SendOperation : public TransferOperation
+	{
+	};
+
+	struct ReceiveOperation : public TransferOperation
+	{
+	};
+		 
+
+//////////////////////////////////////////////////////////////////////////
+// Reactor interface
+//////////////////////////////////////////////////////////////////////////
+
+class Reactor
+{
+public:
+	enum EventType
+	{
+		Read,
+		Write,
+		Max
+	};
+
+private:
+
+#if _WIN32
+	detail::WSAInstance m_wsaInstance;
+#endif
+	using Timepoint = std::chrono::time_point<std::chrono::high_resolution_clock>;
+
+	struct OperationData
+	{
+		void cancel(Error::Code code, std::queue<std::unique_ptr<Operation>>& dst)
+		{
+			if (op)
+			{
+				op->ec = Error(code);
+				dst.push(std::move(op));
+			}
+		}
+
+		std::unique_ptr<Operation> op;
+		Timepoint timeout = Timepoint::max();
+	};
+
+	struct SocketData
+	{
+		void cancel(Error::Code code, std::queue<std::unique_ptr<Operation>>& dst)
+		{
+			for (auto&& op : ops)
+				op.cancel(code, dst);
+		}
+
+		OperationData ops[EventType::Max];
+	};
+
+	SocketHandle m_signalIn;
+	SocketHandle m_signalOut;
+	std::vector<pollfd> m_fds;
+	std::unordered_map<SocketHandle, SocketData> m_sockData;
+
+public:
+
+	Reactor()
+	{
+		auto acceptor = utils::createListenSocket(0, 1);
+		CZSPAS_ASSERT(!acceptor.first);
+
+		auto connectFt = std::async(std::launch::async, [this, port = detail::utils::getLocalAddr(acceptor.second).second]
+		{
+			auto res = detail::utils::createConnectSocket("127.0.0.1", port);
+			CZSPAS_ASSERT(!res.first);
+			return res.second;
+		});
+
+		auto res = detail::utils::accept(acceptor.second);
+		detail::utils::closeSocket(acceptor.second);
+		CZSPAS_ASSERT(!res.first);
+		m_signalIn = res.second;
+		m_signalOut = connectFt.get();
+	}
+
+	~Reactor()
+	{
+		detail::utils::closeSocket(m_signalOut);
+		detail::utils::closeSocket(m_signalIn);
+	}
+
+	void interrupt()
+	{
+		char buf = 0;
+		if (::send(m_signalOut, &buf, 1, 0) != 1)
+			CZSPAS_FATAL("Reactor %p", this, detail::ErrorWrapper().msg().c_str());
+	}
+
+	// Read as much data as possible from the signalIn socket
+	void readInterrupt()
+	{
+		char buf[64];
+		bool done = false;
+		while (!done)
+		{
+			if (recv(m_signalIn, buf, sizeof(buf), 0) == CZSPAS_SOCKET_ERROR)
+			{
+				detail::ErrorWrapper err;
+				if (err.isBlockError()) // This is expected, and it means there is no more data to read
+				{
+					done = true;
+				}
+				else
+				{
+					CZSPAS_FATAL("Reactor %p: %s", this, err.msg().c_str());
+				}
+			}
+		}
+	}
+
+	void addOperation(SocketHandle fd, EventType type, std::unique_ptr<Operation> op, int timeoutMs)
+	{
+		auto&& o = m_sockData[fd].ops[type];
+		o.op = std::move(op);
+		o.timeout = timeoutMs == -1 ? Timepoint::max()
+		                            : std::chrono::high_resolution_clock::now() + std::chrono::milliseconds(timeoutMs);
+		interrupt();
+	}
+
+	void cancel(SocketHandle fd, std::queue<std::unique_ptr<Operation>>& dst)
+	{
+		auto it = m_sockData.find(fd);
+		if (it == m_sockData.end())
+			return; // No operations for this socket found
+		it->second.cancel(Error::Code::Cancelled, dst);
+		m_sockData.erase(it);
+	}
+
+	static void setFd(pollfd& fd, const SocketData& data, Reactor::EventType type, Timepoint& timeout)
+	{
+		auto&& o = data.ops[type];
+		if (!o.op)
+			return;
+		fd.events |= (type == Reactor::EventType::Read) ? POLLRDNORM : POLLWRNORM;
+		if (o.timeout < timeout)
+			timeout = o.timeout;
+	}
+
+	void runOnce(std::unique_lock<std::mutex>& lk, std::queue<std::unique_ptr<Operation>>& dst)
+	{
+		m_fds.clear(); 
+		m_fds.push_back({ m_signalIn, POLLRDNORM, 0 }); // Reserve for the interrupt
+		auto timeoutPoint = Timepoint::max();
+		for (auto&& p : m_sockData)
+		{
+			m_fds.push_back({ p.first, 0, 0 });
+			setFd(m_fds.back(), p.second, EventType::Read, timeoutPoint);
+			setFd(m_fds.back(), p.second, EventType::Write, timeoutPoint);
+			CZSPAS_ASSERT(m_fds.back().events != 0);
+		}
+
+		// If we only have the m_signalIn in the set, then nothing to do
+		if (m_fds.size() == 1)
+			return;
+
+		lk.unlock();
+
+		int timeoutMs = -1;
+		if (timeoutPoint != Timepoint::max())
+		{
+			timeoutMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(timeoutPoint - std::chrono::high_resolution_clock::now()).count());
+			if (timeoutMs < 0)
+				timeoutMs = 0;
+		}
+
+#if _WIN32
+			auto res = WSAPoll(&m_fds.front(), static_cast<unsigned long>(m_fds.size()), timeoutMs);
+#else
+			auto res = poll(&m_fds.front(), static_cast<unsigned long>(m_fds.size()), timeoutMs);
+#endif
+
+		lk.lock();
+
+		if (m_fds[0].revents & POLLRDNORM)
+			readInterrupt();
+
+		if (res == CZSPAS_SOCKET_ERROR)
+		{
+			CZSPAS_FATAL("Reactor %p: %s", this, detail::ErrorWrapper().msg().c_str());
+		}
+		else
+		{
+			CZSPAS_ASSERT(res >= 0);
+			processEvents(dst);
+		}
+	}
+
+	// Return true if the operation was left empty (e.g: executed/timed out)
+	bool processEventsHelper(SocketHandle fd, OperationData& opdata, int ready, Timepoint expirePoint,
+	                         std::queue<std::unique_ptr<Operation>>& dst)
+	{
+		if (!opdata.op)
+			return true;
+
+		if (ready)
+		{
+			opdata.op->exec(fd);
+			dst.push(std::move(opdata.op));
+			return true;
+		}
+		else if (opdata.timeout < expirePoint)
+		{
+			opdata.op->ec = Error(Error::Code::Timeout);
+			dst.push(std::move(opdata.op));
+			return true;
+		}
+		else
+			return false;
+	}
+
+	void processEvents(std::queue<std::unique_ptr<Operation>>& dst)
+	{
+		auto now = std::chrono::high_resolution_clock::now();
+		for (auto&& fd : m_fds)
+		{
+			auto it = m_sockData.find(fd.fd);
+			if (it==m_sockData.end())
+				continue; // Socket data not present anymore (E.g: Operations were cancelled while in the poll function)
+			if (fd.revents & (POLLERR | POLLHUP | POLLNVAL))
+			{
+				it->second.cancel((fd.revents & POLLHUP) ? Error::Code::ConnectionClosed : Error::Code::InvalidSocket, dst);
+				m_sockData.erase(it);
+			}
+			else
+			{
+				bool empty =
+				    processEventsHelper(it->first, it->second.ops[EventType::Read], fd.revents & POLLRDNORM, now, dst);
+				empty = empty && processEventsHelper(it->first, it->second.ops[EventType::Write],
+				                                     fd.revents & POLLWRNORM, now, dst);
+				if (empty)
+					m_sockData.erase(it);
+			}
+		}
+	}
+
+private:
+
+};
 
 } // namespace detail
 
 //////////////////////////////////////////////////////////////////////////
-// Socket
+//	Service interface
+//////////////////////////////////////////////////////////////////////////
+class Service : public detail::BaseService
+{
+public:
+	Service()
+	{
+	}
+	~Service()
+	{
+	}
+
+	template<typename H, typename = detail::IsSimpleHandler<H>>
+	void post(H&& handler)
+	{
+		std::lock_guard<std::mutex> lk(m_mtx);
+		m_ready.push(std::make_unique<detail::PostOperation>(std::forward<H>(h)));
+	}
+
+private:
+
+	void cancel(SocketHandle fd)
+	{
+		std::lock_guard<std::mutex> lk(m_mtx);
+		m_reactor.cancel(fd, m_ready);
+	}
+
+	void addOperation(SocketHandle fd, detail::Reactor::EventType type, std::unique_ptr<detail::Operation> op, int timeoutMs)
+	{
+		std::lock_guard<std::mutex> lk(m_mtx);
+		m_reactor.addOperation(fd, type, std::move(op), timeoutMs);
+	}
+
+	friend class Acceptor;
+	friend class Socket;
+	std::mutex m_mtx;
+	detail::Reactor m_reactor;
+	std::queue<std::unique_ptr<detail::Operation>> m_ready;
+};
+
+//////////////////////////////////////////////////////////////////////////
+//	Socket interface
 //////////////////////////////////////////////////////////////////////////
 class Socket : public detail::BaseSocket
 {
 public:
-
-	Socket(detail::BaseService& service)
-		: detail::BaseSocket(service)
+	Socket(Service& service) : detail::BaseSocket(service)
 	{
 	}
-
-	virtual ~Socket()
-	{
-		CZSPAS_ASSERT(m_connectInfo.handler == nullptr && "There is a pending connect operation");
-		CZSPAS_ASSERT(m_recvInfo.handler == nullptr && "There is a pending receive operation");
-		CZSPAS_ASSERT(m_sendInfo.handler == nullptr && "There is a pending send operation");
-		detail::utils::closeSocket(m_s);
-	}
-
-	//! Synchronous connect
-	Error connect(const char* ip, int port)
-	{
-		CZSPAS_ASSERT(!isValid());
-
-		CZSPAS_INFO("Socket %p: Connect(%s,%d)", this, ip, port);
-		auto res = detail::utils::createConnectSocket(ip, port);
-		if (res.first)
-		{
-			CZSPAS_ERROR("Socket %p: %s", this, res.first.msg());
-			return res.first;
-		}
-		m_s = res.second;
-
-		m_localAddr = detail::utils::getLocalAddr(m_s);
-		m_peerAddr = detail::utils::getRemoteAddr(m_s);
-		CZSPAS_INFO("Socket %p: Connected to %s:%d", this, m_peerAddr.first.c_str(), m_peerAddr.second);
-
-		return Error();
-	}
-	 
-	void asyncConnect(const char* ip, int port, int timeoutMs, ConnectHandler h)
-	{
-		CZSPAS_ASSERT(!isValid());
-		CZSPAS_INFO("Socket %p: asyncConnect(%s,%d, H, %d)", this, ip, port, timeoutMs);
-
-		m_connectInfo.handler = std::move(h);
-		m_connectInfo.sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-		if (m_connectInfo.sock == CZSPAS_INVALID_SOCKET)
-		{
-			auto ec = detail::ErrorWrapper().getError();
-			CZSPAS_ERROR("Socket %p: %s", this, ec.msg());
-			m_owner.queueReadyHandler(__LINE__, [this, ec = std::move(ec)]
-			{
-				auto data = m_connectInfo.moveAndClear();
-				data.handler(ec);
-			});
-			return;
-		}
-
-		// Enable any loopback optimizations (in case this socket is used in loopback)
-		detail::utils::optimizeLoopback(m_connectInfo.sock);
-		// Set to non-blocking, so we can do an asynchronous connect
-		detail::utils::setBlocking(m_connectInfo.sock, false);
-
-		sockaddr_in addr;
-		memset(&addr, 0, sizeof(addr));
-		addr.sin_family = AF_INET;
-		addr.sin_port = htons(port);
-		inet_pton(AF_INET, ip, &(addr.sin_addr));
-
-		if (::connect(m_connectInfo.sock, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR)
-		{
-			detail::ErrorWrapper err;
-			if (err.isBlockError())
-			{
-				// Normal behavior, so setup the connect detection with select
-				// A asynchronous connect is done when we receive a write event on the socket
-				m_owner.m_iodemux.registerHandler(this, m_connectInfo.sock, POLLWRNORM, timeoutMs);
-			}
-			else
-			{
-				// Any other error is a real error, so queue the handler for execution
-				detail::utils::closeSocket(m_connectInfo.sock);
-				m_owner.queueReadyHandler(__LINE__, [this, ec = err.getError()]
-				{
-					// #TODO : Do a unit test to cover this code path ?
-					auto data = m_connectInfo.moveAndClear();
-					data.handler(ec);
-				});
-			}
-		}
-		else
-		{
-			// It may happen that the connect succeeds right away...
-			m_owner.queueReadyHandler(__LINE__, [this]
-			{
-				auto data = m_connectInfo.moveAndClear();
-				m_s = data.sock;
-				m_localAddr = detail::utils::getLocalAddr(m_s);
-				m_peerAddr = detail::utils::getRemoteAddr(m_s);
-				data.handler(Error());
-			});
-		}
-	}
-
-	template< typename H, typename = detail::IsTransferHandler<H> >
-	void asyncReceiveSome(char* buf, size_t len, int timeoutMs, H&& h)
-	{
-		CZSPAS_ASSERT(isValid());
-		CZSPAS_ASSERT(!m_recvInfo.handler); // There can be only one receive operation in flight
-		m_recvInfo.buf = buf;
-		m_recvInfo.len = len;
-		m_recvInfo.handler = std::move(h);
-		m_owner.m_iodemux.registerHandler(this, m_s, POLLRDNORM, timeoutMs);
-	}
-
-	template< typename H, typename = detail::IsTransferHandler<H> >
-	void asyncSendSome(const char* buf, size_t len, int timeoutMs, H&& h)
-	{
-		CZSPAS_ASSERT(isValid());
-		CZSPAS_ASSERT(!m_sendInfo.handler); // There can be only one send operation in flight
-		m_sendInfo.buf = buf;
-		m_sendInfo.len = len;
-		m_sendInfo.handler = std::move(h);
-		m_owner.m_iodemux.registerHandler(this, m_s, POLLWRNORM, timeoutMs);
-	}
-
-	void cancel()
-	{
-		if (m_connectInfo.handler || m_recvInfo.handler || m_sendInfo.handler)
-		{
-			m_owner.m_iodemux.cancelHandlers(this);
-		}
-	}
-
-	void close()
-	{
-		// #TODO : Implement this
-		cancel();
-	}
-
-	const std::pair<std::string, int>& getLocalAddress() const
-	{
-		return m_localAddr;
-	}
-
-	const std::pair<std::string, int>& getPeerAddress() const
-	{
-		return m_peerAddr;
-	}
-
-protected:
-
-	virtual void onReadReady(Error::Code code) override
-	{
-		CZSPAS_ASSERT(m_recvInfo.handler);
-		m_owner.queueReadyHandler(__LINE__, [this, code]() mutable
-		{
-			int len = 0;
-			Error ec(code);
-			if (code == Error::Code::Success)
-			{
-				// The interface allows size_t, but the implementation only allows int
-				int todo = m_recvInfo.len > INT_MAX ? INT_MAX : static_cast<int>(m_recvInfo.len);
-				len = ::recv(m_s, m_recvInfo.buf, todo, 0);
-				if (len == CZSPAS_SOCKET_ERROR)
-				{
-					detail::ErrorWrapper err;
-					ec = err.getError();
-					if (err.isBlockError()) // Blocking can't happen at this point, since we got an event saying it's ready to read
-					{
-						CZSPAS_FATAL("Blocking not expected at this point.");
-					}
-				}
-				else if (len==0) // A disconnect
-				{
-					// On Windows, we never get here, since WSAPoll doesn't work exactly the same way has poll, according to what I've seen with my tests
-					// Example, while on a WSAPoll, when a peer disconnects, the following happens:
-					//	- Windows:
-					//		- WSAPoll reports an error (POLLUP)
-					//	- Linux:
-					//		- poll reports ready to ready (success), and then recv reads 0 (which means the peer disconnected)
-					ec = Error(Error::Code::ConnectionClosed);
-				}
-			}
-			auto data = m_recvInfo.moveAndClear();
-			data.handler(ec, len);
-		});
-	}
-
-	virtual void onWriteReady(Error::Code code) override
-	{
-		if (m_connectInfo.handler)
-			handleConnect(code);
-		else
-			handleSend(code);
-	}
-
-	void handleConnect(Error::Code code)
-	{
-		CZSPAS_ASSERT(m_connectInfo.handler);
-		m_owner.queueReadyHandler(__LINE__, [this, code]
-		{
-			auto data = m_connectInfo.moveAndClear();
-			Error ec(code);
-			if (ec)
-			{
-				detail::utils::closeSocket(data.sock);
-			}
-			else
-			{
-				m_s = data.sock;
-				m_localAddr = detail::utils::getLocalAddr(m_s);
-				m_peerAddr = detail::utils::getRemoteAddr(m_s);
-			}
-			data.handler(ec);
-		});
-	}
-
-	void handleSend(Error::Code code)
-	{
-		CZSPAS_ASSERT(m_sendInfo.handler);
-		m_owner.queueReadyHandler(__LINE__, [this, code]() mutable
-		{
-			int len = 0;
-			Error ec(code);
-			if (code == Error::Code::Success)
-			{
-				// The interface allows size_t, but the implementation only allows int
-				int todo = m_sendInfo.len > INT_MAX ? INT_MAX : static_cast<int>(m_sendInfo.len);
-				len = ::send(m_s, m_sendInfo.buf, todo, 0);
-				if (len == CZSPAS_SOCKET_ERROR)
-				{
-					detail::ErrorWrapper err;
-					ec = err.getError();
-					if (err.isBlockError()) // Blocking can't happen at this point, since we got the event saying we can send
-					{
-						CZSPAS_FATAL("Blocking not expected at this point.");
-					}
-				}
-			}
-
-			auto data = m_sendInfo.moveAndClear();
-			data.handler(ec, len);
-		});
-	}
-
-	friend Acceptor;
-	std::pair<std::string, int> m_localAddr;
-	std::pair<std::string, int> m_peerAddr;
-
-	struct ConnectInfo
-	{
-		ConnectHandler handler;
-		SocketHandle sock = CZSPAS_INVALID_SOCKET;
-		ConnectInfo moveAndClear()
-		{
-			ConnectInfo res = std::move(*this);
-			handler = nullptr;
-			sock = CZSPAS_INVALID_SOCKET;
-			return res;
-		}
-	} m_connectInfo;
-
-	// All the data necessary to process a receive or send.
-	// This is handy, so we have an easy way to copy to a temporary object and clear before calling user handlers
-	// Template parameter T is just to specify char* or const char*
-	template<typename T>
-	struct TransferInfo
-	{
-		T buf = nullptr;
-		size_t len = 0;
-		TransferHandler handler;
-		TransferInfo moveAndClear()
-		{
-			TransferInfo res = std::move(*this);
-			buf = nullptr;
-			len = 0;
-			handler = nullptr;
-			return res;
-		}
-	};
-	
-	TransferInfo<char*> m_recvInfo;
-	TransferInfo<const char*> m_sendInfo;
+private:
 };
 
-namespace detail
-{
-	template< typename H, typename = detail::IsTransferHandler<H> >
-	void asyncSendHelper(Socket& sock, const char* buf, size_t len, int timeoutMs, const Error& ec, size_t totalDone, H&& h)
-	{
-		CZSPAS_ASSERT(totalDone <= len);
-		if (ec || totalDone==len)
-		{
-			h(ec, totalDone);
-			return;
-		}
-
-		sock.asyncSendSome(buf+totalDone, len-totalDone, timeoutMs,
-			[&sock,buf,len,timeoutMs,totalDone,h=std::move(h)](const Error& ec, size_t transfered) mutable
-		{
-			asyncSendHelper(sock, buf, len, timeoutMs, ec, totalDone + transfered, h);
-		});
-	}
-
-	template< typename H, typename = detail::IsTransferHandler<H> >
-	void asyncReceiveHelper(Socket& sock, char* buf, size_t len, int timeoutMs, const Error& ec, size_t totalDone, H&& h)
-	{
-		CZSPAS_ASSERT(totalDone <= len);
-		if (ec || totalDone==len)
-		{
-			h(ec, totalDone);
-			return;
-		}
-
-		sock.asyncReceiveSome(buf+totalDone, len-totalDone, timeoutMs,
-			[&sock,buf,len,timeoutMs,totalDone,h=std::move(h)](const Error& ec, size_t transfered) mutable
-		{
-			asyncReceiveHelper(sock, buf, len, timeoutMs, ec, totalDone + transfered, h);
-		});
-	}
-}
-template< typename H, typename = detail::IsTransferHandler<H> >
-void asyncSend(Socket& sock, const char* buf, size_t len, int timeoutMs, H&& h)
-{
-	asyncSendHelper(sock, buf, len, timeoutMs, Error(), 0, std::forward<H>(h));
-}
-
-template< typename H, typename = detail::IsTransferHandler<H> >
-void asyncReceive(Socket& sock, char* buf, size_t len, int timeoutMs, H&& h)
-{
-	asyncReceiveHelper(sock, buf, len, timeoutMs, Error(), 0, std::forward<H>(h));
-}
-
-
 //////////////////////////////////////////////////////////////////////////
-// Acceptor
+//	Acceptor interface
 //////////////////////////////////////////////////////////////////////////
 class Acceptor : public detail::BaseSocket
 {
 public:
-
-	Acceptor(detail::BaseService& service)
+	Acceptor(Service& service)
 		: detail::BaseSocket(service)
 	{
 	}
 
 	virtual ~Acceptor()
 	{
-		CZSPAS_ASSERT(m_acceptInfo.handler==nullptr && "There is a pending accept operation");
-		printf("Acceptor::~Acceptor(%p): %d\n", this, (int)m_s);
-		// Close the socket without calling shutdown, and setting linger to 0, so it doesn't linger around and we can run
-		// another server right after
+		// Close the socket without calling shutdown, and setting linger to 0, so it doesn't linger around and we can
+		// run another server right after
 		if (m_s != CZSPAS_INVALID_SOCKET)
-		{
 			detail::utils::setLinger(m_s, true, 0);
-			printf("Acceptor::~Acceptor(%p): %d : closing\n", this, (int)m_s);
-		}
 		detail::utils::closeSocket(m_s, false);
 	}
 
@@ -1521,19 +1163,16 @@ public:
 	{
 		CZSPAS_ASSERT(!isValid());
 		CZSPAS_INFO("Acceptor %p: listen(%d, %d)", this, port, backlog);
-		printf("Acceptor::listen: %p \n", this);
 
 		auto res = detail::utils::createListenSocket(port, backlog);
 		if (res.first)
 		{
 			CZSPAS_ERROR("Acceptor %p: %s", this, res.first.msg());
-			printf("Acceptor::listen: %p error \n", this);
 			return res.first;
 		}
 		m_s = res.second;
 
 		m_localAddr = detail::utils::getLocalAddr(m_s);
-		printf("Acceptor::listen: %p ok \n", this);
 		// No error
 		return Error();
 	}
@@ -1550,9 +1189,7 @@ public:
 			return res.first;
 		}
 		sock.m_s = res.second;
-
-		sock.m_localAddr = detail::utils::getLocalAddr(sock.m_s);
-		sock.m_peerAddr = detail::utils::getRemoteAddr(sock.m_s);
+		sock.resolveAddrs();
 		CZSPAS_INFO("Acceptor %p: Socket %p connected to %s:%d", this, &sock, sock.m_peerAddr.first.c_str(),
 		            sock.m_peerAddr.second);
 
@@ -1561,151 +1198,20 @@ public:
 	}
 
 	template< typename H, typename = detail::IsAcceptHandler<H> >
-	void asyncAccept(Socket& sock, int timeoutMs, H&& h, int debug = 0)
+	void asyncAccept(Socket& sock, int timeoutMs, H&& h)
 	{
 		CZSPAS_ASSERT(isValid());
-		CZSPAS_ASSERT(!m_acceptInfo.handler && "There is already a pending accept operation");
 		CZSPAS_ASSERT(!sock.isValid());
-
-		m_acceptInfo.handler = std::move(h);
-		m_acceptInfo.sock = &sock;
-		m_owner.m_iodemux.registerHandler(this, m_s, POLLRDNORM, timeoutMs, debug);
+		CZSPAS_ASSERT(m_pendingOps.load()==0 && "There is already a pending accept operation");
+		auto op = std::make_unique<detail::AcceptOperation>(std::forward<H>(h), sock);
+		++m_pendingOps;
+		m_owner.addOperation(m_s, Reactor::EventType::Read, std::move(op), timeoutMs);
 	}
 
-	void close()
-	{
-		// #TODO : Fill me
-	}
-
-	void cancel(int debug = 0)
-	{
-		printf("Acceptor::cancel() %p\n", this);
-		if (!m_acceptInfo.handler)
-			return;
-
-		m_owner.queueReadyHandler(__LINE__, [this]() mutable
-		{
-			if (!m_acceptInfo.handler)
-				return;
-			auto data = m_acceptInfo.moveAndClear();
-			data.handler(Error::Code::Cancelled);
-		});
-	}
-
-	const std::pair<std::string, int>& getLocalAddress() const
-	{
-		return m_localAddr;
-	}
-
-protected:
-
-	virtual void onReadReady(Error::Code code) override
-	{
-		CZSPAS_ASSERT(m_acceptInfo.sock && !m_acceptInfo.sock->isValid());
-		m_owner.queueReadyHandler(__LINE__, [this, code]() mutable
-		{
-			if (!m_acceptInfo.handler)
-				return;
-			CZSPAS_ASSERT(m_acceptInfo.sock && !m_acceptInfo.sock->isValid());
-
-			SocketHandle sock = CZSPAS_INVALID_SOCKET;
-			Error ec(code);
-			auto data = m_acceptInfo.moveAndClear();
-			if (code == Error::Code::Success)
-			{
-				sockaddr_in addr;
-				socklen_t size = sizeof(addr);
-				data.sock->m_s = ::accept(m_s, (struct sockaddr*)&addr, &size);
-				if (data.sock->m_s == CZSPAS_INVALID_SOCKET)
-					ec = detail::ErrorWrapper().getError();
-				else
-					detail::utils::setBlocking(data.sock->m_s, false);
-			}
-
-			data.handler(ec);
-		});
-	}
-	virtual void onWriteReady(Error::Code code) override { }
-
-	std::pair<std::string, int> m_localAddr;
-	struct AcceptInfo
-	{
-		AcceptHandler handler = nullptr;
-		Socket* sock = nullptr;
-		AcceptInfo moveAndClear()
-		{
-			AcceptInfo res = std::move(*this);
-			handler = nullptr;
-			sock = nullptr;
-			return res;
-		}
-	} m_acceptInfo;
-};
-
-
-//////////////////////////////////////////////////////////////////////////
-// Service
-//////////////////////////////////////////////////////////////////////////
-class Service : public detail::BaseService
-{
 private:
 
-public:
-	Service()
-	{
-		printf("Service::Service() %p\n", this);
-	}
-
-	~Service()
-	{
-		printf("Service::~Service() %p: %zu items in tmpQ\n", this, m_tmpQ.size());
-	}
-
-	// \return
-	//		false : We are shutting down, and no need to call again
-	//		true  : We should call tick again
-	bool tick(bool block = false)
-	{
-		CZSPAS_ASSERT(m_tmpQ.size() == 0);
-		m_readyHandlers.swap(m_tmpQ, block);
-		while (m_tmpQ.size())
-		{
-			m_tmpQ.front().second();
-			m_tmpQ.pop();
-		}
-		return !m_finish;
-	}
-
-	// Continuously wait for and executes handlers.
-	// Only returns when a "stop" is called
-	void run()
-	{
-		while (tick(true))
-		{
-		}
-	}
-
-	//! Causes the Service to be signaled as finished, and thus causing "run" to return false
-	void stop()
-	{
-		m_readyHandlers.push(std::pair<int, std::function<void()>>(__LINE__, [this]()
-		{
-			m_finish = true;
-		}));
-	}
-
-	//! Request to invoke the specified handler
-	// The handler is NOT called from inside this function.
-	template< typename H, typename = detail::IsSimpleHandler<H> >
-	void post(int line, H&& handler)
-	{
-		m_readyHandlers.push(std::pair<int, std::function<void()>>(line, std::forward<H>(handler)));
-	}
-
-protected:
-	std::queue<std::pair<int, std::function<void()>>> m_tmpQ;
-	bool m_finish = false;
 };
+
 
 } // namespace spas
 } // namespace cz

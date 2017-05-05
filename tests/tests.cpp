@@ -1,7 +1,7 @@
 #include "testsPCH.h"
 #include "UnitTest++/TestReporterStdout.h"
 
-#define LOOP_TESTS 1
+#define LOOP_TESTS 0
 
 namespace UnitTest
 {
