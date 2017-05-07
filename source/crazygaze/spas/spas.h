@@ -509,7 +509,7 @@ namespace detail
 				return addrToPair(addr);
 			else
 			{
-				CZSPAS_FATAL(ErrorWrapper().msg().c_str());
+				//CZSPAS_FATAL(ErrorWrapper().msg().c_str());
 				return std::make_pair("", 0);
 			}
 		}
@@ -714,6 +714,7 @@ namespace detail
 		{
 			detail::utils::setLinger(m_s, enabled, timeout);
 		}
+
 	protected:
 		BaseSocket(const BaseSocket&) = delete;
 		void operator=(const BaseSocket&) = delete;
@@ -742,6 +743,7 @@ namespace detail
 	struct Operation
 	{
 		Error ec;
+		virtual ~Operation() { }
 		virtual void exec(SocketHandle fd) = 0;
 		virtual void callUserHandler() = 0;
 	};
@@ -770,7 +772,7 @@ namespace detail
 		template<typename H>
 		AcceptOperation(BaseSocket& owner, BaseSocket& dst, H&& h)
 			: SocketOperation(owner)
-			, dst(dst)
+			, sock(dst)
 			, userHandler(std::forward<H>(h))
 		{
 		}
@@ -884,44 +886,11 @@ private:
 		OperationData ops[EventType::Max];
 	};
 
+	std::mutex m_mtx;
 	SocketHandle m_signalIn;
 	SocketHandle m_signalOut;
 	std::vector<pollfd> m_fds;
 	std::unordered_map<SocketHandle, SocketData> m_sockData;
-
-public:
-
-	Reactor()
-	{
-		auto acceptor = utils::createListenSocket(0, 1);
-		CZSPAS_ASSERT(!acceptor.first);
-
-		auto connectFt = std::async(std::launch::async, [this, port = detail::utils::getLocalAddr(acceptor.second).second]
-		{
-			auto res = detail::utils::createConnectSocket("127.0.0.1", port);
-			CZSPAS_ASSERT(!res.first);
-			return res.second;
-		});
-
-		auto res = detail::utils::accept(acceptor.second);
-		detail::utils::closeSocket(acceptor.second);
-		CZSPAS_ASSERT(!res.first);
-		m_signalIn = res.second;
-		m_signalOut = connectFt.get();
-	}
-
-	~Reactor()
-	{
-		detail::utils::closeSocket(m_signalOut);
-		detail::utils::closeSocket(m_signalIn);
-	}
-
-	void interrupt()
-	{
-		char buf = 0;
-		if (::send(m_signalOut, &buf, 1, 0) != 1)
-			CZSPAS_FATAL("Reactor %p", this, detail::ErrorWrapper().msg().c_str());
-	}
 
 	// Read as much data as possible from the signalIn socket
 	void readInterrupt()
@@ -945,24 +914,6 @@ public:
 		}
 	}
 
-	void addOperation(SocketHandle fd, EventType type, std::unique_ptr<Operation> op, int timeoutMs)
-	{
-		auto&& o = m_sockData[fd].ops[type];
-		o.op = std::move(op);
-		o.timeout = timeoutMs == -1 ? Timepoint::max()
-		                            : std::chrono::high_resolution_clock::now() + std::chrono::milliseconds(timeoutMs);
-		interrupt();
-	}
-
-	void cancel(SocketHandle fd, std::queue<std::unique_ptr<Operation>>& dst)
-	{
-		auto it = m_sockData.find(fd);
-		if (it == m_sockData.end())
-			return; // No operations for this socket found
-		it->second.cancel(Error::Code::Cancelled, dst);
-		m_sockData.erase(it);
-	}
-
 	static void setFd(pollfd& fd, const SocketData& data, Reactor::EventType type, Timepoint& timeout)
 	{
 		auto&& o = data.ops[type];
@@ -973,8 +924,135 @@ public:
 			timeout = o.timeout;
 	}
 
-	void runOnce(std::unique_lock<std::mutex>& lk, std::queue<std::unique_ptr<Operation>>& dst)
+	// Return true if the operation was left empty (e.g: executed/timed out)
+	bool processEventsHelper(SocketHandle fd, OperationData& opdata, int ready, Timepoint expirePoint,
+	                         std::queue<std::unique_ptr<Operation>>& dst)
 	{
+		if (!opdata.op)
+			return true;
+
+		if (ready)
+		{
+			opdata.op->exec(fd);
+			dst.push(std::move(opdata.op));
+			return true;
+		}
+		else if (opdata.timeout < expirePoint)
+		{
+			opdata.op->ec = Error(Error::Code::Timeout);
+			dst.push(std::move(opdata.op));
+			return true;
+		}
+		else
+			return false;
+	}
+
+	void processEvents(std::queue<std::unique_ptr<Operation>>& dst)
+	{
+		auto now = std::chrono::high_resolution_clock::now();
+		for (auto fdit = m_fds.begin() + 1; fdit != m_fds.end(); ++fdit)
+		{
+			auto&& fd = *fdit;
+			auto it = m_sockData.find(fd.fd);
+			if (it==m_sockData.end())
+				continue; // Socket data not present anymore (E.g: Operations were cancelled while in the poll function)
+			if (fd.revents & (POLLERR | POLLHUP | POLLNVAL))
+			{
+				it->second.cancel((fd.revents & POLLHUP) ? Error::Code::ConnectionClosed : Error::Code::InvalidSocket, dst);
+				m_sockData.erase(it);
+			}
+			else
+			{
+				bool empty =
+				    processEventsHelper(it->first, it->second.ops[EventType::Read], fd.revents & POLLRDNORM, now, dst);
+				empty = empty && processEventsHelper(it->first, it->second.ops[EventType::Write],
+				                                     fd.revents & POLLWRNORM, now, dst);
+				if (empty)
+					m_sockData.erase(it);
+			}
+		}
+	}
+
+public:
+
+	Reactor()
+	{
+
+		// Create a listening socket on a port picked by the OS (because we passed 0 as port)
+		auto acceptor = utils::createListenSocket(0, 1);
+		// If this fails, then the OS probably ran out of resources (e.g: Too many connections or too many connection 
+		// on TIME_WAIT)
+		CZSPAS_ASSERT(!acceptor.first);
+
+		auto connectFt = std::async(std::launch::async, [this, port = detail::utils::getLocalAddr(acceptor.second).second]
+		{
+			auto res = detail::utils::createConnectSocket("127.0.0.1", port);
+			// Same as above. If this fails, then the OS ran out of resources
+			CZSPAS_ASSERT(!res.first);
+			return res.second;
+		});
+
+		auto res = detail::utils::accept(acceptor.second);
+		detail::utils::closeSocket(acceptor.second);
+		CZSPAS_ASSERT(!res.first);
+		m_signalIn = res.second;
+		m_signalOut = connectFt.get();
+	}
+
+	~Reactor()
+	{
+		m_sockData.clear();
+		// To avoid the TIME_WAIT, we do the following:
+		// 1. Disable lingering on the client socket (m_signalOut)
+		// 2. Close client socket
+		// 3. Close server side socket (m_signalIn). This the other socket was the one initiating the shutdown,
+		//    this one doesn't go into TIME_WAIT
+		detail::utils::setLinger(m_signalOut, true, 0);
+		detail::utils::closeSocket(m_signalOut);
+		detail::utils::closeSocket(m_signalIn);
+	}
+
+	void interrupt()
+	{
+		char buf = 0;
+		if (::send(m_signalOut, &buf, 1, 0) != 1)
+			CZSPAS_FATAL("Reactor %p", this, detail::ErrorWrapper().msg().c_str());
+	}
+
+	void addOperation(SocketHandle fd, EventType type, std::unique_ptr<Operation> op, int timeoutMs)
+	{
+		std::unique_lock<std::mutex> lk(m_mtx);
+		auto&& o = m_sockData[fd].ops[type];
+		o.op = std::move(op);
+		o.timeout = timeoutMs == -1 ? Timepoint::max()
+		                            : std::chrono::high_resolution_clock::now() + std::chrono::milliseconds(timeoutMs);
+		interrupt();
+	}
+
+	void cancel(SocketHandle fd, std::queue<std::unique_ptr<Operation>>& dst)
+	{
+		std::unique_lock<std::mutex> lk(m_mtx);
+		auto it = m_sockData.find(fd);
+		if (it == m_sockData.end())
+			return; // No operations for this socket found
+		it->second.cancel(Error::Code::Cancelled, dst);
+		m_sockData.erase(it);
+		interrupt();
+	}
+
+	/*
+	void cancelAll(std::queue<std::unique_ptr<Operation>>& dst)
+	{
+		std::unique_lock<std::mutex> lk(m_mtx);
+		for (auto&& d : m_sockData)
+			d.second.cancel(Error::Code::Cancelled, dst);
+		m_sockData.clear();
+	}
+	*/
+
+	void runOnce(std::queue<std::unique_ptr<Operation>>& dst)
+	{
+		std::unique_lock<std::mutex> lk(m_mtx);
 		m_fds.clear(); 
 		m_fds.push_back({ m_signalIn, POLLRDNORM, 0 }); // Reserve for the interrupt
 		auto timeoutPoint = Timepoint::max();
@@ -985,10 +1063,6 @@ public:
 			setFd(m_fds.back(), p.second, EventType::Write, timeoutPoint);
 			CZSPAS_ASSERT(m_fds.back().events != 0);
 		}
-
-		// If we only have the m_signalIn in the set, then nothing to do
-		if (m_fds.size() == 1)
-			return;
 
 		lk.unlock();
 
@@ -1021,57 +1095,6 @@ public:
 			processEvents(dst);
 		}
 	}
-
-	// Return true if the operation was left empty (e.g: executed/timed out)
-	bool processEventsHelper(SocketHandle fd, OperationData& opdata, int ready, Timepoint expirePoint,
-	                         std::queue<std::unique_ptr<Operation>>& dst)
-	{
-		if (!opdata.op)
-			return true;
-
-		if (ready)
-		{
-			opdata.op->exec(fd);
-			dst.push(std::move(opdata.op));
-			return true;
-		}
-		else if (opdata.timeout < expirePoint)
-		{
-			opdata.op->ec = Error(Error::Code::Timeout);
-			dst.push(std::move(opdata.op));
-			return true;
-		}
-		else
-			return false;
-	}
-
-	void processEvents(std::queue<std::unique_ptr<Operation>>& dst)
-	{
-		auto now = std::chrono::high_resolution_clock::now();
-		for (auto&& fd : m_fds)
-		{
-			auto it = m_sockData.find(fd.fd);
-			if (it==m_sockData.end())
-				continue; // Socket data not present anymore (E.g: Operations were cancelled while in the poll function)
-			if (fd.revents & (POLLERR | POLLHUP | POLLNVAL))
-			{
-				it->second.cancel((fd.revents & POLLHUP) ? Error::Code::ConnectionClosed : Error::Code::InvalidSocket, dst);
-				m_sockData.erase(it);
-			}
-			else
-			{
-				bool empty =
-				    processEventsHelper(it->first, it->second.ops[EventType::Read], fd.revents & POLLRDNORM, now, dst);
-				empty = empty && processEventsHelper(it->first, it->second.ops[EventType::Write],
-				                                     fd.revents & POLLWRNORM, now, dst);
-				if (empty)
-					m_sockData.erase(it);
-			}
-		}
-	}
-
-private:
-
 };
 
 } // namespace detail
@@ -1096,6 +1119,32 @@ public:
 		m_ready.push(std::make_unique<detail::PostOperation>(std::forward<H>(h)));
 	}
 
+	void stop()
+	{
+		m_stopping = true;
+		m_reactor.interrupt();
+	}
+
+	void run(bool loop=true)
+	{
+		m_stopping = false;
+		while (loop && !m_stopping)
+		{
+			{
+				std::lock_guard<std::mutex> lk(m_mtx);
+				std::swap(m_tmpready, m_ready);
+			}
+
+			m_reactor.runOnce(m_tmpready);
+
+			while (m_tmpready.size())
+			{
+				m_tmpready.front()->callUserHandler();
+				m_tmpready.pop();
+			}
+		}
+	}
+
 private:
 
 	void cancel(SocketHandle fd)
@@ -1106,7 +1155,6 @@ private:
 
 	void addOperation(SocketHandle fd, detail::Reactor::EventType type, std::unique_ptr<detail::Operation> op, int timeoutMs)
 	{
-		std::lock_guard<std::mutex> lk(m_mtx);
 		m_reactor.addOperation(fd, type, std::move(op), timeoutMs);
 	}
 
@@ -1115,6 +1163,8 @@ private:
 	std::mutex m_mtx;
 	detail::Reactor m_reactor;
 	std::queue<std::unique_ptr<detail::Operation>> m_ready;
+	std::queue<std::unique_ptr<detail::Operation>> m_tmpready;
+	std::atomic<bool> m_stopping = false;
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -1125,6 +1175,24 @@ class Socket : public detail::BaseSocket
 public:
 	Socket(Service& service) : detail::BaseSocket(service)
 	{
+	}
+
+	//! Synchronous connect
+	Error connect(const char* ip, int port)
+	{
+		CZSPAS_ASSERT(!isValid());
+
+		CZSPAS_INFO("Socket %p: Connect(%s,%d)", this, ip, port);
+		auto res = detail::utils::createConnectSocket(ip, port);
+		if (res.first)
+		{
+			CZSPAS_ERROR("Socket %p: %s", this, res.first.msg());
+			return res.first;
+		}
+		m_s = res.second;
+		resolveAddrs();
+		CZSPAS_INFO("Socket %p: Connected to %s:%d", this, m_peerAddr.first.c_str(), m_peerAddr.second);
+		return Error();
 	}
 private:
 };
@@ -1144,6 +1212,7 @@ public:
 	{
 		// Close the socket without calling shutdown, and setting linger to 0, so it doesn't linger around and we can
 		// run another server right after
+		// Not sure this is necessary for listening sockets. ;(
 		if (m_s != CZSPAS_INVALID_SOCKET)
 			detail::utils::setLinger(m_s, true, 0);
 		detail::utils::closeSocket(m_s, false);
@@ -1172,7 +1241,7 @@ public:
 		}
 		m_s = res.second;
 
-		m_localAddr = detail::utils::getLocalAddr(m_s);
+		resolveAddrs();
 		// No error
 		return Error();
 	}
@@ -1203,9 +1272,15 @@ public:
 		CZSPAS_ASSERT(isValid());
 		CZSPAS_ASSERT(!sock.isValid());
 		CZSPAS_ASSERT(m_pendingOps.load()==0 && "There is already a pending accept operation");
-		auto op = std::make_unique<detail::AcceptOperation>(std::forward<H>(h), sock);
+		auto op = std::make_unique<detail::AcceptOperation>(*this, sock, std::forward<H>(h));
 		++m_pendingOps;
-		m_owner.addOperation(m_s, Reactor::EventType::Read, std::move(op), timeoutMs);
+		getService().addOperation(m_s, detail::Reactor::EventType::Read, std::move(op), timeoutMs);
+	}
+
+	void cancel()
+	{
+		if (isValid())
+			getService().cancel(m_s);
 	}
 
 private:

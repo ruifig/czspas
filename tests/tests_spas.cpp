@@ -28,6 +28,7 @@ SUITE(CZSPAS)
 // Acceptor tests
 //////////////////////////////////////////////////////////////////////////
 // Checks behavior for a simple listen
+#if 0
 TEST(Acceptor_listen_ok)
 {
 	Service io;
@@ -68,9 +69,84 @@ TEST(Acceptor_accept_timeout)
 	CHECK_CZSPAS_EQUAL(Timeout, ec);
 }
 
+#endif
+
+template<typename Data=int>
+struct Session : std::enable_shared_from_this<Session<Data>>
+{
+	Session(Service& service) : sock(service) {}
+	~Session()
+	{
+	}
+	Socket sock;
+	Data data;
+};
+
+template<typename Data=int>
+struct AcceptorSession : std::enable_shared_from_this<AcceptorSession<Data>>
+{
+	AcceptorSession(Service& service, int port = -1, int backlog = 1) : acceptor(service)
+	{
+		if (port != -1)
+		{
+			auto ec = acceptor.listen(port, backlog);
+			CHECK_CZSPAS(ec);
+		}
+	}
+	~AcceptorSession()
+	{
+	}
+	Acceptor acceptor;
+	Data data;
+};
+
+struct ServiceThread
+{
+	Service service;
+	std::thread th;
+	ServiceThread()
+	{
+		th = std::thread([this]()
+		{
+			service.run();
+		});
+	}
+
+	~ServiceThread()
+	{
+		service.stop();
+		th.join();
+	}
+};
+
+TEST(Acceptor_asyncAccept_and_Socket_connect_ok)
+{
+	ServiceThread ioth;
+
+	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
+
+	Semaphore done;
+	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
+	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [&done, this_=ac, con = serverSideSession](const Error& ec)
+	{
+		//CHECK_CZSPAS(ec);
+		done.notify();
+	});
+	serverSideSession = nullptr;
+
+	Socket clientSock(ioth.service);
+	//auto ec = clientSock.connect("127.0.0.1", SERVER_PORT);
+	//CHECK_CZSPAS(ec);
+	ac->acceptor.cancel();
+
+	done.wait();
+}
+
 //////////////////////////////////////////////////////////////////////////
 // Socket tests
 //////////////////////////////////////////////////////////////////////////
+
+#if 0
 
 TEST(Socket_connect_ok)
 {
@@ -92,7 +168,6 @@ TEST(Socket_connect_ok)
 	ft.get();
 }
 
-#if 0
 
 TEST(Socket_connect_failure)
 {
