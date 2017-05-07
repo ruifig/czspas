@@ -20,6 +20,15 @@
 		
 
 
+-----
+- Reactor:
+	- When creating the signalIn/Out, have some data exchanged (maybe a guid), to make sure we are accepting the right socket. Any connection attempts that don't send the right data will be dropped.
+	- When creating the temporary listen socket, bind to "127.0.0.1", instead of "0.0.0.0". I believe that binding it to "0.0.0.0" will cause it to accept connections from any origin.
+	- When closing the the temporary acceptor, disable lingering? (Need to check if it's necessary)
+	- When closing the 2 temporary sockets, shutdown 1 properly and disable the lingering on the other one, to avoid the TIME_WAIT
+	 
+
+
 
 
 
