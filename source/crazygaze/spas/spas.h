@@ -1037,7 +1037,6 @@ public:
 			return; // No operations for this socket found
 		it->second.cancel(Error::Code::Cancelled, dst);
 		m_sockData.erase(it);
-		printf("*\n");
 		interrupt();
 	}
 
@@ -1075,13 +1074,11 @@ public:
 				timeoutMs = 0;
 		}
 
-		printf("pollBEGIN\n");
 #if _WIN32
 			auto res = WSAPoll(&m_fds.front(), static_cast<unsigned long>(m_fds.size()), timeoutMs);
 #else
 			auto res = poll(&m_fds.front(), static_cast<unsigned long>(m_fds.size()), timeoutMs);
 #endif
-		printf("pollEND\n");
 
 		lk.lock();
 
@@ -1134,7 +1131,6 @@ public:
 		while (loop && !m_stopping)
 		{
 			{
-				printf("1\n");
 				std::lock_guard<std::mutex> lk(m_mtx);
 				std::swap(m_tmpready, m_ready);
 			}
@@ -1145,9 +1141,7 @@ public:
 				m_tmpready.pop();
 			}
 
-			printf("2\n");
 			m_reactor.runOnce(m_tmpready);
-			printf("3\n");
 
 		}
 	}
