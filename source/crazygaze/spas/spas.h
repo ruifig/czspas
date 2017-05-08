@@ -1008,8 +1008,8 @@ public:
 		// 3. Close server side socket (m_signalIn). This the other socket was the one initiating the shutdown,
 		//    this one doesn't go into TIME_WAIT
 		detail::utils::setLinger(m_signalOut, true, 0);
-		detail::utils::closeSocket(m_signalOut);
-		detail::utils::closeSocket(m_signalIn);
+		detail::utils::closeSocket(m_signalOut, false);
+		detail::utils::closeSocket(m_signalIn, false);
 	}
 
 	void interrupt()
@@ -1037,6 +1037,7 @@ public:
 			return; // No operations for this socket found
 		it->second.cancel(Error::Code::Cancelled, dst);
 		m_sockData.erase(it);
+		printf("*\n");
 		interrupt();
 	}
 
@@ -1074,11 +1075,13 @@ public:
 				timeoutMs = 0;
 		}
 
+		printf("pollBEGIN\n");
 #if _WIN32
 			auto res = WSAPoll(&m_fds.front(), static_cast<unsigned long>(m_fds.size()), timeoutMs);
 #else
 			auto res = poll(&m_fds.front(), static_cast<unsigned long>(m_fds.size()), timeoutMs);
 #endif
+		printf("pollEND\n");
 
 		lk.lock();
 
@@ -1131,17 +1134,21 @@ public:
 		while (loop && !m_stopping)
 		{
 			{
+				printf("1\n");
 				std::lock_guard<std::mutex> lk(m_mtx);
 				std::swap(m_tmpready, m_ready);
 			}
-
-			m_reactor.runOnce(m_tmpready);
 
 			while (m_tmpready.size())
 			{
 				m_tmpready.front()->callUserHandler();
 				m_tmpready.pop();
 			}
+
+			printf("2\n");
+			m_reactor.runOnce(m_tmpready);
+			printf("3\n");
+
 		}
 	}
 
