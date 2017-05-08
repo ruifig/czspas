@@ -31,7 +31,7 @@ SUITE(CZSPAS)
 // Try to exhaust OS resources by creating tons of Service objects.
 // Internally, spas uses 2 sockets to allow interrupting a wsapoll/poll call.
 // This makes sure those sockets are not going into the TIME_WAIT state.
-TEST(Service_Reactor_interal_sockets)
+TEST(Service_Reactor_internal_sockets)
 {
 	std::atomic<int> done(0);
 
