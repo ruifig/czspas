@@ -81,6 +81,8 @@ namespace cz
 
 int main()
 {
+
+	cz::spas::MyTCPLog::ms_logEnabled = false;
 #if defined(_WIN32) && !defined(NDEBUG) && ENABLE_MEM_DEBUG
 	_CrtSetDbgFlag(
 		_CRTDBG_ALLOC_MEM_DF

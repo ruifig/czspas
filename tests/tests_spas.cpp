@@ -3,6 +3,7 @@
 using namespace cz;
 using namespace spas;
 
+#define INTENSIVE_TEST 0
 // Default port to use for the tests
 #define SERVER_PORT 9000
 
@@ -23,6 +24,40 @@ using namespace cz::spas;
 
 SUITE(CZSPAS)
 {
+//////////////////////////////////////////////////////////////////////////
+// Service/Reactor tests
+//////////////////////////////////////////////////////////////////////////
+
+// Try to exhaust OS resources by creating tons of Service objects.
+// Internally, spas uses 2 sockets to allow interrupting a wsapoll/poll call.
+// This makes sure those sockets are not going into the TIME_WAIT state.
+TEST(Service_Reactor_interal_sockets)
+{
+	std::atomic<int> done(0);
+
+	std::vector<std::future<void>> fts;
+	const int numThreads = INTENSIVE_TEST ? 8 : 4;
+	const int itemsPerThread = INTENSIVE_TEST ? 9000 : 1000;
+
+	for (int i = 0; i < numThreads; i++)
+	{
+		fts.push_back(std::async(std::launch::async, [&done, itemsPerThread]
+		{
+			int todo = itemsPerThread;
+			while (todo--)
+			{
+				Service service;
+				++done;
+			}
+
+		}));
+	}
+
+	for (auto&& ft : fts)
+		ft.wait();
+
+	CHECK_EQUAL(numThreads*itemsPerThread, done.load());
+}
 
 //////////////////////////////////////////////////////////////////////////
 // Acceptor tests

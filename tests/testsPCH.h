@@ -15,14 +15,6 @@ namespace cz
 	{
 		struct MyTCPLog
 		{
-			struct DisableLogging
-			{
-				DisableLogging(const DisableLogging&) = delete;
-				DisableLogging& operator=(const DisableLogging&) = delete;
-				DisableLogging() : previous(ms_logEnabled) { ms_logEnabled = false; }
-				~DisableLogging() { ms_logEnabled = previous; }
-				bool previous;
-			};
 			static bool ms_assertOnFatal;
 			static bool ms_logEnabled;
 			static void out(bool fatal, const char* type, const char* fmt, ...);

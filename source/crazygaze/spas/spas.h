@@ -527,7 +527,6 @@ namespace detail
 		static std::pair<Error, SocketHandle> createListenSocket(int port, int backlog)
 		{
 			SocketHandle s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-			printf("createListenSocket(%d,%d) : %d\n", port, backlog, (int)s);
 			if (s == CZSPAS_INVALID_SOCKET)
 				return std::make_pair(detail::ErrorWrapper().getError(), s);
 
@@ -542,7 +541,6 @@ namespace detail
 				(::listen(s, backlog) == CZSPAS_SOCKET_ERROR)
 				)
 			{
-				printf("createListenSocket(%d,%d) :  %d error\n", port, backlog, (int)s);
 				auto ec = detail::ErrorWrapper().getError();
 				closeSocket(s);
 				return std::make_pair(ec, CZSPAS_INVALID_SOCKET);
@@ -551,7 +549,6 @@ namespace detail
 			// Enable any loopback optimizations (in case this socket is used in a loopback)
 			detail::utils::optimizeLoopback(s);
 
-			printf("createListenSocket(%d,%d) : %d ok\n", port, backlog, (int)s);
 			return std::make_pair(Error(), s);
 		}
 
