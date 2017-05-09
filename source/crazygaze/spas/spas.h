@@ -1491,6 +1491,54 @@ private:
 
 };
 
+namespace detail
+{
+	template< typename H, typename = detail::IsTransferHandler<H> >
+	void asyncSendHelper(Socket& sock, const char* buf, size_t len, int timeoutMs, const Error& ec, size_t totalDone, H&& h)
+	{
+		CZSPAS_ASSERT(totalDone <= len);
+		if (ec || totalDone==len)
+		{
+			h(ec, totalDone);
+			return;
+		}
+
+		sock.asyncSendSome(buf+totalDone, len-totalDone, timeoutMs,
+			[&sock,buf,len,timeoutMs,totalDone,h=std::move(h)](const Error& ec, size_t transfered) mutable
+		{
+			asyncSendHelper(sock, buf, len, timeoutMs, ec, totalDone + transfered, h);
+		});
+	}
+
+	template< typename H, typename = detail::IsTransferHandler<H> >
+	void asyncReceiveHelper(Socket& sock, char* buf, size_t len, int timeoutMs, const Error& ec, size_t totalDone, H&& h)
+	{
+		CZSPAS_ASSERT(totalDone <= len);
+		if (ec || totalDone==len)
+		{
+			h(ec, totalDone);
+			return;
+		}
+
+		sock.asyncReceiveSome(buf+totalDone, len-totalDone, timeoutMs,
+			[&sock,buf,len,timeoutMs,totalDone,h=std::move(h)](const Error& ec, size_t transfered) mutable
+		{
+			asyncReceiveHelper(sock, buf, len, timeoutMs, ec, totalDone + transfered, h);
+		});
+	}
+}
+
+template< typename H, typename = detail::IsTransferHandler<H> >
+void asyncSend(Socket& sock, const char* buf, size_t len, int timeoutMs, H&& h)
+{
+	asyncSendHelper(sock, buf, len, timeoutMs, Error(), 0, std::forward<H>(h));
+}
+
+template< typename H, typename = detail::IsTransferHandler<H> >
+void asyncReceive(Socket& sock, char* buf, size_t len, int timeoutMs, H&& h)
+{
+	asyncReceiveHelper(sock, buf, len, timeoutMs, Error(), 0, std::forward<H>(h));
+}
 
 } // namespace spas
 } // namespace cz
