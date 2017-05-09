@@ -1,5 +1,4 @@
 #include "testsPCH.h"
-
 using namespace cz;
 using namespace spas;
 
@@ -21,9 +20,11 @@ using namespace cz::spas;
 	}
 #define CHECK_CZSPAS(ec) CHECK_CZSPAS_EQUAL(Success, ec)
 
+#include "tests_spas_helper.h"
 
 SUITE(CZSPAS)
 {
+
 //////////////////////////////////////////////////////////////////////////
 // Service/Reactor tests
 //////////////////////////////////////////////////////////////////////////
@@ -63,7 +64,6 @@ TEST(Service_Reactor_internal_sockets)
 // Acceptor tests
 //////////////////////////////////////////////////////////////////////////
 // Checks behavior for a simple listen
-#if 0
 TEST(Acceptor_listen_ok)
 {
 	Service io;
@@ -104,57 +104,7 @@ TEST(Acceptor_accept_timeout)
 	CHECK_CZSPAS_EQUAL(Timeout, ec);
 }
 
-#endif
-
-template<typename Data=int>
-struct Session : std::enable_shared_from_this<Session<Data>>
-{
-	Session(Service& service) : sock(service) {}
-	~Session()
-	{
-	}
-	Socket sock;
-	Data data;
-};
-
-template<typename Data=int>
-struct AcceptorSession : std::enable_shared_from_this<AcceptorSession<Data>>
-{
-	AcceptorSession(Service& service, int port = -1, int backlog = 1) : acceptor(service)
-	{
-		if (port != -1)
-		{
-			auto ec = acceptor.listen(port, backlog);
-			CHECK_CZSPAS(ec);
-		}
-	}
-	~AcceptorSession()
-	{
-	}
-	Acceptor acceptor;
-	Data data;
-};
-
-struct ServiceThread
-{
-	Service service;
-	std::thread th;
-	ServiceThread()
-	{
-		th = std::thread([this]()
-		{
-			service.run();
-		});
-	}
-
-	~ServiceThread()
-	{
-		service.stop();
-		th.join();
-	}
-};
-
-TEST(Acceptor_asyncAccept_and_Socket_connect_ok)
+TEST(Acceptor_asyncAccept_ok)
 {
 	ServiceThread ioth;
 
@@ -164,15 +114,58 @@ TEST(Acceptor_asyncAccept_and_Socket_connect_ok)
 	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
 	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [&done, this_=ac, con = serverSideSession](const Error& ec)
 	{
-		//CHECK_CZSPAS(ec);
+		CHECK_CZSPAS(ec);
 		done.notify();
 	});
 	serverSideSession = nullptr;
 
 	Socket clientSock(ioth.service);
-	//auto ec = clientSock.connect("127.0.0.1", SERVER_PORT);
-	//CHECK_CZSPAS(ec);
-	ac->acceptor.cancel();
+	auto ec = clientSock.connect("127.0.0.1", SERVER_PORT);
+	CHECK_CZSPAS(ec);
+
+	done.wait();
+}
+
+TEST(Acceptor_asyncAccept_cancel)
+{
+	ServiceThread ioth;
+
+	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
+
+	Semaphore done;
+	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
+	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [&done, this_=ac, con = serverSideSession](const Error& ec)
+	{
+		CHECK_CZSPAS_EQUAL(Cancelled, ec);
+		done.notify();
+	});
+
+	ioth.service.post([ac]
+	{
+		ac->acceptor.cancel();
+	});
+
+	done.wait();
+}
+
+
+TEST(Acceptor_asyncAccept_timeout)
+{
+	ServiceThread ioth;
+
+	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
+
+	Semaphore done;
+	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
+	auto start = ioth.timer.GetTimeInMs();
+	ac->acceptor.asyncAccept(serverSideSession->sock, 50,
+		[&done, start, &ioth, this_=ac, con = serverSideSession](const Error& ec)
+	{
+		CHECK_CZSPAS_EQUAL(Timeout, ec);
+		auto elapsed = ioth.timer.GetTimeInMs() - start;
+		CHECK_CLOSE(50.0, elapsed, 1000); // Giving a big tolerance, since the API doesn't guarantee any specific tolerance.
+		done.notify();
+	});
 
 	done.wait();
 }

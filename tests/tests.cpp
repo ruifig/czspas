@@ -61,7 +61,7 @@ namespace cz
 
 		void MyTCPLog::out(bool fatal, const char* type, const char* fmt, ...)
 		{
-			if (!ms_logEnabled && !fatal && type[0]!='E')
+			if (!ms_logEnabled || !fatal)
 				return;
 			char buf[256];
 			detail::copyStrToFixedBuffer(buf, type);
@@ -82,7 +82,7 @@ namespace cz
 int main()
 {
 
-	cz::spas::MyTCPLog::ms_logEnabled = false;
+	//cz::spas::MyTCPLog::ms_logEnabled = false;
 #if defined(_WIN32) && !defined(NDEBUG) && ENABLE_MEM_DEBUG
 	_CrtSetDbgFlag(
 		_CRTDBG_ALLOC_MEM_DF
