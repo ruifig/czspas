@@ -922,7 +922,7 @@ private:
 	}
 
 	// Return true if the operation was left empty (e.g: executed/timed out)
-	bool processEventsHelper(SocketHandle fd, OperationData& opdata, int ready, Timepoint expirePoint,
+	bool processEventsHelper(SocketHandle fd, OperationData& opdata, int ready, Timepoint now,
 	                         std::queue<std::unique_ptr<Operation>>& dst)
 	{
 		if (!opdata.op)
@@ -934,7 +934,7 @@ private:
 			dst.push(std::move(opdata.op));
 			return true;
 		}
-		else if (opdata.timeout < expirePoint)
+		else if (opdata.timeout < now)
 		{
 			opdata.op->ec = Error(Error::Code::Timeout);
 			dst.push(std::move(opdata.op));
@@ -1011,9 +1011,11 @@ public:
 
 	void interrupt()
 	{
+		//printf("	INTERRUPT BEGIN\n");
 		char buf = 0;
 		if (::send(m_signalOut, &buf, 1, 0) != 1)
 			CZSPAS_FATAL("Reactor %p", this, detail::ErrorWrapper().msg().c_str());
+		//printf("	INTERRUPT END\n");
 	}
 
 	void addOperation(SocketHandle fd, EventType type, std::unique_ptr<Operation> op, int timeoutMs)
@@ -1062,6 +1064,7 @@ public:
 		}
 
 		lk.unlock();
+		//printf("POLL_BEGIN\n");
 
 		int timeoutMs = -1;
 		if (timeoutPoint != Timepoint::max())
@@ -1078,9 +1081,18 @@ public:
 #endif
 
 		lk.lock();
+		//printf("POLL_END\n");
 
 		if (m_fds[0].revents & POLLRDNORM)
+		{
 			readInterrupt();
+			//printf("readInterruptDone\n");
+		}
+		else
+		{
+			//printf("no readInterruptDone\n");
+		}
+
 
 		if (res == CZSPAS_SOCKET_ERROR)
 		{
@@ -1110,10 +1122,12 @@ public:
 	}
 
 	template<typename H, typename = detail::IsSimpleHandler<H>>
-	void post(H&& handler)
+	void post(H&& h)
 	{
 		std::lock_guard<std::mutex> lk(m_mtx);
 		m_ready.push(std::make_unique<detail::PostOperation>(std::forward<H>(h)));
+		//printf("POST\n");
+		m_reactor.interrupt();
 	}
 
 	void stop()
@@ -1131,7 +1145,6 @@ public:
 				std::lock_guard<std::mutex> lk(m_mtx);
 				std::swap(m_tmpready, m_ready);
 			}
-
 			while (m_tmpready.size())
 			{
 				m_tmpready.front()->callUserHandler();
@@ -1140,6 +1153,11 @@ public:
 
 			m_reactor.runOnce(m_tmpready);
 
+			while (m_tmpready.size())
+			{
+				m_tmpready.front()->callUserHandler();
+				m_tmpready.pop();
+			}
 		}
 	}
 
@@ -1148,6 +1166,7 @@ private:
 	void cancel(SocketHandle fd)
 	{
 		std::lock_guard<std::mutex> lk(m_mtx);
+		//printf("CANCEL\n");
 		m_reactor.cancel(fd, m_ready);
 	}
 
