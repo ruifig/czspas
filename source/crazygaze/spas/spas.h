@@ -16,6 +16,9 @@
 // Notes on WSAPoll
 //	https://blogs.msdn.microsoft.com/wndp/2006/10/26/wsapoll-a-new-winsock-api-to-simplify-porting-poll-applications-to-winsock/
 //	Also has some tips how to write code for IPv6
+//	- WSAPoll() is not exactly like poll(). It has a couple of bugs that microsoft never fixed. Example:
+//		- Doesn't report failed connections. (E.g: A connect attempt to an address&port without listener and timeout -1 will block forever):
+//			https://social.msdn.microsoft.com/Forums/windowsdesktop/en-US/18769abd-fca0-4d3c-9884-1a38ce27ae90/wsapoll-and-nonblocking-connects-to-nonexistent-ports?forum=wsk
 //
 // Good answer about SO_REUSEADDR:
 // http://stackoverflow.com/questions/14388706/socket-options-so-reuseaddr-and-so-reuseport-how-do-they-differ-do-they-mean-t
@@ -676,8 +679,10 @@ namespace detail
 	};
 #endif
 
+	struct SocketOperation;
 	struct AcceptOperation;
 	struct ConnectOperation;
+	struct TransferOperation;
 
 	class BaseService
 	{
@@ -716,8 +721,10 @@ namespace detail
 		BaseSocket(const BaseSocket&) = delete;
 		void operator=(const BaseSocket&) = delete;
 
+		friend SocketOperation;
 		friend AcceptOperation;
 		friend ConnectOperation;
+		friend TransferOperation;
 		friend Acceptor;
 		bool isValid() const
 		{
@@ -758,7 +765,10 @@ namespace detail
 	struct SocketOperation : public Operation
 	{
 		BaseSocket& owner;
-		explicit SocketOperation(BaseSocket& owner) : owner(owner) {}
+		explicit SocketOperation(BaseSocket& owner) : owner(owner)
+		{
+			++owner.m_pendingOps;
+		}
 	};
 
 	struct AcceptOperation : public SocketOperation
@@ -772,6 +782,11 @@ namespace detail
 			, sock(dst)
 			, userHandler(std::forward<H>(h))
 		{
+		}
+
+		~AcceptOperation()
+		{
+			--owner.m_pendingOps;
 		}
 
 		virtual void exec(SocketHandle fd) override
@@ -790,7 +805,6 @@ namespace detail
 
 		virtual void callUserHandler() override
 		{
-			--owner.m_pendingOps;
 			userHandler(ec);
 		}
 	};
@@ -806,15 +820,21 @@ namespace detail
 		{
 		}
 
+		~ConnectOperation()
+		{
+			--owner.m_pendingOps;
+		}
+
 		virtual void exec(SocketHandle fd) override
 		{
-			CZSPAS_ASSERT(fd == owner.getHandle());
+			//CZSPAS_ASSERT(fd == owner.getHandle());
+			CZSPAS_ASSERT(!owner.isValid());
+			owner.m_s = fd;
 			owner.resolveAddrs();
 		}
 
 		virtual void callUserHandler() override
 		{
-			--owner.m_pendingOps;
 			userHandler(ec);
 		}
 	};
@@ -825,6 +845,11 @@ namespace detail
 		size_t bufSize;
 		size_t transfered = 0;
 		std::function<void(const Error& ec, size_t transfered)> userHandler;
+
+		~TransferOperation()
+		{
+			--owner.m_pendingOps;
+		}
 	};
 
 	struct SendOperation : public TransferOperation
@@ -1170,6 +1195,13 @@ private:
 		m_reactor.cancel(fd, m_ready);
 	}
 
+	void post(std::unique_ptr<detail::Operation> op)
+	{
+		std::lock_guard<std::mutex> lk(m_mtx);
+		m_ready.push(std::move(op));
+		m_reactor.interrupt();
+	}
+
 	void addOperation(SocketHandle fd, detail::Reactor::EventType type, std::unique_ptr<detail::Operation> op, int timeoutMs)
 	{
 		m_reactor.addOperation(fd, type, std::move(op), timeoutMs);
@@ -1194,6 +1226,11 @@ public:
 	{
 	}
 
+	~Socket()
+	{
+		detail::utils::closeSocket(m_s);
+	}
+
 	//! Synchronous connect
 	Error connect(const char* ip, int port)
 	{
@@ -1210,6 +1247,64 @@ public:
 		resolveAddrs();
 		CZSPAS_INFO("Socket %p: Connected to %s:%d", this, m_peerAddr.first.c_str(), m_peerAddr.second);
 		return Error();
+	}
+
+	void cancel()
+	{
+		if (isValid())
+			getService().cancel(m_s);
+	}
+
+	void asyncConnect(const char* ip, int port, int timeoutMs, ConnectHandler h)
+	{
+		CZSPAS_ASSERT(!isValid());
+		CZSPAS_INFO("Socket %p: asyncConnect(%s,%d, H, %d)", this, ip, port, timeoutMs);
+
+		auto op = std::make_unique<detail::ConnectOperation>(*this, std::move(h));
+
+		auto sock  = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (sock == CZSPAS_INVALID_SOCKET)
+		{
+			op->ec = detail::ErrorWrapper().getError();
+			CZSPAS_ERROR("Socket %p: %s", this, op->ec.msg());
+			getService().post(std::move(op));
+			return;
+		}
+
+		// Enable any loopback optimizations (in case this socket is used in loopback)
+		detail::utils::optimizeLoopback(sock);
+		// Set to non-blocking, so we can do an asynchronous connect
+		detail::utils::setBlocking(sock, false);
+
+		sockaddr_in addr;
+		memset(&addr, 0, sizeof(addr));
+		addr.sin_family = AF_INET;
+		addr.sin_port = htons(port);
+		inet_pton(AF_INET, ip, &(addr.sin_addr));
+
+		if (::connect(sock, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR)
+		{
+			detail::ErrorWrapper err;
+			if (err.isBlockError())
+			{
+				// Normal behavior.
+				// A asynchronous connect is done when we receive a write event on the socket
+				getService().addOperation(sock, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
+			}
+			else
+			{
+				// Any other error is a real error, so queue the handler for execution
+				detail::utils::closeSocket(sock);
+				op->ec = err.getError();
+				getService().post(std::move(op));
+			}
+		}
+		else
+		{
+			// It may happen that the connect succeeds right away ?
+			// If that happens, we can still wait for the reactor to detect the "ready to write" event.
+			getService().addOperation(sock, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
+		}
 	}
 private:
 };
@@ -1290,7 +1385,6 @@ public:
 		CZSPAS_ASSERT(!sock.isValid());
 		CZSPAS_ASSERT(m_pendingOps.load()==0 && "There is already a pending accept operation");
 		auto op = std::make_unique<detail::AcceptOperation>(*this, sock, std::forward<H>(h));
-		++m_pendingOps;
 		getService().addOperation(m_s, detail::Reactor::EventType::Read, std::move(op), timeoutMs);
 	}
 
