@@ -3,6 +3,8 @@
 
 #define LOOP_TESTS 1
 
+UnitTest::Timer gTimer;
+
 namespace UnitTest
 {
 	class czspasTestReporter : public TestReporter
@@ -81,6 +83,7 @@ namespace cz
 
 int main()
 {
+	gTimer.Start();
 
 	//cz::spas::MyTCPLog::ms_logEnabled = false;
 #if defined(_WIN32) && !defined(NDEBUG) && ENABLE_MEM_DEBUG

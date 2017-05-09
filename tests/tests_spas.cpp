@@ -2,6 +2,7 @@
 using namespace cz;
 using namespace spas;
 
+extern UnitTest::Timer gTimer;
 #define INTENSIVE_TEST 0
 // Default port to use for the tests
 #define SERVER_PORT 9000
@@ -249,166 +250,61 @@ TEST(Socket_asyncConnect_cancel)
 	done.wait();
 }
 
-#if 0
-
 TEST(Socket_asyncConnect_timeout)
 {
-	Service io;
+	ServiceThread ioth;
 
-	Socket s(io);
 	Semaphore done;
-	UnitTest::Timer timer;
-	timer.Start();
-	int timeoutMs = 200;
-	auto allowedThread = std::this_thread::get_id();
-	// Initially I was using "127.0.0.1" to test the asynchronous connect timeout, but it seems that on linux
-	// it fails right away. Probably the kernel treats connections to the localhost in a different way, detecting
-	// right away that if a connect is not possible, without taking into consideration the timeout specified in
-	// the "select" function.
-	// On Windows, connect attempts to localhost still take into consideration the timeout.
-	// The solution is to try an connect to some external ip, like "254.254.254.254". This causes Linux to
-	// to actually wait for the connect attempt.
-	s.asyncConnect("254.254.254.254", SERVER_PORT, timeoutMs, [&](const Error& ec)
+	auto clientSideSession = std::make_shared<Session<>> (ioth.service);
+	auto start = gTimer.GetTimeInMs();
+	clientSideSession->sock.asyncConnect("254.254.254.254", SERVER_PORT, 50, [&done, start, con = clientSideSession](const Error& ec)
 	{
+		auto elapsed = gTimer.GetTimeInMs() - start;
+		CHECK_CLOSE(50.0, elapsed, 1000); // Giving a big tolerance, since the API doesn't guarantee any specific tolerance.
 		CHECK_CZSPAS_EQUAL(Timeout, ec);
-		// Need a big error of margin for the timeout, since it will depend on the load the computer had at the moment.
-		CHECK_CLOSE(timeoutMs, timer.GetTimeInMs(), 1000);
-		CHECK(std::this_thread::get_id() == allowedThread);
-		io.stop(); // stop the service, to finish this test
 		done.notify();
 	});
-	io.run();
-	done.wait(); // To make sure the asyncConnect gets called
+
+	done.wait();
 }
 
-TEST(Socket_asyncConnect_cancel)
+TEST(Socket_asyncSendSome_asyncReceiveSome_ok)
 {
-	Service io;
+	ServiceThread ioth;
 
-	Socket s(io);
+	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
+	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
 	Semaphore done;
-	UnitTest::Timer timer;
-	timer.Start();
-	auto allowedThread = std::this_thread::get_id();
-	// Like explained in the test Socket_asyncConnect_timeout, using 254.254.254.254 instead of the localhost
-	s.asyncConnect("254.254.254.254", SERVER_PORT, -1, [&](const Error& ec)
-	{
-		CHECK_CZSPAS_EQUAL(Cancelled, ec);
-		CHECK(std::this_thread::get_id() == allowedThread);
-		io.stop();
-		done.notify();
-	});
-	s.cancel();
-	io.run();
-	done.wait(); // To make sure the asyncConnect gets called
-}
-
-TEST(Acceptor_asyncAccept_ok)
-{
-	Service io;
-
-	auto ioth = std::thread([&io]
-	{
-		io.run();
-	});
-
-	Semaphore done;
-	Socket serverSide(io);
-	Acceptor ac(io);
-	auto ec = ac.listen(SERVER_PORT, 1);
-	CHECK_CZSPAS(ec);
-	ac.asyncAccept(serverSide, 1000, [&](const Error& ec)
+	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [&done, this_=ac, con = serverSideSession](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
-		CHECK(std::this_thread::get_id() == ioth.get_id());
-		done.notify();
-	});
-
-	Socket s(io);
-	s.asyncConnect("127.0.0.1", SERVER_PORT, 1000, [&](const Error& ec)
-	{
-		CHECK_CZSPAS(ec);
-		CHECK(std::this_thread::get_id() == ioth.get_id());
-		done.notify();
-	});
-
-	done.wait();
-	done.wait();
-	io.stop();
-	ioth.join();
-}
-
-TEST(Acceptor_asyncAccept_cancel)
-{
-	Service io;
-
-	auto ioth = std::thread([&io]
-	{
-		io.run();
-	});
-
-	Semaphore done;
-	Socket serverSide(io);
-	Acceptor ac(io);
-	auto ec = ac.listen(SERVER_PORT, 1);
-	CHECK_CZSPAS(ec);
-	ac.asyncAccept(serverSide, 1000, [&](const Error& ec)
-	{
-		CHECK_CZSPAS_EQUAL(Cancelled, ec);
-		CHECK(std::this_thread::get_id() == ioth.get_id());
-		done.notify();
-	});
-
-	io.post([&]
-	{
-		ac.cancel();
-	});
-
-	done.wait();
-	io.stop();
-	ioth.join();
-}
-
-TEST(Socket_asyncReceiveSome_ok)
-{
-	TestServer server;
-	Semaphore done;
-
-	Socket s(server.io);
-	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
-	char buf[6];
-	server.waitForAccept();
-
-	// Test receiving all the data in one call
-	CHECK_EQUAL(6, ::send(server.socks[0]->getHandle(), "Hello", 6, 0));
-	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, size_t transfered)
-	{
-		CHECK(std::this_thread::get_id() == server.get_threadid());
-		CHECK_EQUAL(sizeof(buf), transfered);
-		CHECK_EQUAL("Hello", buf);
-		done.notify();
-	});
-	done.wait();
-
-	// Test receiving all the data in two calls
-	memset(buf, 0, sizeof(buf));
-	CHECK_EQUAL(6, ::send(server.socks[0]->getHandle(), "Hello", 6, 0));
-	s.asyncReceiveSome(&buf[0], 2, -1, [&](const Error& ec, size_t transfered)
-	{
-		CHECK(std::this_thread::get_id() == server.get_threadid());
-		CHECK_EQUAL(2, transfered);
-		s.asyncReceiveSome(&buf[2], 4, -1, [&](const Error& ec, size_t transfered)
+		static uint32_t buf;
+		con->sock.asyncReceiveSome(reinterpret_cast<char*>(&buf), sizeof(buf), -1,
+			[&done, con, bufPtr=&buf](const Error& ec, size_t transfered)
 		{
+			// Note: Capturing bufPtr is not necessary, but makes it easier to debug.
 			CHECK_EQUAL(4, transfered);
-			CHECK_EQUAL("Hello", buf);
+			CHECK_EQUAL(0x11223344, *bufPtr);
 			done.notify();
 		});
-		done.notify();
+	});
+
+	auto clientSideSession = std::make_shared<Session<>> (ioth.service);
+	clientSideSession->sock.asyncConnect("127.0.0.1", SERVER_PORT, -1, [con = clientSideSession](const Error& ec)
+	{
+		CHECK_CZSPAS(ec);
+		static uint32_t buf = 0x11223344;
+		con->sock.asyncSendSome(reinterpret_cast<char*>(&buf), sizeof(buf), -1,
+			[con](const Error& ec, size_t transfered)
+		{
+			CHECK_EQUAL(4, transfered);
+		});
 	});
 
 	done.wait();
-	done.wait();
 }
+
+#if 0
 
 TEST(Socket_asyncReceiveSome_cancel)
 {
@@ -477,62 +373,6 @@ TEST(Socket_asyncReceiveSome_peerDisconnect)
 	});
 	done.wait();
 }
-
-TEST(Socket_asyncSendSome_ok)
-{
-	TestServer server;
-	Semaphore done;
-
-	Socket s(server.io);
-	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
-	char buf[6];
-	server.waitForAccept();
-
-	// Test sending all the data with 1 call
-	server.socks[0]->asyncSendSome("Hello", 6, -1, [&](const Error& ec, size_t transfered)
-	{
-		CHECK(std::this_thread::get_id() == server.get_threadid());
-		CHECK_CZSPAS(ec);
-		CHECK_EQUAL(6, transfered);
-		done.notify();
-	});
-	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, size_t transfered)
-	{
-		CHECK(std::this_thread::get_id() == server.get_threadid());
-		CHECK_EQUAL(sizeof(buf), transfered);
-		CHECK_EQUAL("Hello", buf);
-		done.notify();
-	});
-	done.wait();
-	done.wait();
-
-	// Test send the data in two calls
-	server.socks[0]->asyncSendSome("He", 2, -1, [&](const Error& ec, size_t transfered)
-	{
-		CHECK_CZSPAS(ec);
-		CHECK_EQUAL(2, transfered);
-		done.notify();
-		server.socks[0]->asyncSendSome("llo", 4, -1, [&](const Error& ec, size_t transfered)
-		{
-			CHECK_CZSPAS(ec);
-			CHECK_EQUAL(4, transfered);
-			done.notify();
-		});
-	});
-	done.wait();
-	done.wait();
-
-	memset(buf, 0, sizeof(buf));
-	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, size_t transfered)
-	{
-		CHECK(std::this_thread::get_id() == server.get_threadid());
-		CHECK_EQUAL(sizeof(buf), transfered);
-		CHECK_EQUAL("Hello", buf);
-		done.notify();
-	});
-	done.wait();
-}
-
 
 #if 0
 TEST(Socket_asyncSendSome_cancel)
