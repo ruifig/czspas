@@ -148,7 +148,6 @@ TEST(Acceptor_asyncAccept_cancel)
 	done.wait();
 }
 
-
 TEST(Acceptor_asyncAccept_timeout)
 {
 	ServiceThread ioth;
@@ -174,76 +173,83 @@ TEST(Acceptor_asyncAccept_timeout)
 // Socket tests
 //////////////////////////////////////////////////////////////////////////
 
-#if 0
-
 TEST(Socket_connect_ok)
 {
-	Service io;
-	Acceptor ac(io);
-	auto ec = ac.listen(SERVER_PORT, 1);
-	CHECK_CZSPAS(ec);
+	ServiceThread ioth;
 
-	auto ft = std::async(std::launch::async, [&io]
+	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
+
+	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
+	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [this_=ac, con = serverSideSession](const Error& ec)
 	{
-		UnitTest::TimeHelpers::SleepMs(10);
-		Socket s(io);
-		auto ec = s.connect("127.0.0.1", SERVER_PORT);
 		CHECK_CZSPAS(ec);
 	});
 
-	Socket s(io);
-	ac.accept(s, 1000);
-	ft.get();
+	Socket clientSock(ioth.service);
+	auto ec = clientSock.connect("127.0.0.1", SERVER_PORT);
+	CHECK_CZSPAS(ec);
 }
-
 
 TEST(Socket_connect_failure)
 {
-	Service io;
-	Socket s(io);
-	auto ec = s.connect("127.0.0.1", SERVER_PORT);
-	CHECK_CZSPAS_EQUAL(Other, ec);
+	ServiceThread ioth;
+	Socket clientSock(ioth.service);
+	auto ec = clientSock.connect("127.0.0.1", SERVER_PORT);
+	CHECK_CZSPAS_EQUAL(Other,ec);
 }
 
 TEST(Socket_asyncConnect_ok)
 {
-	Service io;
+	ServiceThread ioth;
 
-	Socket serverSide(io);
-	Semaphore readyToAccept;
-	auto ft = std::async(std::launch::async, [&]
+	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
+	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
+	Semaphore done;
+	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [this_=ac, con = serverSideSession](const Error& ec)
 	{
-		Acceptor ac(io);
-		auto ec = ac.listen(SERVER_PORT, 1);
-		CHECK_CZSPAS(ec);
-		readyToAccept.notify();
-		ec = ac.accept(serverSide, 1000);
 		CHECK_CZSPAS(ec);
 	});
 
-	Socket s(io);
-	Semaphore done;
-
-	// This is needed, since it is possible we take longer than expected to get to the accept call
-	// done in the std::async, therefore causing a time in the asyncConnect.
-	readyToAccept.wait();
-
-	auto allowedThread = std::this_thread::get_id();
-	UnitTest::Timer timer;
-	timer.Start();
-	s.asyncConnect("127.0.0.1", SERVER_PORT, -1, [&](const Error& ec)
+	auto clientSideSession = std::make_shared<Session<>> (ioth.service);
+	clientSideSession->sock.asyncConnect("127.0.0.1", SERVER_PORT, -1, [&done, con = clientSideSession](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
-		CHECK(s.getHandle() != CZSPAS_INVALID_SOCKET);
-		CHECK(std::this_thread::get_id() == allowedThread);
-		io.stop(); // stop the service, to finish this test
 		done.notify();
 	});
 
-	io.run();
-	ft.get();
-	done.wait(); // To make sure the asyncConnect gets called
+	done.wait();
 }
+
+// Initially I was using "127.0.0.1" to test the asynchronous connect timeout or cancel, but it seems that on linux
+// it fails right away. Probably the kernel treats connections to the localhost in a different way, detecting
+// right away that if a connect is not possible, without taking into consideration the timeout specified in
+// the "select" function.
+// On Windows, connect attempts to localhost still take into consideration the timeout.
+// The solution is to try an connect to some external ip, like "254.254.254.254". This causes Linux to
+// to actually wait for the connect attempt.
+TEST(Socket_asyncConnect_cancel)
+{
+	ServiceThread ioth;
+
+	Semaphore done;
+	auto clientSideSession = std::make_shared<Session<>> (ioth.service);
+	clientSideSession->sock.asyncConnect("254.254.254.254", SERVER_PORT, -1, [&done, con = clientSideSession](const Error& ec)
+	{
+		CHECK_CZSPAS_EQUAL(Cancelled, ec);
+		done.notify();
+	});
+
+	ioth.service.post([&done, con = clientSideSession]
+	{
+		con->sock.cancel();
+		done.notify();
+	});
+
+	done.wait();
+	done.wait();
+}
+
+#if 0
 
 TEST(Socket_asyncConnect_timeout)
 {
