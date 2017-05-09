@@ -827,9 +827,7 @@ namespace detail
 
 		virtual void exec(SocketHandle fd) override
 		{
-			//CZSPAS_ASSERT(fd == owner.getHandle());
-			CZSPAS_ASSERT(!owner.isValid());
-			owner.m_s = fd;
+			CZSPAS_ASSERT(fd == owner.getHandle());
 			owner.resolveAddrs();
 		}
 
@@ -846,18 +844,92 @@ namespace detail
 		size_t transfered = 0;
 		std::function<void(const Error& ec, size_t transfered)> userHandler;
 
+		template<typename H>
+		TransferOperation(BaseSocket& owner, char* buf, size_t bufSize, H&& h)
+			: SocketOperation(owner)
+			, buf(buf)
+			, bufSize(bufSize)
+			, userHandler(std::forward<H>(h))
+		{
+		}
+
 		~TransferOperation()
 		{
 			--owner.m_pendingOps;
+		}
+
+		virtual void callUserHandler() override
+		{
+			userHandler(ec, transfered);
 		}
 	};
 
 	struct SendOperation : public TransferOperation
 	{
+		template<typename H>
+		SendOperation(BaseSocket& owner, const char* buf, size_t bufSize, H&& h)
+			: TransferOperation(owner, const_cast<char*>(buf), bufSize, std::forward<H>(h))
+		{}
+
+		virtual void exec(SocketHandle fd) override
+		{
+			CZSPAS_ASSERT(fd == owner.getHandle());
+			// The interface allows size_t, but the implementation only allows int
+			int todo = bufSize > INT_MAX ? INT_MAX : static_cast<int>(bufSize);
+			int len = ::send(fd, buf, todo, 0);
+			if (len == CZSPAS_SOCKET_ERROR)
+			{
+				detail::ErrorWrapper err;
+				ec = err.getError();
+				if (err.isBlockError()) // Blocking can't happen at this point, since we got the event saying we can send
+				{
+					CZSPAS_FATAL("Blocking not expected at this point.");
+				}
+			}
+			else
+			{
+				transfered = len;
+			}
+		}
 	};
 
 	struct ReceiveOperation : public TransferOperation
 	{
+		template<typename H>
+		ReceiveOperation(BaseSocket& owner, char* buf, size_t bufSize, H&& h)
+			: TransferOperation(owner, buf, bufSize, std::forward<H>(h))
+		{}
+
+		virtual void exec(SocketHandle fd) override
+		{
+			CZSPAS_ASSERT(fd == owner.getHandle());
+			// The interface allows size_t, but the implementation only allows int
+			int todo = bufSize > INT_MAX ? INT_MAX : static_cast<int>(bufSize);
+			int len = ::recv(fd, buf, todo, 0);
+			if (len == CZSPAS_SOCKET_ERROR)
+			{
+				detail::ErrorWrapper err;
+				ec = err.getError();
+				if (err.isBlockError()) // Blocking can't happen at this point, since we got the event saying we can send
+				{
+					CZSPAS_FATAL("Blocking not expected at this point.");
+				}
+			}
+			else if (len == 0) // A disconnect
+			{
+				// On Windows, we never get here, since WSAPoll doesn't work exactly the same way has poll, according to what I've seen with my tests
+				// Example, while on a WSAPoll, when a peer disconnects, the following happens:
+				//	- Windows:
+				//		- WSAPoll reports an error (POLLUP)
+				//	- Linux:
+				//		- poll reports ready to ready (success), and then recv reads 0 (which means the peer disconnected)
+				ec = Error(Error::Code::ConnectionClosed);
+			}
+			else
+			{
+				transfered = len;
+			}
+		}
 	};
 		 
 
@@ -1163,7 +1235,12 @@ public:
 
 	void run(bool loop=true)
 	{
-		m_stopping = false;
+		// #TODO : We can't set m_stopping to false here, because that can cause a race condition:
+		// E.g:
+		// - One thread id created to call run
+		// - Another thread calls stop() before the first thread has a chance to call run().
+		// - The stop would be ignored (since we would be setting m_stopping to true here.
+		//m_stopping = false;
 		while (loop && !m_stopping)
 		{
 			{
@@ -1262,8 +1339,8 @@ public:
 
 		auto op = std::make_unique<detail::ConnectOperation>(*this, std::move(h));
 
-		auto sock  = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-		if (sock == CZSPAS_INVALID_SOCKET)
+		m_s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (m_s == CZSPAS_INVALID_SOCKET)
 		{
 			op->ec = detail::ErrorWrapper().getError();
 			CZSPAS_ERROR("Socket %p: %s", this, op->ec.msg());
@@ -1272,9 +1349,9 @@ public:
 		}
 
 		// Enable any loopback optimizations (in case this socket is used in loopback)
-		detail::utils::optimizeLoopback(sock);
+		detail::utils::optimizeLoopback(m_s);
 		// Set to non-blocking, so we can do an asynchronous connect
-		detail::utils::setBlocking(sock, false);
+		detail::utils::setBlocking(m_s, false);
 
 		sockaddr_in addr;
 		memset(&addr, 0, sizeof(addr));
@@ -1282,19 +1359,19 @@ public:
 		addr.sin_port = htons(port);
 		inet_pton(AF_INET, ip, &(addr.sin_addr));
 
-		if (::connect(sock, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR)
+		if (::connect(m_s, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR)
 		{
 			detail::ErrorWrapper err;
 			if (err.isBlockError())
 			{
 				// Normal behavior.
 				// A asynchronous connect is done when we receive a write event on the socket
-				getService().addOperation(sock, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
+				getService().addOperation(m_s, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
 			}
 			else
 			{
 				// Any other error is a real error, so queue the handler for execution
-				detail::utils::closeSocket(sock);
+				//detail::utils::closeSocket(m_s);
 				op->ec = err.getError();
 				getService().post(std::move(op));
 			}
@@ -1303,8 +1380,24 @@ public:
 		{
 			// It may happen that the connect succeeds right away ?
 			// If that happens, we can still wait for the reactor to detect the "ready to write" event.
-			getService().addOperation(sock, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
+			getService().addOperation(m_s, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
 		}
+	}
+
+	template< typename H, typename = detail::IsTransferHandler<H> >
+	void asyncSendSome(const char* buf, size_t len, int timeoutMs, H&& h)
+	{
+		CZSPAS_ASSERT(isValid());
+		auto op = std::make_unique<detail::SendOperation>(*this, buf, len, std::forward<H>(h));
+		getService().addOperation(m_s, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
+	}
+
+	template< typename H, typename = detail::IsTransferHandler<H> >
+	void asyncReceiveSome(char* buf, size_t len, int timeoutMs, H&& h)
+	{
+		CZSPAS_ASSERT(isValid());
+		auto op = std::make_unique<detail::ReceiveOperation>(*this, buf, len, std::forward<H>(h));
+		getService().addOperation(m_s, detail::Reactor::EventType::Read, std::move(op), timeoutMs);
 	}
 private:
 };

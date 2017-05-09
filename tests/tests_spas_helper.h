@@ -39,6 +39,7 @@ struct ServiceThread
 		timer.Start();
 		th = std::thread([this]()
 		{
+			//UnitTest::TimeHelpers::SleepMs(500);
 			service.run();
 		});
 	}
