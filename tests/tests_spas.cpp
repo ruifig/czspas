@@ -383,9 +383,82 @@ TEST(Socket_asyncReceiveSome_peerDisconnect)
 	auto ec = clientSideSession->sock.connect("127.0.0.1", SERVER_PORT);
 	CHECK_CZSPAS(ec);
 	char rcvBuf[4];
-	auto start = gTimer.GetTimeInMs();
 	clientSideSession->sock.asyncReceiveSome(rcvBuf, sizeof(rcvBuf), -1,
-		[&done, start, con = clientSideSession](const Error& ec, size_t transfered)
+		[&done, con = clientSideSession](const Error& ec, size_t transfered)
+	{
+		CHECK_CZSPAS_EQUAL(ConnectionClosed, ec);
+		CHECK_EQUAL(0, transfered);
+		done.notify();
+	});
+
+	done.wait();
+}
+
+//
+// Successfully cancelling an asynchronous send operation is hard in practice, since most of the time a socket is marked
+// as ready to send by the OS.
+// The only feasible way to correctly test the cancel in this case is to do a cancel right after the send from the 
+// Service thread itself, so the Reactor doesn't have a chance to run.
+TEST(Socket_asyncSendSome_cancel)
+{
+	ServiceThread ioth;
+
+	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
+	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
+	Semaphore done;
+	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [&done, this_=ac, con = serverSideSession](const Error& ec)
+	{
+		CHECK_CZSPAS(ec);
+		static char sndBuf[4];
+		// Do the two calls here inside the Service thread, so the Reactor doesn't have the chance to initiate the
+		// send
+		con->sock.asyncSendSome(sndBuf, sizeof(sndBuf), -1, [&done, con](const Error& ec, size_t transfered)
+		{
+			CHECK_CZSPAS_EQUAL(Cancelled, ec);
+			CHECK_EQUAL(0, transfered);
+			done.notify();
+		});
+
+		con->sock.cancel();
+	});
+
+	auto clientSideSession = std::make_shared<Session<>> (ioth.service);
+	auto ec = clientSideSession->sock.connect("127.0.0.1", SERVER_PORT);
+	CHECK_CZSPAS(ec);
+
+	done.wait();
+}
+
+TEST(Socket_asyncSendSome_timeout)
+{
+	// #TODO: I can't think of a feasible way to test a send timeout, since most of the time a socket will be ready
+	// to write.
+	// Internally, the Reactor tries to do the send/recv before checking the timeout, so if the socket is always ready
+	// to write, the send timeout is very hard to test.
+}
+
+TEST(Socket_asyncSendSome_peerDisconnect)
+{
+	ServiceThread ioth;
+
+	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
+	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
+	Semaphore done;
+	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [&done, this_=ac, con = serverSideSession](const Error& ec) mutable
+	{
+		CHECK_CZSPAS(ec);
+		con = nullptr; // So the socket is destroyed right now
+		done.notify();
+	});
+	serverSideSession = nullptr;
+
+	auto clientSideSession = std::make_shared<Session<>> (ioth.service);
+	auto ec = clientSideSession->sock.connect("127.0.0.1", SERVER_PORT);
+	CHECK_CZSPAS(ec);
+	done.wait(); // wait for the peer to disconnect, so when we try to send, the peer disconnected already
+	char sndBuf[4];
+	clientSideSession->sock.asyncSendSome(sndBuf, sizeof(sndBuf), -1,
+		[&done, con = clientSideSession](const Error& ec, size_t transfered)
 	{
 		CHECK_CZSPAS_EQUAL(ConnectionClosed, ec);
 		CHECK_EQUAL(0, transfered);
@@ -396,80 +469,59 @@ TEST(Socket_asyncReceiveSome_peerDisconnect)
 }
 
 
-#if 0
-#if 0
-TEST(Socket_asyncSendSome_cancel)
+// Create and destroy lots of connections really fast, to make sure we can set lingering off
+void Socket_multiple_connections_acceptorHelper(std::shared_ptr<AcceptorSession<>> session, std::atomic<int>& numAccepts)
 {
-	TestServer server;
-	Semaphore done;
-
-	Socket s(server.io);
-	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
-	server.waitForAccept();
-
-	// NOTE: This unit test can actually fail without being an error, if the IODemux thread marks the send as ready
-	// to execute before processing the cancel.
-	// If the unit test doe indeed fail, consider removing it
-	char buf[1024];
-	std::atomic<bool> cancelDone(false);
-	server.io.post([&]
+	auto serverSideSession = std::make_shared<Session<>>(session->acceptor.getService());
+	session->acceptor.asyncAccept(serverSideSession->sock, -1, [&numAccepts, this_ = session, con = serverSideSession](const Error& ec) mutable
 	{
-		s.asyncSendSome(buf, sizeof(buf), -1, [&](const Error& ec, size_t transfered)
-		{
-			CHECK(cancelDone.load() == true); // make sure the cancel ran before this, otherwise the test doesn't make sense
-			CHECK_CZSPAS_EQUAL(Cancelled, ec);
-			done.notify();
-		});
-		server.io.post([&]
-		{
-			cancelDone = true;
-			s.cancel();
-		});
+		CHECK_CZSPAS(ec);
+		++numAccepts;
+		Socket_multiple_connections_acceptorHelper(this_, numAccepts);
 	});
-
-	done.wait();
-}
-#endif
-
-//
-// This test checks that a timeout on a send is actually very unlikely to happen.
-// This is because sockets are ready to write most of the time (the OS buffers sent data). As such, the IODemux
-// thread marks the send operation as ready to execute before any timeouts can occur.
-// For example, even if the send itself takes longer than the timeout, it started before before the timeout and therefore
-// is not marked as timed out.
-TEST(Socket_asyncSendSome_timeout)
-{
-	TestServer server;
-	Semaphore done;
-
-	Socket s(server.io);
-	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
-	server.waitForAccept();
-
-	constexpr size_t bigbufsize = size_t(INT_MAX)/4;
-	auto bigbuf = std::unique_ptr<char[]>(new char[bigbufsize]);
-
-	std::atomic<bool> cancelDone(false);
-	auto startTime = server.timer.GetTimeInMs();
-	// Setting timeout to 0, to try and timeout right away.
-	// A value of 0 is not something that would normally be used, and initially I was using 1 which works fine on Windows.
-	// On Linux, it seems send completes way faster (due to smaller send buffers), and most of the time is shorter than 1 ms.
-	constexpr int timeoutMs = 0;
-	s.asyncSendSome(bigbuf.get(), bigbufsize, timeoutMs, [&](const Error& ec, size_t transfered)
-	{
-		// Make sure the operation took longer than the timeout
-		// If that's not the case it means the send size needs to be increased so that this test makes sense
-		auto delta = server.timer.GetTimeInMs() - startTime;
-		CHECK(delta > timeoutMs);
-
-		// This only makes sense if the operation time was longer than the timeout as explained above
-		CHECK_CZSPAS_EQUAL(Success, ec);
-		done.notify();
-	});
-	done.wait();
 }
 
+TEST(Socket_multiple_connections)
+{
+	std::vector<std::future<void>> fts;
 
+	const int numThreads = INTENSIVE_TEST ? 8 : 4;
+	const int itemsPerThread = INTENSIVE_TEST ? 9000 : 1000;
+
+	std::atomic<int> numAccepts(0);
+	std::atomic<int> numDone(0);
+
+	for (int i = 0; i < numThreads; i++)
+	{
+		auto ft = std::async(std::launch::async, [&numAccepts, &numDone, &itemsPerThread, i]
+		{
+			ServiceThread ioth;
+
+			auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT+i);
+			Semaphore done;
+			Socket_multiple_connections_acceptorHelper(ac, numAccepts);
+
+			int todo = itemsPerThread;
+			while (todo--)
+			{
+				Socket client(ioth.service);
+				auto ec = client.connect("127.0.0.1", SERVER_PORT+i);
+				CHECK_CZSPAS(ec);
+				client.setLinger(true, 0);
+				client._forceClose(false);
+				++numDone;
+			}
+		});
+		fts.push_back(std::move(ft));
+	}
+
+	for (auto&& ft : fts)
+		ft.wait();
+
+	CHECK_EQUAL(numThreads*itemsPerThread, numDone.load());
+}
+
+#if 0
 
 // Create and destroy lots of connections really fast, to make sure we can set lingering off
 TEST(Socket_multiple_connections)
