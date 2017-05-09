@@ -1468,6 +1468,7 @@ namespace detail
 		});
 	}
 }
+
 template< typename H, typename = detail::IsTransferHandler<H> >
 void asyncSend(Socket& sock, const char* buf, size_t len, int timeoutMs, H&& h)
 {

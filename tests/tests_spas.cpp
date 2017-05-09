@@ -304,76 +304,99 @@ TEST(Socket_asyncSendSome_asyncReceiveSome_ok)
 	done.wait();
 }
 
-#if 0
-
 TEST(Socket_asyncReceiveSome_cancel)
 {
-	TestServer server;
-	Semaphore done;
+	ServiceThread ioth;
 
-	Socket s(server.io);
-	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
-	char buf[6];
-	server.waitForAccept();
-	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, size_t transfered)
+	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
+	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
+	Semaphore done;
+	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [&done, this_=ac, con = serverSideSession](const Error& ec)
 	{
-		CHECK(std::this_thread::get_id() == server.get_threadid());
-		CHECK_EQUAL(0, transfered);
+		CHECK_CZSPAS(ec);
+	});
+
+	auto clientSideSession = std::make_shared<Session<>> (ioth.service);
+	auto ec = clientSideSession->sock.connect("127.0.0.1", SERVER_PORT);
+	CHECK_CZSPAS(ec);
+	char rcvBuf[4];
+	clientSideSession->sock.asyncReceiveSome(rcvBuf, sizeof(rcvBuf), -1,
+		[&done, con = clientSideSession](const Error& ec, size_t transfered)
+	{
 		CHECK_CZSPAS_EQUAL(Cancelled, ec);
+		CHECK_EQUAL(0, transfered);
 		done.notify();
 	});
-	server.io.post([&s]
+
+	ioth.service.post([con = clientSideSession]
 	{
-		s.cancel();
+		con->sock.cancel();
 	});
+
 	done.wait();
 }
 
 TEST(Socket_asyncReceiveSome_timeout)
 {
-	TestServer server;
-	Semaphore done;
+	ServiceThread ioth;
 
-	Socket s(server.io);
-	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
-	char buf[6];
-	server.waitForAccept();
-	auto start = server.timer.GetTimeInMs();
-	s.asyncReceiveSome(buf, sizeof(buf), 100, [&](const Error& ec, size_t transfered)
+	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
+	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
+	Semaphore done;
+	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [&done, this_=ac, con = serverSideSession](const Error& ec)
 	{
-		CHECK_CLOSE(100, server.timer.GetTimeInMs() - start, 100);
-		CHECK(std::this_thread::get_id() == server.get_threadid());
-		CHECK_EQUAL(0, transfered);
+		CHECK_CZSPAS(ec);
+	});
+
+	auto clientSideSession = std::make_shared<Session<>> (ioth.service);
+	auto ec = clientSideSession->sock.connect("127.0.0.1", SERVER_PORT);
+	CHECK_CZSPAS(ec);
+	char rcvBuf[4];
+	auto start = gTimer.GetTimeInMs();
+	clientSideSession->sock.asyncReceiveSome(rcvBuf, sizeof(rcvBuf), 50,
+		[&done, start, con = clientSideSession](const Error& ec, size_t transfered)
+	{
+		auto elapsed = gTimer.GetTimeInMs() - start;
+		CHECK_CLOSE(50.0, elapsed, 1000); // Giving a big tolerance, since the API doesn't guarantee any specific tolerance.
 		CHECK_CZSPAS_EQUAL(Timeout, ec);
+		CHECK_EQUAL(0, transfered);
 		done.notify();
 	});
+
 	done.wait();
 }
 
 TEST(Socket_asyncReceiveSome_peerDisconnect)
 {
-	TestServer server;
-	Semaphore done;
+	ServiceThread ioth;
 
-	Socket s(server.io);
-	CHECK_CZSPAS(s.connect("127.0.0.1", SERVER_PORT));
-	char buf[6];
-	server.waitForAccept();
-	s.asyncReceiveSome(buf, sizeof(buf), -1, [&](const Error& ec, size_t transfered)
+	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
+	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
+	Semaphore done;
+	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [&done, this_=ac, con = serverSideSession](const Error& ec)
 	{
-		CHECK(std::this_thread::get_id() == server.get_threadid());
-		CHECK_EQUAL(0, transfered);
+		CHECK_CZSPAS(ec);
+	});
+	serverSideSession = nullptr;
+
+	auto clientSideSession = std::make_shared<Session<>> (ioth.service);
+	auto ec = clientSideSession->sock.connect("127.0.0.1", SERVER_PORT);
+	CHECK_CZSPAS(ec);
+	char rcvBuf[4];
+	auto start = gTimer.GetTimeInMs();
+	clientSideSession->sock.asyncReceiveSome(rcvBuf, sizeof(rcvBuf), -1,
+		[&done, start, con = clientSideSession](const Error& ec, size_t transfered)
+	{
 		CHECK_CZSPAS_EQUAL(ConnectionClosed, ec);
+		CHECK_EQUAL(0, transfered);
 		done.notify();
 	});
-	server.io.post([&]
-	{
-		::closesocket(server.socks[0]->getHandle());
-		//server.socks[0]->_forceClose(false);
-	});
+
 	done.wait();
 }
 
+
+#if 0
 #if 0
 TEST(Socket_asyncSendSome_cancel)
 {
