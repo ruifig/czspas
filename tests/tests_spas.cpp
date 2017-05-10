@@ -26,6 +26,31 @@ using namespace cz::spas;
 SUITE(CZSPAS)
 {
 
+#if 0
+
+TEST(Dummy)
+{
+	ServiceThread ioth;
+
+	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, "192.168.0.24", SERVER_PORT);
+
+	Semaphore done;
+	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
+	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [&done, this_=ac, con = serverSideSession](const Error& ec)
+	{
+		CHECK_CZSPAS(ec);
+		done.notify();
+	});
+	serverSideSession = nullptr;
+
+	Socket clientSock(ioth.service);
+	//auto ec = clientSock.connect("127.0.0.1", SERVER_PORT);
+	//CHECK_CZSPAS(ec);
+
+	done.wait();
+}
+
+#else
 //////////////////////////////////////////////////////////////////////////
 // Service/Reactor tests
 //////////////////////////////////////////////////////////////////////////
@@ -69,7 +94,7 @@ TEST(Acceptor_listen_ok)
 {
 	Service io;
 	Acceptor ac(io);
-	auto ec = ac.listen(SERVER_PORT, 1);
+	auto ec = ac.listen(SERVER_PORT);
 	CHECK_CZSPAS(ec);
 }
 
@@ -78,31 +103,8 @@ TEST(Acceptor_listen_failure)
 {
 	Service io;
 	Acceptor ac(io);
-	auto ec = ac.listen(SERVER_UNUSABLE_PORT, 1);
+	auto ec = ac.listen(SERVER_UNUSABLE_PORT);
 	CHECK_CZSPAS_EQUAL(Other, ec);
-}
-
-// Tests the accept timeout behavior
-// Because internally the timeout is split in two fields (microseconds and seconds, because it uses select), we need to
-// test something below 1 second, and something above, to make sure the split is done correctly
-TEST(Acceptor_accept_timeout)
-{
-	Service io;
-	Acceptor ac(io);
-	auto ec = ac.listen(SERVER_PORT, 1);
-	CHECK_CZSPAS(ec);
-
-	Socket s(io);
-	UnitTest::Timer timer;
-	timer.Start();
-	ec = ac.accept(s, 50);
-	CHECK_CLOSE(50, timer.GetTimeInMs(), 200);
-	CHECK_CZSPAS_EQUAL(Timeout, ec);
-
-	timer.Start();
-	ec = ac.accept(s, 1050);
-	CHECK_CLOSE(1050, timer.GetTimeInMs(), 200);
-	CHECK_CZSPAS_EQUAL(Timeout, ec);
 }
 
 TEST(Acceptor_asyncAccept_ok)
@@ -125,6 +127,29 @@ TEST(Acceptor_asyncAccept_ok)
 	CHECK_CZSPAS(ec);
 
 	done.wait();
+}
+
+// Tests the accept timeout behavior
+// Because internally the timeout is split in two fields (microseconds and seconds, because it uses select), we need to
+// test something below 1 second, and something above, to make sure the split is done correctly
+TEST(Acceptor_accept_timeout)
+{
+	Service io;
+	Acceptor ac(io);
+	auto ec = ac.listen(SERVER_PORT);
+	CHECK_CZSPAS(ec);
+
+	Socket s(io);
+	UnitTest::Timer timer;
+	timer.Start();
+	ec = ac.accept(s, 50);
+	CHECK_CLOSE(50, timer.GetTimeInMs(), 200);
+	CHECK_CZSPAS_EQUAL(Timeout, ec);
+
+	timer.Start();
+	ec = ac.accept(s, 1050);
+	CHECK_CLOSE(1050, timer.GetTimeInMs(), 200);
+	CHECK_CZSPAS_EQUAL(Timeout, ec);
 }
 
 TEST(Acceptor_asyncAccept_cancel)
@@ -530,7 +555,7 @@ TEST(Socket_bigTransfer)
 		auto bigbuf = std::shared_ptr<char>(new char[bigbufsize], [](char* p) { delete[] p; });
 
 		Acceptor acceptor(ioth.service);
-		acceptor.listen(SERVER_PORT, 1);
+		acceptor.listen(SERVER_PORT);
 		auto sock = std::make_shared<Socket>(ioth.service);
 		auto ec = acceptor.accept(*sock);
 		CHECK_CZSPAS(ec);
@@ -573,5 +598,7 @@ TEST(Socket_bigTransfer)
 	serverth.join();
 	clientth.join();
 }
+
+#endif
 
 }

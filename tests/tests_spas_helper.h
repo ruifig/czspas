@@ -14,14 +14,23 @@ struct Session : std::enable_shared_from_this<Session<Data>>
 template<typename Data=int>
 struct AcceptorSession : std::enable_shared_from_this<AcceptorSession<Data>>
 {
-	AcceptorSession(Service& service, int port = -1, int backlog = 1) : acceptor(service)
+	AcceptorSession(Service& service, const char* bindIp, int port = -1, int backlog = 1) : acceptor(service)
 	{
 		if (port != -1)
 		{
-			auto ec = acceptor.listen(port, backlog);
+			auto ec = acceptor.listenEx(bindIp, port, backlog, false);
 			CHECK_CZSPAS(ec);
 		}
 	}
+	AcceptorSession(Service& service, int port = -1) : acceptor(service)
+	{
+		if (port != -1)
+		{
+			auto ec = acceptor.listen(port);
+			CHECK_CZSPAS(ec);
+		}
+	}
+
 	~AcceptorSession()
 	{
 	}
