@@ -519,6 +519,8 @@ namespace detail
 
 		//! Creates a socket and puts it into listen mode
 		//
+		// \param bindIp
+		//		What IP to bind to.
 		// \param port
 		//		What port to listen on. If 0, the OS will pick a port from the dynamic range
 		// \param ec
@@ -527,18 +529,23 @@ namespace detail
 		//		Size of the the connection backlog.
 		//		Also, this is only an hint to the OS. It's not guaranteed.
 		//
-		static std::pair<Error, SocketHandle> createListenSocket(int port, int backlog)
+		static std::pair<Error, SocketHandle> createListenSocketEx(const char* bindIp, int port, int backlog, bool reuseAddr)
 		{
 			SocketHandle s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 			if (s == CZSPAS_INVALID_SOCKET)
 				return std::make_pair(detail::ErrorWrapper().getError(), s);
 
-			//detail::utils::setReuseAddress(s);
+			if (reuseAddr)
+				detail::utils::setReuseAddress(s);
 
 			sockaddr_in addr;
 			addr.sin_family = AF_INET;
 			addr.sin_port = htons(port);
-			addr.sin_addr.s_addr = htonl(INADDR_ANY);
+			if (bindIp)
+				inet_pton(AF_INET, bindIp, &(addr.sin_addr));
+			else
+				addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
 			if (
 				(::bind(s, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR) ||
 				(::listen(s, backlog) == CZSPAS_SOCKET_ERROR)
@@ -553,6 +560,11 @@ namespace detail
 			detail::utils::optimizeLoopback(s);
 
 			return std::make_pair(Error(), s);
+		}
+
+		static std::pair<Error, SocketHandle> createListenSocket(int port)
+		{
+			return createListenSocketEx(nullptr, port, SOMAXCONN, false);
 		}
 
 		//! Synchronous connect
@@ -1116,7 +1128,7 @@ public:
 	{
 
 		// Create a listening socket on a port picked by the OS (because we passed 0 as port)
-		auto acceptor = utils::createListenSocket(0, 1);
+		auto acceptor = utils::createListenSocketEx("127.0.0.1", 0, 1, false);
 		// If this fails, then the OS probably ran out of resources (e.g: Too many connections or too many connection 
 		// on TIME_WAIT)
 		CZSPAS_ASSERT(!acceptor.first);
@@ -1479,12 +1491,12 @@ public:
 		Size of the connection backlog.
 		This is only an hint to the OS. It's not guaranteed.
 	*/
-	Error listen(int port, int backlog)
+	Error listenEx(const char* bindIp, int port, int backlog, bool reuseAddr)
 	{
 		CZSPAS_ASSERT(!isValid());
 		CZSPAS_INFO("Acceptor %p: listen(%d, %d)", this, port, backlog);
 
-		auto res = detail::utils::createListenSocket(port, backlog);
+		auto res = detail::utils::createListenSocketEx(bindIp, port, backlog, reuseAddr);
 		if (res.first)
 		{
 			CZSPAS_ERROR("Acceptor %p: %s", this, res.first.msg());
@@ -1495,6 +1507,11 @@ public:
 		resolveAddrs();
 		// No error
 		return Error();
+	}
+
+	Error listen(int port)
+	{
+		return listenEx(nullptr, port, SOMAXCONN, false);
 	}
 
 	Error accept(Socket& sock, int timeoutMs = -1)
