@@ -26,31 +26,6 @@ using namespace cz::spas;
 SUITE(CZSPAS)
 {
 
-#if 0
-
-TEST(Dummy)
-{
-	ServiceThread ioth;
-
-	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, "192.168.0.24", SERVER_PORT);
-
-	Semaphore done;
-	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
-	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [&done, this_=ac, con = serverSideSession](const Error& ec)
-	{
-		CHECK_CZSPAS(ec);
-		done.notify();
-	});
-	serverSideSession = nullptr;
-
-	Socket clientSock(ioth.service);
-	//auto ec = clientSock.connect("127.0.0.1", SERVER_PORT);
-	//CHECK_CZSPAS(ec);
-
-	done.wait();
-}
-
-#else
 //////////////////////////////////////////////////////////////////////////
 // Service/Reactor tests
 //////////////////////////////////////////////////////////////////////////
@@ -483,11 +458,27 @@ TEST(Socket_asyncSendSome_peerDisconnect)
 	done.wait(); // wait for the peer to disconnect, so when we try to send, the peer disconnected already
 	char sndBuf[4];
 	clientSideSession->sock.asyncSendSome(sndBuf, sizeof(sndBuf), -1,
-		[&done, con = clientSideSession](const Error& ec, size_t transfered)
+		[&done, &sndBuf, con = clientSideSession](const Error& ec, size_t transfered)
 	{
-		CHECK_CZSPAS_EQUAL(ConnectionClosed, ec);
-		CHECK_EQUAL(0, transfered);
-		done.notify();
+		// It might happen we detect the connection as closed right away, or the OS still considers some data was sent
+		if (ec.code == Error::Code::ConnectionClosed)
+		{
+			CHECK_EQUAL(0, transfered);
+			done.notify();
+		}
+		else
+		{
+			CHECK_CZSPAS(ec);
+			CHECK(transfered > 0);
+			// Try another send. This one should already fail
+			con->sock.asyncSendSome(sndBuf, sizeof(sndBuf), -1,
+				[&done, con](const Error& ec, size_t transfered)
+			{
+				CHECK_CZSPAS_EQUAL(ConnectionClosed, ec);
+				CHECK_EQUAL(0, transfered);
+				done.notify();
+			});
+		}
 	});
 
 	done.wait();
@@ -548,7 +539,8 @@ TEST(Socket_multiple_connections)
 
 TEST(Socket_bigTransfer)
 {
-	constexpr size_t bigbufsize = size_t(INT_MAX) * 3;
+
+	constexpr size_t bigbufsize = INTENSIVE_TEST ? (size_t(INT_MAX) * 3) : (size_t(INT_MAX) + 1);
 
 	auto serverth = std::thread( [bigbufsize]{
 		ServiceThread ioth;
@@ -598,7 +590,5 @@ TEST(Socket_bigTransfer)
 	serverth.join();
 	clientth.join();
 }
-
-#endif
 
 }

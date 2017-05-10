@@ -783,7 +783,7 @@ namespace detail
 	{
 		Error ec;
 		virtual ~Operation() { }
-		virtual void exec(SocketHandle fd) = 0;
+		virtual void exec(SocketHandle fd, bool hasPOLLHUP) = 0;
 		virtual void callUserHandler() = 0;
 	};
 
@@ -793,7 +793,7 @@ namespace detail
 		template<typename H>
 		PostOperation(H&& h)
 			: userHandler(std::forward<H>(h)) {}
-		virtual void exec(SocketHandle fd) override {}
+		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override {}
 		virtual void callUserHandler() { userHandler(); }
 	};
 
@@ -824,7 +824,7 @@ namespace detail
 			owner.m_pendingAccept = false;
 		}
 
-		virtual void exec(SocketHandle fd) override
+		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override
 		{
 			sockaddr_in addr;
 			socklen_t size = sizeof(addr);
@@ -862,7 +862,7 @@ namespace detail
 			owner.m_pendingConnect = false;
 		}
 
-		virtual void exec(SocketHandle fd) override
+		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override
 		{
 			CZSPAS_ASSERT(fd == owner.getHandle());
 			owner.resolveAddrs();
@@ -907,7 +907,7 @@ namespace detail
 			owner.m_pendingSend = false;
 		}
 
-		virtual void exec(SocketHandle fd) override
+		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override
 		{
 			CZSPAS_ASSERT(fd == owner.getHandle());
 			// The interface allows size_t, but the implementation only allows int
@@ -915,11 +915,18 @@ namespace detail
 			int len = ::send(fd, buf, todo, 0);
 			if (len == CZSPAS_SOCKET_ERROR)
 			{
-				detail::ErrorWrapper err;
-				ec = err.getError();
-				if (err.isBlockError()) // Blocking can't happen at this point, since we got the event saying we can send
+				if (hasPOLLHUP)
 				{
-					CZSPAS_FATAL("Blocking not expected at this point.");
+					ec = Error(Error::Code::ConnectionClosed);
+				}
+				else
+				{
+					detail::ErrorWrapper err;
+					ec = err.getError();
+					if (err.isBlockError()) // Blocking can't happen at this point, since we got the event saying we can perform this type of operation
+					{
+						CZSPAS_FATAL("Blocking not expected at this point.");
+					}
 				}
 			}
 			else
@@ -949,7 +956,7 @@ namespace detail
 			owner.m_pendingReceive = false;
 		}
 
-		virtual void exec(SocketHandle fd) override
+		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override
 		{
 			CZSPAS_ASSERT(fd == owner.getHandle());
 			// The interface allows size_t, but the implementation only allows int
@@ -957,11 +964,18 @@ namespace detail
 			int len = ::recv(fd, buf, todo, 0);
 			if (len == CZSPAS_SOCKET_ERROR)
 			{
-				detail::ErrorWrapper err;
-				ec = err.getError();
-				if (err.isBlockError()) // Blocking can't happen at this point, since we got the event saying we can send
+				if (hasPOLLHUP)
 				{
-					CZSPAS_FATAL("Blocking not expected at this point.");
+					ec = Error(Error::Code::ConnectionClosed);
+				}
+				else
+				{
+					detail::ErrorWrapper err;
+					ec = err.getError();
+					if (err.isBlockError()) // Blocking can't happen at this point, since we got the event saying we can perform this type of operation
+					{
+						CZSPAS_FATAL("Blocking not expected at this point.");
+					}
 				}
 			}
 			else if (len == 0) // A disconnect
@@ -969,7 +983,7 @@ namespace detail
 				// On Windows, we never get here, since WSAPoll doesn't work exactly the same way has poll, according to what I've seen with my tests
 				// Example, while on a WSAPoll, when a peer disconnects, the following happens:
 				//	- Windows:
-				//		- WSAPoll reports an error (POLLUP)
+				//		- WSAPoll reports an error (POLLHUP)
 				//	- Linux:
 				//		- poll reports ready to ready (success), and then recv reads 0 (which means the peer disconnected)
 				ec = Error(Error::Code::ConnectionClosed);
@@ -1074,7 +1088,7 @@ private:
 	}
 
 	// Return true if the operation was left empty (e.g: executed/timed out)
-	bool processEventsHelper(SocketHandle fd, OperationData& opdata, int ready, Timepoint now,
+	bool processEventsHelper(SocketHandle fd, OperationData& opdata, int ready, bool hasPOLLHUP, Timepoint now,
 	                         std::queue<std::unique_ptr<Operation>>& dst)
 	{
 		if (!opdata.op)
@@ -1082,7 +1096,7 @@ private:
 
 		if (ready)
 		{
-			opdata.op->exec(fd);
+			opdata.op->exec(fd, hasPOLLHUP);
 			dst.push(std::move(opdata.op));
 			return true;
 		}
@@ -1105,17 +1119,22 @@ private:
 			auto it = m_sockData.find(fd.fd);
 			if (it==m_sockData.end())
 				continue; // Socket data not present anymore (E.g: Operations were cancelled while in the poll function)
-			if (fd.revents & (POLLERR | POLLHUP | POLLNVAL))
+
+			// We can have POLLHUP but still have POLLRDNORM (Which means it disconnected, but we can still read some more data).
+			// So to be safe, whenever POLLRDNORM or POLLWRNORM is set, we ignore the errors
+			if (fd.revents & (POLLERR | POLLHUP | POLLNVAL) &&
+				((fd.revents & (POLLRDNORM | POLLWRNORM)) == 0))
 			{
 				it->second.cancel((fd.revents & POLLHUP) ? Error::Code::ConnectionClosed : Error::Code::InvalidSocket, dst);
 				m_sockData.erase(it);
 			}
 			else
 			{
-				bool empty =
-				    processEventsHelper(it->first, it->second.ops[EventType::Read], fd.revents & POLLRDNORM, now, dst);
+				bool hasPOLLHUP = (fd.revents & POLLHUP) != 0;
+				bool empty = processEventsHelper(it->first, it->second.ops[EventType::Read],
+					fd.revents & POLLRDNORM, hasPOLLHUP, now, dst);
 				empty = empty && processEventsHelper(it->first, it->second.ops[EventType::Write],
-				                                     fd.revents & POLLWRNORM, now, dst);
+					fd.revents & POLLWRNORM, hasPOLLHUP, now, dst);
 				if (empty)
 					m_sockData.erase(it);
 			}
