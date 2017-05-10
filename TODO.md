@@ -1,8 +1,30 @@
-- Organize the header top
-	- Put a copyright notice and link to czspas repository
-	- Organize the links and add notes on each
-- Port to Linux
+GENERAL
+-------
 
+* Organize the header top
+	* Put a copyright notice and link to czspas repository
+	* Organize the links and add notes on each
+* Port to Linux
+
+
+API
+---
+
+* Make Service::run thread safe, so multiple threads can dequeue work (like Asio)
+
+
+INTERNALS
+---------
+
+* Reactor:
+	* When creating the signalIn/Out, have some data exchanged (maybe a guid), to make sure we are accepting the right socket. Any connection attempts that don't send the right data will be dropped.
+	* DONE - When creating the temporary listen socket, bind to "127.0.0.1", instead of "0.0.0.0". I believe that binding it to "0.0.0.0" will cause it to accept connections from any origin.
+		* HOW: I now listenEx that accepts all parameters, and listen for the common case
+	* DONE - When closing the the temporary acceptor, disable lingering? (Need to check if it's necessary)
+	* DONE - When closing the 2 temporary sockets, shutdown 1 properly and disable the lingering on the other one, to avoid the TIME_WAIT
+
+OLD STUFF / NA
+--------------
 - Port to Linux showed a couple of problems
 	- There is a race condition related with a call to cancel and and IODemux, showing up mostly on the Acceptor. Example:
 		1 - When the IODemux handles an event, it removes that event flag before calling the handler. If all flags are removed, it removes the socket from the set.
@@ -17,21 +39,5 @@
 		- We register an asyncAccept (passing a std::shared_ptr to the Acceptor itself). This gets saved in the Acceptor itself.
 		- The Service gets destroyed, and the pending operations are deleted without calling the handlers. This means the data in Accecptor is not reset (the m_acceptInfo), and thus the std::shared_ptr is not deleted. This causes the Acceptor to never be destroyed.
 		- The way to fix this is to have the user handler information move around with the internal handlers. This means any objects captured as part of the user handlers will be destroyed even if the handlers were not called.
-		
------
-- Reactor:
-	- When creating the signalIn/Out, have some data exchanged (maybe a guid), to make sure we are accepting the right socket. Any connection attempts that don't send the right data will be dropped.
-	- When creating the temporary listen socket, bind to "127.0.0.1", instead of "0.0.0.0". I believe that binding it to "0.0.0.0" will cause it to accept connections from any origin.
-	- When closing the the temporary acceptor, disable lingering? (Need to check if it's necessary)
-	- When closing the 2 temporary sockets, shutdown 1 properly and disable the lingering on the other one, to avoid the TIME_WAIT
-
------
-API
-- Add flags to Acceptor::listen so it uses detail::utils::setReuseAddress 
-
-
-
-
-
 
 
