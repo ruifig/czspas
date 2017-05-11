@@ -4,7 +4,6 @@ project(tests)
 ucm_add_files(
 	"tests.cpp"
 	"tests_spas.cpp"
-	#"tests_spasold.cpp"
 	"Semaphore.h"
 	TO TESTS_SRC
 	)
@@ -21,4 +20,4 @@ message( "CMAKE_CXX_FLAGS_RELWITHDEBINFO = " ${CMAKE_CXX_FLAGS_RELWITHDEBINFO})
 
 add_executable(tests ${TESTS_SRC})
 cz_set_postfix()
-target_link_libraries(tests czspas UnitTest++)
+target_link_libraries(tests spas UnitTest++)

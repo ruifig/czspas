@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.5)
-project(czspas)
+project(spas)
 
 include(cmake/ucm.cmake)
 include(cmake/utils.cmake)
@@ -12,3 +12,4 @@ SET(CMAKE_VERBOSE_MAKEFILE_ON)
 add_subdirectory(source)
 add_subdirectory(UnitTest++)
 add_subdirectory(tests)
+

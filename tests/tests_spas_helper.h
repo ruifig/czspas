@@ -19,7 +19,7 @@ struct AcceptorSession : std::enable_shared_from_this<AcceptorSession<Data>>
 		if (port != -1)
 		{
 			auto ec = acceptor.listenEx(bindIp, port, backlog, false);
-			CHECK_CZSPAS(ec);
+			CHECK_SPAS(ec);
 		}
 	}
 	AcceptorSession(Service& service, int port = -1) : acceptor(service)
@@ -27,7 +27,7 @@ struct AcceptorSession : std::enable_shared_from_this<AcceptorSession<Data>>
 		if (port != -1)
 		{
 			auto ec = acceptor.listen(port);
-			CHECK_CZSPAS(ec);
+			CHECK_SPAS(ec);
 		}
 	}
 
