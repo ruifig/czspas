@@ -1173,12 +1173,12 @@ public:
 
 	void run(bool loop=true)
 	{
-		// #TODO : We can't set m_stopping to false here, because that can cause a race condition:
+		// NOTE: At first, I was resetting m_stopping to false here, but that is problematic:
 		// E.g:
 		// - One thread id created to call run
 		// - Another thread calls stop() before the first thread has a chance to call run().
 		// - The stop would be ignored (since we would be setting m_stopping to true here.
-		//m_stopping = false;
+
 		while (loop && !m_stopping)
 		{
 			{
