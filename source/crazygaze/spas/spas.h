@@ -233,57 +233,6 @@ namespace detail
 	{
 	};
 
-	//
-	// Multiple producer, multiple consumer thread safe queue
-	//
-	template<typename T>
-	class SharedQueue
-	{
-	private:
-		std::queue<T> m_queue;
-		mutable std::mutex m_mtx;
-		std::condition_variable m_data_cond;
-
-		SharedQueue& operator=(const SharedQueue&) = delete;
-		SharedQueue(const SharedQueue& other) = delete;
-
-	public:
-		SharedQueue() {}
-
-		// #TODO : Remove this. Was just for debugging
-		int _getSize() const
-		{
-			return (int)m_queue.size();
-		}
-
-		template<typename Item>
-		void push(Item&& item) {
-			std::lock_guard<std::mutex> lock(m_mtx);
-			m_queue.push(std::forward<Item>(item));
-			m_data_cond.notify_one();
-		}
-
-		//! swaps the contents of the internal queue by the supplied queue
-		// This allows the caller to process a batch of items without making repeated calls to the SharedQueue
-		// \param q
-		//		Queue to swap with	
-		// \param block
-		//		If true, it will block waiting for items to arrive at the internal queue
-		// \return
-		//		New size of the supplied queue
-		size_t swap(std::queue<T>& q, bool block)
-		{
-			std::unique_lock<std::mutex> lock(m_mtx);
-			if (block)
-				m_data_cond.wait(lock, [this] { return !m_queue.empty(); });
-			std::swap(q, m_queue);
-			// If we had no items and now have some, notify
-			if (m_queue.size()>1 && q.size()==0)
-				m_data_cond.notify_one();
-			return q.size();
-		}
-	};
-
 	template<typename H>
 	using IsTransferHandler = std::enable_if_t<check_signature<H, void(const Error&, size_t)>::value>;
 	template<typename H>
@@ -452,35 +401,6 @@ namespace detail
 				CZSPAS_FATAL(ErrorWrapper().msg().c_str());
 		}
 
-#if 0
-		static int getSendBufSize(SocketHandle s)
-		{
-			int sndbuf;
-			socklen_t optlen = sizeof(sndbuf);
-			auto res = getsockopt(s, SOL_SOCKET, SO_SNDBUF, (char*)&sndbuf, &optlen);
-			if (res != 0)
-				CZSPAS_FATAL(ErrorWrapper().msg().c_str());
-			return sndbuf;
-		}
-
-		static void setSendBufSize(SocketHandle s, int size)
-		{
-			auto res = setsockopt(s, SOL_SOCKET, SO_SNDBUF, &size, sizeof(size));
-			if (res != 0)
-				CZSPAS_FATAL(ErrorWrapper().msg().c_str());
-		}
-
-		static int getReceiveBufSize(SocketHandle s)
-		{
-			int sndbuf;
-			socklen_t optlen = sizeof(sndbuf);
-			auto res = getsockopt(s, SOL_SOCKET, SO_RCVBUF, (char*)&sndbuf, &optlen);
-			if (res != 0)
-				CZSPAS_FATAL(ErrorWrapper().msg().c_str());
-			return sndbuf;
-		}
-#endif
-
 		static std::pair<std::string, int> addrToPair(sockaddr_in& addr)
 		{
 			std::pair<std::string, int> res;
@@ -631,41 +551,6 @@ namespace detail
 		}
 
 	};
-
-	template <class T, class MTX=std::mutex>
-	class Monitor
-	{
-	private:
-		mutable T m_t;
-		mutable MTX m_mtx;
-
-	public:
-		using Type = T;
-		Monitor() {}
-		Monitor(T t_) : m_t(std::move(t_)) {}
-		template <typename F>
-		auto operator()(F f) const -> decltype(f(m_t))
-		{
-			std::lock_guard<std::mutex> hold{ m_mtx };
-			return f(m_t);
-		}
-	};
-
-	template<typename T>
-	typename std::vector<T>::iterator removeAndReplaceWithLast(std::vector<T>& c, typename std::vector<T>::iterator it)
-	{
-		assert(it != c.end());
-		if (it == c.end() - 1)
-		{
-			return c.erase(it);
-		}
-		else
-		{
-			*it = std::move(*(c.end() - 1));
-			c.erase(c.cend() - 1);
-			return it;
-		}
-	}
 
 #if _WIN32
 	struct WSAInstance
@@ -1182,11 +1067,9 @@ public:
 
 	void interrupt()
 	{
-		//printf("	INTERRUPT BEGIN\n");
 		char buf = 0;
 		if (::send(m_signalOut, &buf, 1, 0) != 1)
 			CZSPAS_FATAL("Reactor %p", this, detail::ErrorWrapper().msg().c_str());
-		//printf("	INTERRUPT END\n");
 	}
 
 	void addOperation(SocketHandle fd, EventType type, std::unique_ptr<Operation> op, int timeoutMs)
@@ -1210,16 +1093,6 @@ public:
 		interrupt();
 	}
 
-	/*
-	void cancelAll(std::queue<std::unique_ptr<Operation>>& dst)
-	{
-		std::unique_lock<std::mutex> lk(m_mtx);
-		for (auto&& d : m_sockData)
-			d.second.cancel(Error::Code::Cancelled, dst);
-		m_sockData.clear();
-	}
-	*/
-
 	void runOnce(std::queue<std::unique_ptr<Operation>>& dst)
 	{
 		std::unique_lock<std::mutex> lk(m_mtx);
@@ -1235,7 +1108,6 @@ public:
 		}
 
 		lk.unlock();
-		//printf("POLL_BEGIN\n");
 
 		int timeoutMs = -1;
 		if (timeoutPoint != Timepoint::max())
@@ -1252,18 +1124,11 @@ public:
 #endif
 
 		lk.lock();
-		//printf("POLL_END\n");
 
 		if (m_fds[0].revents & POLLRDNORM)
 		{
 			readInterrupt();
-			//printf("readInterruptDone\n");
 		}
-		else
-		{
-			//printf("no readInterruptDone\n");
-		}
-
 
 		if (res == CZSPAS_SOCKET_ERROR)
 		{
@@ -1297,7 +1162,6 @@ public:
 	{
 		std::lock_guard<std::mutex> lk(m_mtx);
 		m_ready.push(std::make_unique<detail::PostOperation>(std::forward<H>(h)));
-		//printf("POST\n");
 		m_reactor.interrupt();
 	}
 
@@ -1342,7 +1206,6 @@ private:
 	void cancel(SocketHandle fd)
 	{
 		std::lock_guard<std::mutex> lk(m_mtx);
-		//printf("CANCEL\n");
 		m_reactor.cancel(fd, m_ready);
 	}
 
