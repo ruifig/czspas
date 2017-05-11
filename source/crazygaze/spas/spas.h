@@ -797,7 +797,11 @@ namespace detail
 			SPAS_ASSERT(fd == owner.getHandle());
 			// The interface allows size_t, but the implementation only allows int
 			int todo = bufSize > INT_MAX ? INT_MAX : static_cast<int>(bufSize);
-			int len = ::send(fd, buf, todo, 0);
+			int flags = 0;
+#if __linux__
+			flags = MSG_NOSIGNAL;
+#endif
+			int len = ::send(fd, buf, todo, flags);
 			if (len == SPAS_SOCKET_ERROR)
 			{
 				if (hasPOLLHUP)
@@ -1068,7 +1072,11 @@ public:
 	void interrupt()
 	{
 		char buf = 0;
-		if (::send(m_signalOut, &buf, 1, 0) != 1)
+		int flags = 0;
+#if __linux__
+		flags = MSG_NOSIGNAL;
+#endif
+		if (::send(m_signalOut, &buf, 1, flags) != 1)
 			SPAS_FATAL("Reactor %p", this, detail::ErrorWrapper().msg().c_str());
 	}
 
@@ -1227,7 +1235,7 @@ private:
 	detail::Reactor m_reactor;
 	std::queue<std::unique_ptr<detail::Operation>> m_ready;
 	std::queue<std::unique_ptr<detail::Operation>> m_tmpready;
-	std::atomic<bool> m_stopping = false;
+	std::atomic<bool> m_stopping{false};
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -1393,7 +1401,11 @@ public:
 
 	Error listen(int port)
 	{
-		return listenEx(nullptr, port, SOMAXCONN, false);
+		bool reuseAddr = false;
+#if __linux__
+        reuseAddr = true;
+#endif
+		return listenEx(nullptr, port, SOMAXCONN, reuseAddr);
 	}
 
 	Error accept(Socket& sock, int timeoutMs = -1)
