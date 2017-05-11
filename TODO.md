@@ -1,9 +1,17 @@
 GENERAL
 -------
 
+* Rename project to spas (instead of czspas)
+	* X cmake changes done
+	* X Rename macros from CZSPAS to SPAS
+	* rename folder(s)
+	* rename bitbucket repo
+* Move to github
+* X Remove old files
 * Organize the header top
-	* Put a copyright notice and link to czspas repository
+	* Put a copyright notice and link to spas repository
 	* Organize the links and add notes on each
+* X Create a LICENSE file (MIT probably)
 * Port to Linux
 
 

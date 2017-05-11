@@ -25,9 +25,9 @@ namespace cz
 //
 // These need to be defined BEFORE including spas
 //
-#define CZSPAS_INFO(fmt, ...) MyTCPLog::out(false, "Info: ", fmt, ##__VA_ARGS__)
-#define CZSPAS_WARN(fmt, ...) MyTCPLog::out(false, "Warning: ", fmt, ##__VA_ARGS__)
-#define CZSPAS_ERROR(fmt, ...) MyTCPLog::out(false, "Error: ", fmt, ##__VA_ARGS__)
+#define SPAS_INFO(fmt, ...) MyTCPLog::out(false, "Info: ", fmt, ##__VA_ARGS__)
+#define SPAS_WARN(fmt, ...) MyTCPLog::out(false, "Warning: ", fmt, ##__VA_ARGS__)
+#define SPAS_ERROR(fmt, ...) MyTCPLog::out(false, "Error: ", fmt, ##__VA_ARGS__)
 
 #include "crazygaze/spas/spas.h"
 

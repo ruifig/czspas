@@ -1,17 +1,18 @@
 #include "testsPCH.h"
 #include "UnitTest++/TestReporterStdout.h"
 
+// If set to 1, the tests will run non-stop, to try and find possible multithreaded problems
 #define LOOP_TESTS 1
 
 UnitTest::Timer gTimer;
 
 namespace UnitTest
 {
-	class czspasTestReporter : public TestReporter
+	class spasTestReporter : public TestReporter
 	{
 		virtual void ReportFailure(TestDetails const& details, char const* failure) override
 		{
-			CZSPAS_DEBUG_BREAK();
+			SPAS_DEBUG_BREAK();
 			using namespace std;
 #if defined(__APPLE__) || defined(__GNUG__)
 			char const* const errorFormat = "%s:%d:%d: error: Failure in %s: %s\n";
@@ -45,9 +46,9 @@ namespace UnitTest
 		}
 	};
 
-	int czspasRunAllTests()
+	int spasRunAllTests()
 	{
-		czspasTestReporter reporter;
+		spasTestReporter reporter;
 		TestRunner runner(reporter);
 		return runner.RunTestsIf(Test::GetTestList(), NULL, True(), 0);
 	}
@@ -74,7 +75,7 @@ namespace cz
 			printf("%s\n", buf);
 			if (fatal && ms_assertOnFatal)
 			{
-				CZSPAS_DEBUG_BREAK();
+				SPAS_DEBUG_BREAK();
 				exit(1);
 			}
 		}
@@ -102,8 +103,7 @@ int main()
 	{
 		counter++;
 		printf("*** Run %d ***\n", counter);
-		res = UnitTest::czspasRunAllTests();
-		//return res;
+		res = UnitTest::spasRunAllTests();
 		if (res != 0)
 			break;
 	}
