@@ -9,15 +9,16 @@ GENERAL
 * X Remove old files
 * X Create a LICENSE file (MIT probably)
 * X Port to Linux
-* Rename back to czspas (A couple of project on GitHub names spas) ;(
-		* cmake changes
-		* rename macros
-		* rename folder
-		* rename bitbucket repo
+* X Rename back to czspas (A couple of project on GitHub names spas) ;(
+		* X cmake changes
+		* X rename macros
+		* X rename folder
+		* X rename bitbucket repo
 * Organize the header top
 	* Put a copyright notice and link to spas repository
 	* Organize the links and add notes on each
 * Move to github
+	* Create Crazgaze account and put czspas there
 
 API
 ---

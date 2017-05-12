@@ -8,11 +8,11 @@ UnitTest::Timer gTimer;
 
 namespace UnitTest
 {
-	class spasTestReporter : public TestReporter
+	class czspasTestReporter : public TestReporter
 	{
 		virtual void ReportFailure(TestDetails const& details, char const* failure) override
 		{
-			SPAS_DEBUG_BREAK();
+			CZSPAS_DEBUG_BREAK();
 			using namespace std;
 #if defined(__APPLE__) || defined(__GNUG__)
 			char const* const errorFormat = "%s:%d:%d: error: Failure in %s: %s\n";
@@ -46,9 +46,9 @@ namespace UnitTest
 		}
 	};
 
-	int spasRunAllTests()
+	int czspasRunAllTests()
 	{
-		spasTestReporter reporter;
+		czspasTestReporter reporter;
 		TestRunner runner(reporter);
 		return runner.RunTestsIf(Test::GetTestList(), NULL, True(), 0);
 	}
@@ -75,7 +75,7 @@ namespace cz
 			printf("%s\n", buf);
 			if (fatal && ms_assertOnFatal)
 			{
-				SPAS_DEBUG_BREAK();
+				CZSPAS_DEBUG_BREAK();
 				exit(1);
 			}
 		}
@@ -103,7 +103,7 @@ int main()
 	{
 		counter++;
 		printf("*** Run %d ***\n", counter);
-		res = UnitTest::spasRunAllTests();
+		res = UnitTest::czspasRunAllTests();
 		if (res != 0)
 			break;
 	}

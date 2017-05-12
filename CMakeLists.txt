@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.5)
-project(spas)
+project(czspas)
 
 include(cmake/ucm.cmake)
 include(cmake/utils.cmake)
