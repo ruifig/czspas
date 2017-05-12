@@ -1,0 +1,6 @@
+build/
+x64/
+
+# vim-vs temporary files
+/.vimvs-tmp*
+
