@@ -15,7 +15,7 @@ Intent
 
 czspas was created with the intent of being used where a simple asynchronous TCP api needed, but adding a dependency on something like Asio/Boost Asio is overkill.
 
-It was originally created for [](https://bitbucket.org/ruifig/czrpc) to remove the dependency on Asio (although not integrated in czrpc yet).
+It was originally created for [https://bitbucket.org/ruifig/czrpc]() to remove the dependency on Asio (although not integrated in czrpc yet).
 
 Documentation
 =============
