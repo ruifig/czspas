@@ -15,14 +15,6 @@ namespace cz
 	{
 		struct MyTCPLog
 		{
-			struct DisableLogging
-			{
-				DisableLogging(const DisableLogging&) = delete;
-				DisableLogging& operator=(const DisableLogging&) = delete;
-				DisableLogging() : previous(ms_logEnabled) { ms_logEnabled = false; }
-				~DisableLogging() { ms_logEnabled = previous; }
-				bool previous;
-			};
 			static bool ms_assertOnFatal;
 			static bool ms_logEnabled;
 			static void out(bool fatal, const char* type, const char* fmt, ...);
@@ -31,7 +23,7 @@ namespace cz
 }
 
 //
-// These need to be defined BEFORE including spas
+// These need to be defined BEFORE including czspas
 //
 #define CZSPAS_INFO(fmt, ...) MyTCPLog::out(false, "Info: ", fmt, ##__VA_ARGS__)
 #define CZSPAS_WARN(fmt, ...) MyTCPLog::out(false, "Warning: ", fmt, ##__VA_ARGS__)
