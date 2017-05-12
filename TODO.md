@@ -14,11 +14,11 @@ GENERAL
 		* X rename macros
 		* X rename folder
 		* X rename bitbucket repo
-* Organize the header top
-	* Put a copyright notice and link to spas repository
-	* Organize the links and add notes on each
+* X Organize the header top
+	* X Put a copyright notice and link to spas repository
+	* X Organize the links and add notes on each
+* Create readme.md
 * Move to github
-	* Create Crazgaze account and put czspas there
 
 API
 ---
@@ -34,5 +34,4 @@ INTERNALS
 		* HOW: I now listenEx that accepts all parameters, and listen for the common case
 	* X When closing the the temporary acceptor, disable lingering? (Need to check if it's necessary)
 	* X When closing the 2 temporary sockets, shutdown 1 properly and disable the lingering on the other one, to avoid the TIME_WAIT
-
 
