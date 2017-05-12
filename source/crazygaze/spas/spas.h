@@ -23,39 +23,36 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
-//
-// Excellent BSD socket tutorial:
-// http://beej.us/guide/bgnet/
-//
-// Compatibility stuff (Windows vs Unix)
-// https://tangentsoft.net/wskfaq/articles/bsd-compatibility.html
-//
-// Nice question/answer about socket states, including a neat state diagram:
-//	http://stackoverflow.com/questions/5328155/preventing-fin-wait2-when-closing-socket
-// Some differences between Windows and Linux:
-// https://www.apriorit.com/dev-blog/221-crossplatform-linux-windows-sockets
-//
-// Windows loopback fast path:
-// https://blogs.technet.microsoft.com/wincat/2012/12/05/fast-tcp-loopback-performance-and-low-latency-with-windows-server-2012-tcp-loopback-fast-path/
-//
-// Notes on WSAPoll
-//	https://blogs.msdn.microsoft.com/wndp/2006/10/26/wsapoll-a-new-winsock-api-to-simplify-porting-poll-applications-to-winsock/
-//	Also has some tips how to write code for IPv6
-//	- WSAPoll() is not exactly like poll(). It has a couple of bugs that microsoft never fixed. Example:
-//		- Doesn't report failed connections. (E.g: A connect attempt to an address&port without listener and timeout -1 will block forever):
-//			https://social.msdn.microsoft.com/Forums/windowsdesktop/en-US/18769abd-fca0-4d3c-9884-1a38ce27ae90/wsapoll-and-nonblocking-connects-to-nonexistent-ports?forum=wsk
-//
-// Good answer about SO_REUSEADDR:
-// http://stackoverflow.com/questions/14388706/socket-options-so-reuseaddr-and-so-reuseport-how-do-they-differ-do-they-mean-t
-//
-// #TODO
-// - Instead of using SO_REUSEADDR, consider:
-//		- Server should set SO_LINGER to 0
-//			See:
-//			http://stackoverflow.com/questions/3757289/tcp-option-so-linger-zero-when-its-required
-//			http://www.serverframework.com/asynchronousevents/2011/01/time-wait-and-its-design-implications-for-protocols-and-scalable-servers.html
-//		- Well behaved clients are the ones closing the connection
-//
+
+/*
+Random notes/links I use/used during development
+------------------------------------------------
+
+Excellent BSD socket tutorial:
+	http://beej.us/guide/bgnet/
+
+About compatibility (Windows vs Unix)
+	https://tangentsoft.net/wskfaq/articles/bsd-compatibility.html
+	https://www.apriorit.com/dev-blog/221-crossplatform-linux-windows-sockets
+
+About socket states:
+	http://stackoverflow.com/questions/5328155/preventing-fin-wait2-when-closing-socket
+
+About SO_REUSEADDR / SO_REUSEPORT / SO_LINGER:
+	http://stackoverflow.com/questions/14388706/socket-options-so-reuseaddr-and-so-reuseport-how-do-they-differ-do-they-mean-t
+	http://stackoverflow.com/questions/3757289/tcp-option-so-linger-zero-when-its-required
+	http://www.serverframework.com/asynchronousevents/2011/01/time-wait-and-its-design-implications-for-protocols-and-scalable-servers.html
+
+Windows Loopback fast path:
+	https://blogs.technet.microsoft.com/wincat/2012/12/05/fast-tcp-loopback-performance-and-low-latency-with-windows-server-2012-tcp-loopback-fast-path/
+
+Notes on WSAPoll:
+	https://blogs.msdn.microsoft.com/wndp/2006/10/26/wsapoll-a-new-winsock-api-to-simplify-porting-poll-applications-to-winsock/
+	WSAPoll() is not exactly like poll(). It has a couple of bugs that microsoft never fixed. Example: 
+		- Doesn't report failed connections. (E.g: A connect attempt to an address&port without listener and timeout -1 will block forever):
+			https://social.msdn.microsoft.com/Forums/windowsdesktop/en-US/18769abd-fca0-4d3c-9884-1a38ce27ae90/wsapoll-and-nonblocking-connects-to-nonexistent-ports?forum=wsk
+
+*/
 
 #pragma once
 
