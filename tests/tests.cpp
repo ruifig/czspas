@@ -1,7 +1,10 @@
 #include "testsPCH.h"
 #include "UnitTest++/TestReporterStdout.h"
 
+// If set to 1, the tests will run non-stop, to try and find possible multithreaded problems
 #define LOOP_TESTS 1
+
+UnitTest::Timer gTimer;
 
 namespace UnitTest
 {
@@ -61,7 +64,7 @@ namespace cz
 
 		void MyTCPLog::out(bool fatal, const char* type, const char* fmt, ...)
 		{
-			if (!ms_logEnabled && !fatal && type[0]!='E')
+			if (!ms_logEnabled || !fatal)
 				return;
 			char buf[256];
 			detail::copyStrToFixedBuffer(buf, type);
@@ -81,6 +84,9 @@ namespace cz
 
 int main()
 {
+	gTimer.Start();
+
+	//cz::spas::MyTCPLog::ms_logEnabled = false;
 #if defined(_WIN32) && !defined(NDEBUG) && ENABLE_MEM_DEBUG
 	_CrtSetDbgFlag(
 		_CRTDBG_ALLOC_MEM_DF
@@ -98,7 +104,6 @@ int main()
 		counter++;
 		printf("*** Run %d ***\n", counter);
 		res = UnitTest::czspasRunAllTests();
-		//return res;
 		if (res != 0)
 			break;
 	}

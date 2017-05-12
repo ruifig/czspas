@@ -23,8 +23,7 @@ syntax: regexp
 
 ^build/
 # CLion folders
-^cmake-build-debug/
-^cmake-build-release/
+^cmake-build-[^/]+/
 ^.idea/
 
 
