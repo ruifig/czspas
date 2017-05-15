@@ -55,33 +55,6 @@ namespace UnitTest
 } // namespace UnitTest
 
 
-namespace cz
-{
-	namespace spas
-	{
-		bool MyTCPLog::ms_assertOnFatal = true;
-		bool MyTCPLog::ms_logEnabled = false;
-
-		void MyTCPLog::out(bool fatal, const char* type, const char* fmt, ...)
-		{
-			if (!ms_logEnabled || !fatal)
-				return;
-			char buf[256];
-			detail::copyStrToFixedBuffer(buf, type);
-			va_list args;
-			va_start(args, fmt);
-			vsnprintf(buf + strlen(buf), sizeof(buf) - strlen(buf) - 1, fmt, args);
-			va_end(args);
-			printf("%s\n", buf);
-			if (fatal && ms_assertOnFatal)
-			{
-				CZSPAS_DEBUG_BREAK();
-				exit(1);
-			}
-		}
-	}
-}
-
 int main()
 {
 	gTimer.Start();
