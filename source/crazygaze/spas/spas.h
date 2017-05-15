@@ -57,7 +57,6 @@ Notes on WSAPoll:
 #pragma once
 
 #ifdef _WIN32
-	#define CZSPAS_WINSOCK 1
 	#include <WinSock2.h>
 	#include <WS2tcpip.h>
 	#include <strsafe.h>
@@ -82,6 +81,7 @@ Notes on WSAPoll:
 #endif
 
 #include <set>
+#include <string>
 #include <memory>
 #include <functional>
 #include <atomic>
@@ -119,17 +119,36 @@ class Acceptor;
 class Socket;
 class Service;
 
-#ifndef CZSPAS_INFO
-	#define CZSPAS_INFO(fmt, ...) detail::DefaultLog::out(false, "Info: ", fmt, ##__VA_ARGS__)
+#if CZSPAS_ENABLE_LOGGING
+	#ifndef CZSPAS_INFO
+		#define CZSPAS_INFO(fmt, ...) ::cz::spas::detail::DefaultLog::out(false, "Info: ", fmt, ##__VA_ARGS__)
+	#endif
+	#ifndef CZSPAS_WARN
+		#define CZSPAS_WARN(fmt, ...) ::cz::spas::detail::DefaultLog::out(false, "Warning: ", fmt, ##__VA_ARGS__)
+	#endif
+	#ifndef CZSPAS_ERROR
+		#define CZSPAS_ERROR(fmt, ...) ::cz::spas::detail::DefaultLog::out(false, "Error: ", fmt, ##__VA_ARGS__)
+	#endif
+#else
+	#ifndef CZSPAS_INFO
+		#define CZSPAS_INFO(fmt, ...) ((void)0)
+	#endif
+	#ifndef CZSPAS_WARN
+		#define CZSPAS_WARN(fmt, ...) ((void)0)
+	#endif
+	#ifndef CZSPAS_ERROR
+		#define CZSPAS_ERROR(fmt, ...) ((void)0)
+	#endif
 #endif
-#ifndef CZSPAS_WARN
-	#define CZSPAS_WARN(fmt, ...) detail::DefaultLog::out(false, "Warning: ", fmt, ##__VA_ARGS__)
-#endif
-#ifndef CZSPAS_ERROR
-	#define CZSPAS_ERROR(fmt, ...) detail::DefaultLog::out(false, "Error: ", fmt, ##__VA_ARGS__)
-#endif
+
+// Fatal logging is always available
 #ifndef CZSPAS_FATAL
-	#define CZSPAS_FATAL(fmt, ...) detail::DefaultLog::out(true, "Fatal: ", fmt, ##__VA_ARGS__)
+	#define CZSPAS_FATAL(fmt, ...)                                        \
+		{                                                                 \
+			::cz::spas::detail::DefaultLog::out(true, "Fatal: ", fmt, ##__VA_ARGS__); \
+			CZSPAS_DEBUG_BREAK();                                         \
+			exit(1);                                                      \
+		}
 #endif
 
 #ifndef CZSPAS_ASSERT
@@ -234,11 +253,6 @@ namespace detail
 			vsnprintf(buf + strlen(buf), sizeof(buf) - strlen(buf) - 1, fmt, args);
 			va_end(args);
 			printf("%s\n",buf);
-			if (fatal)
-			{
-				CZSPAS_DEBUG_BREAK();
-				exit(1);
-			}
 		}
 	};
 
@@ -265,7 +279,7 @@ namespace detail
 	class ErrorWrapper
 	{
 	public:
-#if CZSPAS_WINSOCK
+#if _WIN32
 		static std::string getWin32ErrorMsg(DWORD err = ERROR_SUCCESS, const char* funcname = nullptr)
 		{
 			LPVOID lpMsgBuf;
@@ -649,6 +663,16 @@ namespace detail
 			detail::utils::closeSocket(m_s, doshutdown);
 		}
 
+		const std::pair<std::string, int>& getLocalAddr() const
+		{
+			return m_localAddr;
+		}
+
+		const std::pair<std::string, int>& getPeerAddr() const
+		{
+			return m_peerAddr;
+		}
+			
 	protected:
 		BaseSocket(const BaseSocket&) = delete;
 		void operator=(const BaseSocket&) = delete;
@@ -1044,8 +1068,8 @@ private:
 				bool hasPOLLHUP = (fd.revents & POLLHUP) != 0;
 				bool empty = processEventsHelper(it->first, it->second.ops[EventType::Read],
 					fd.revents & POLLRDNORM, hasPOLLHUP, now, dst);
-				empty = empty && processEventsHelper(it->first, it->second.ops[EventType::Write],
-					fd.revents & POLLWRNORM, hasPOLLHUP, now, dst);
+				empty = processEventsHelper(it->first, it->second.ops[EventType::Write],
+					fd.revents & POLLWRNORM, hasPOLLHUP, now, dst) && empty;
 				if (empty)
 					m_sockData.erase(it);
 			}
