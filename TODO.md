@@ -1,13 +1,10 @@
 GENERAL
 -------
 
-* Cleanup the utils.cmake
-	* Change the utility functions/macros to take an explicity target name
-	* X : Remove "project(xx)" from the top of cmake files
-
 API
 ---
 
+* 
 * Make Service::run thread safe, so multiple threads can dequeue work (like Asio)
 
 INTERNALS
