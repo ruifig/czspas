@@ -8,21 +8,6 @@ else (CMAKE_SIZEOF_VOID_P EQUAL 8)
     SET( EX_PLATFORM_NAME "x86")
 endif (CMAKE_SIZEOF_VOID_P EQUAL 8)
 
-set (CMAKE_DEBUG_POSTFIX "_Debug")
-set (CMAKE_RELEASE_POSTFIX "_Release")
-set (CMAKE_MINSIZEREL_POSTFIX "_MinSizeRel")
-set (CMAKE_RELWITHDEBINFO_POSTFIX "_RelWithDebInfo")
-
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}/lib)
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/lib)
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_MINSIZEREL ${CMAKE_BINARY_DIR}/lib)
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_BINARY_DIR}/lib)
-
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}/bin)
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/bin)
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL ${CMAKE_BINARY_DIR}/bin)
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_BINARY_DIR}/bin)
-
 if (MSVC)
 	SET( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /D \"_CRT_SECURE_NO_WARNINGS\" /MP /bigobj")
 endif()
@@ -34,6 +19,7 @@ endif()
 if(MINGW OR CYGWIN)
 	SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wa,-mbig-obj")
 endif()
+
 
 # From http://stackoverflow.com/questions/148570/using-pre-compiled-headers-with-cmake
 # Given a variable MySources with all the source files, use as follow:
@@ -56,22 +42,88 @@ MACRO(ADD_MSVC_PRECOMPILED_HEADER PrecompiledHeader PrecompiledSource SourcesVar
   ENDIF(MSVC)
 ENDMACRO(ADD_MSVC_PRECOMPILED_HEADER)
 
-function(cz_set_postfix)
-	message(${PROJECT_NAME})
-	set_target_properties(${PROJECT_NAME} PROPERTIES DEBUG_POSTFIX _${EX_PLATFORM_NAME}${CMAKE_DEBUG_POSTFIX})
-	set_target_properties(${PROJECT_NAME} PROPERTIES RELEASE_POSTFIX _${EX_PLATFORM_NAME}${CMAKE_RELEASE_POSTFIX})
-	set_target_properties(${PROJECT_NAME} PROPERTIES MINSIZEREL_POSTFIX _${EX_PLATFORM_NAME}${CMAKE_MINSIZEREL_POSTFIX})
-	set_target_properties(${PROJECT_NAME} PROPERTIES RELWITHDEBINFO_POSTFIX _${EX_PLATFORM_NAME}${CMAKE_RELWITHDEBINFO_POSTFIX})
+function(cz_set_postfix target_name)
+	set_target_properties( ${target_name}
+		PROPERTIES
+
+		# output directories
+	    # CMAKE_BINARY_DIR will be the top level of wherever the projects are generated - https://cmake.org/cmake/help/v3.7/variable/CMAKE_BINARY_DIR.html
+		# By using a configuration name that doesn't exist as a check in the generator expression, it means it will always expand to nothing
+		ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib$<$<CONFIG:DummyConfigName>:>
+		LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib$<$<CONFIG:DummyConfigName>:>
+		RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin$<$<CONFIG:DummyConfigName>:>
+
+		# Output file name
+		OUTPUT_NAME ${target_name}_${EX_PLATFORM_NAME}_$<CONFIG>
+	)
 endfunction()
 
-function(cz_add_commonlibs)
-  if (MSVC)
-    target_link_libraries(${PROJECT_NAME} ws2_32)
+function(cz_add_commonlibs target_name)
+	if (MSVC)
+		target_link_libraries(${target_name} ws2_32)
 	elseif (MINGW)
-		target_link_libraries(${PROJECT_NAME} ws2_32 mswsock )
+		target_link_libraries(${target_name} ws2_32 mswsock )
 		#SET(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lws2_32")
 	elseif(CMAKE_COMPILER_IS_GNUCXX OR ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang"))
-		target_link_libraries(${PROJECT_NAME} pthread )
+		target_link_libraries(${target_name} pthread )
 	endif()
+endfunction()
+
+#########################
+
+#
+# Check if a file was added to a target
+# found : output value (TRUE if found, FALSE otherwise)
+# target_name : Target to check
+# file: File to look for
+function(cz_find_file_in_target found target_name file)
+	get_target_property( _srcs ${target_name} SOURCES)
+	foreach(_src IN LISTS _srcs)
+		get_filename_component(_name ${_src} NAME)
+		if ( _name STREQUAL file OR _src STREQUAL file)
+			set (found TRUE PARENT_SCOPE)
+			return()
+		endif()
+	endforeach()
+	set( found FALSE PARENT_SCOPE )
+endfunction()
+
+#
+# http://stackoverflow.com/questions/148570/using-pre-compiled-headers-with-cmake
+#	Shows a couple of ways to enabled precompiled headers for msvc
+#
+#
+# target_name : Target to set the precompiled header for
+# precompiled_header: Header file to use as precompiled header, without paths
+# precompiled_source: Source file used to create the precompiled header, with the path as cmake sees it.
+#
+# Example, considering the following folder structure for project Core
+# 
+# MyProject
+#     |- Private
+#     |   ....
+#     |   MyProjectPCH.h
+#     |   MyProjectPCH.cpp
+#     |- Public
+#         ....
+#     CMakeLists.txt
+#
+# cz_set_precompiled_header(MyProject MyProjectPCH.h Private/MyProjectPCH.cpp)
+#
+function(cz_set_precompiled_header target_name precompiled_header precompiled_source)
+	if(MSVC)
+		# Check if the header and source file exist in the target
+		cz_find_file_in_target(found ${target_name} ${precompiled_header})
+		if (NOT found)
+			message(FATAL_ERROR "Precompiled header file ${precompiled_header} not found in project ${target_name}")
+		endif()
+		cz_find_file_in_target(found ${target_name} ${precompiled_source})
+		if (NOT found)
+			message(FATAL_ERROR "Precompiled source file ${precompiled_source} not found in project ${target_name}")
+		endif()
+
+		target_compile_options(${target_name} PRIVATE "/Yu${precompiled_header}")
+		set_source_files_properties(${precompiled_source} PROPERTIES COMPILE_FLAGS "/Yc${precompiled_header}")
+    endif()
 endfunction()
 

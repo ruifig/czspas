@@ -1,5 +1,4 @@
 cmake_minimum_required(VERSION 3.5)
-project(UnitTest++)
 
 ucm_add_dirs("UnitTest++/" TO UNITTESTPP_SRC)
 
@@ -11,5 +10,4 @@ endif()
 
 add_library(UnitTest++ STATIC ${UNITTESTPP_SRC})
 target_include_directories(UnitTest++ PUBLIC "")
-cz_set_postfix()
-
+cz_set_postfix(UnitTest++)
