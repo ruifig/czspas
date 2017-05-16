@@ -1080,23 +1080,12 @@ public:
 
 	Reactor()
 	{
-
 		// Create a listening socket on a port picked by the OS (because we passed 0 as port)
 		auto acceptor = utils::createListenSocketEx("127.0.0.1", 0, 1, false);
 		// If this fails, then the OS probably ran out of resources (e.g: Too many connections or too many connection 
 		// on TIME_WAIT)
 		CZSPAS_ASSERT(!acceptor.first);
 
-#if 0
-		auto connectFt = std::async(std::launch::async, [this, port = detail::utils::getLocalAddr(acceptor.second).second]
-		{
-			auto res = detail::utils::createConnectSocket("127.0.0.1", port);
-			// Same as above. If this fails, then the OS ran out of resources
-			CZSPAS_ASSERT(!res.first);
-			return res.second;
-		});
-		m_signalOut = connectFt.get();
-#else
 		// NOTE: We can connect without doing the accept first
 		{
 			auto res = detail::utils::createConnectSocket("127.0.0.1", detail::utils::getLocalAddr(acceptor.second).second);
@@ -1104,7 +1093,6 @@ public:
 			CZSPAS_ASSERT(!res.first);
 			m_signalOut = res.second;
 		}
-#endif
 
 		// Loop until we accept the right connection.
 		// This drops any unwanted connections (if it happens some other application tries to connect to our acceptor port)
@@ -1114,7 +1102,7 @@ public:
 			if (res.first) // If some error occurred, just try and accept another.
 				continue;
 			// A simple check to make sure it's the connection we expect.
-			// From the acceptor perspective, the remote port of the incoming connection must be the local port m_signalOut
+			// From the acceptor perspective, the remote port of the incoming connection must be the local port of m_signalOut
 			if (detail::utils::getRemoteAddr(res.second).second == detail::utils::getLocalAddr(m_signalOut).second)
 				m_signalIn = res.second;
 			else
