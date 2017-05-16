@@ -985,8 +985,8 @@ private:
 	};
 
 	std::mutex m_mtx;
-	SocketHandle m_signalIn;
-	SocketHandle m_signalOut;
+	SocketHandle m_signalIn = CZSPAS_INVALID_SOCKET;
+	SocketHandle m_signalOut = CZSPAS_INVALID_SOCKET;
 	std::vector<pollfd> m_fds;
 	std::unordered_map<SocketHandle, SocketData> m_sockData;
 
@@ -1087,6 +1087,7 @@ public:
 		// on TIME_WAIT)
 		CZSPAS_ASSERT(!acceptor.first);
 
+#if 0
 		auto connectFt = std::async(std::launch::async, [this, port = detail::utils::getLocalAddr(acceptor.second).second]
 		{
 			auto res = detail::utils::createConnectSocket("127.0.0.1", port);
@@ -1094,12 +1095,33 @@ public:
 			CZSPAS_ASSERT(!res.first);
 			return res.second;
 		});
-
-		auto res = detail::utils::accept(acceptor.second);
-		detail::utils::closeSocket(acceptor.second);
-		CZSPAS_ASSERT(!res.first);
-		m_signalIn = res.second;
 		m_signalOut = connectFt.get();
+#else
+		// NOTE: We can connect without doing the accept first
+		{
+			auto res = detail::utils::createConnectSocket("127.0.0.1", detail::utils::getLocalAddr(acceptor.second).second);
+			// Same as above. If this fails, then the OS ran out of resources
+			CZSPAS_ASSERT(!res.first);
+			m_signalOut = res.second;
+		}
+#endif
+
+		// Loop until we accept the right connection.
+		// This drops any unwanted connections (if it happens some other application tries to connect to our acceptor port)
+		while (m_signalIn == CZSPAS_INVALID_SOCKET)
+		{
+			auto res = detail::utils::accept(acceptor.second);
+			if (res.first) // If some error occurred, just try and accept another.
+				continue;
+			// A simple check to make sure it's the connection we expect.
+			// From the acceptor perspective, the remote port of the incoming connection must be the local port m_signalOut
+			if (detail::utils::getRemoteAddr(res.second).second == detail::utils::getLocalAddr(m_signalOut).second)
+				m_signalIn = res.second;
+			else
+				detail::utils::closeSocket(res.second, false);
+		}
+
+		detail::utils::closeSocket(acceptor.second);
 	}
 
 	~Reactor()
