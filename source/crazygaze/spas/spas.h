@@ -549,9 +549,9 @@ namespace detail
 			return std::make_pair(Error(), s);
 		}
 
-		static std::pair<Error, SocketHandle> accept(SocketHandle& acceptor, int timeoutMs = -1)
+		static std::pair<bool, Error> doSelect(SocketHandle& sock, bool read, int timeoutMs)
 		{
-			CZSPAS_ASSERT(acceptor != CZSPAS_INVALID_SOCKET);
+			CZSPAS_ASSERT(sock != CZSPAS_INVALID_SOCKET);
 
 			timeval timeout{ 0,0 };
 			if (timeoutMs != -1)
@@ -562,18 +562,38 @@ namespace detail
 
 			fd_set fds;
 			FD_ZERO(&fds);
-			FD_SET(acceptor, &fds);
-			auto res = ::select((int)acceptor + 1, &fds, NULL, NULL, timeoutMs == -1 ? NULL : &timeout);
+			FD_SET(sock, &fds);
+			auto res = ::select(
+				(int)sock + 1,
+				read ? &fds : NULL,
+				read ? NULL : &fds,
+				NULL,
+				timeoutMs == -1 ? NULL : &timeout);
 
-			if (res == CZSPAS_SOCKET_ERROR) {
-				return std::make_pair(detail::ErrorWrapper().getError(), CZSPAS_INVALID_SOCKET);
+			if (res == 0) // Timeout
+			{
+				return std::make_pair(false, Error(Error::Code::Timeout));
 			}
-			else if (res == 0) {
-				return std::make_pair(Error(Error::Code::Timeout), CZSPAS_INVALID_SOCKET);
+			else if (res == 1)
+			{
+				return std::make_pair(true, Error());
 			}
+			else if (res == CZSPAS_SOCKET_ERROR) {
+				return std::make_pair(false, detail::ErrorWrapper().getError());
+			}
+			else
+			{
+				CZSPAS_ASSERT(0 && "Unexpected");
+				return std::make_pair(false, Error(Error::Code::Other));
+			}
+		}
 
-			CZSPAS_ASSERT(res == 1);
-			CZSPAS_ASSERT(FD_ISSET(acceptor, &fds));
+		static std::pair<Error, SocketHandle> accept(SocketHandle& acceptor, int timeoutMs = -1)
+		{
+			auto res = doSelect(acceptor, true, timeoutMs);
+
+			if (res.second) // Return any error
+				return std::make_pair(res.second, CZSPAS_INVALID_SOCKET);
 
 			sockaddr_in addr;
 			socklen_t size = sizeof(addr);
@@ -896,7 +916,11 @@ namespace detail
 			CZSPAS_ASSERT(fd == owner.getHandle());
 			// The interface allows size_t, but the implementation only allows int
 			int todo = bufSize > INT_MAX ? INT_MAX : static_cast<int>(bufSize);
-			int len = ::recv(fd, buf, todo, 0);
+			int flags = 0;
+#if __linux__
+			flags = MSG_NOSIGNAL;
+#endif
+			int len = ::recv(fd, buf, todo, flags);
 			if (len == CZSPAS_SOCKET_ERROR)
 			{
 				if (hasPOLLHUP)
@@ -1403,6 +1427,75 @@ public:
 		auto op = std::make_unique<detail::ReceiveOperation>(*this, buf, len, std::forward<H>(h));
 		getService().addOperation(m_s, detail::Reactor::EventType::Read, std::move(op), timeoutMs);
 	}
+
+	size_t sendSome(const char* buf, size_t bufSize, int timeoutMs, Error& ec)
+	{
+		auto res = detail::utils::doSelect(m_s, false, timeoutMs);
+		if (res.second)
+		{
+			ec = res.second;
+			return 0;
+		}
+
+		// The interface allows size_t, but the implementation only allows int
+		int todo = bufSize > INT_MAX ? INT_MAX : static_cast<int>(bufSize);
+		int flags = 0;
+#if __linux__
+		flags = MSG_NOSIGNAL;
+#endif
+		int len = ::send(m_s, buf, todo, flags);
+		// I believe no errors should occur at this point, since the select told us the socket was ready, but doesn't
+		// hurt to handle it.
+		if (len == CZSPAS_SOCKET_ERROR)
+		{
+			ec = detail::ErrorWrapper().getError();
+			return 0;
+		}
+		else
+		{
+			ec = Error();
+			return len;
+		}
+	}
+
+	size_t receiveSome(char* buf, size_t bufSize, int timeoutMs, Error& ec)
+	{
+		auto res = detail::utils::doSelect(m_s, true, timeoutMs);
+		if (res.second)
+		{
+			ec = res.second;
+			return 0;
+		}
+
+		// The interface allows size_t, but the implementation only allows int
+		int todo = bufSize > INT_MAX ? INT_MAX : static_cast<int>(bufSize);
+		int flags = 0;
+#if __linux__
+		flags = MSG_NOSIGNAL;
+#endif
+		int len = ::recv(m_s, buf, todo, flags);
+		// I believe no errors should occur at this point, since the select told us the socket was ready, but doesn't
+		// hurt to handle it.
+		if (len == CZSPAS_SOCKET_ERROR)
+		{
+			ec = detail::ErrorWrapper().getError();
+			return 0;
+		}
+		else if (len == 0)
+		{
+			// As per the ::recv documentation, 0 can be returned in two situations:
+			// 1. A stream socket peer has performed a orderly shutdown.
+			// 2. The requested number of bytes was 0
+			ec = Error( todo==0 ? Error::Code::Success : Error::Code::ConnectionClosed);
+			return 0;
+		}
+		else
+		{
+			ec = Error();
+			return len;
+		}
+	}
+
 private:
 };
 

@@ -25,7 +25,6 @@ using namespace cz::spas;
 
 SUITE(CZSPAS)
 {
-
 //////////////////////////////////////////////////////////////////////////
 // Service/Reactor tests
 //////////////////////////////////////////////////////////////////////////
@@ -590,5 +589,174 @@ TEST(Socket_bigTransfer)
 	serverth.join();
 	clientth.join();
 }
+
+TEST(Socket_synchronous_Send_Receive_ok)
+{
+	Service service;
+
+	Acceptor ac(service);
+	auto ec = ac.listen(SERVER_PORT);
+	CHECK_CZSPAS(ec);
+
+	Socket sender(service);
+	ec = sender.connect("127.0.0.1", SERVER_PORT);
+	CHECK_CZSPAS(ec);
+
+	Socket receiver(service);
+	ec = ac.accept(receiver);
+	CHECK_CZSPAS(ec);
+
+	const char* outBuf = "Hello World!";
+	auto done = sender.sendSome("Hello World!", strlen(outBuf), -1, ec);
+	CHECK_EQUAL(strlen(outBuf), done);
+	CHECK_CZSPAS(ec);
+
+	char inBuf[64];
+	memset(inBuf, 0, sizeof(inBuf));
+	done = receiver.receiveSome(inBuf, sizeof(inBuf), -1, ec);
+	CHECK_EQUAL(strlen(outBuf), done);
+	CHECK_CZSPAS(ec);
+	CHECK_EQUAL(outBuf, inBuf);
+}
+
+TEST(Socket_synchronous_receive_timeout)
+{
+	ServiceThread ioth;
+	Service service;
+
+	Acceptor ac(service);
+	auto ec = ac.listen(SERVER_PORT);
+	CHECK_CZSPAS(ec);
+
+	Socket sender(service);
+	ec = sender.connect("127.0.0.1", SERVER_PORT);
+	CHECK_CZSPAS(ec);
+
+	Socket receiver(service);
+	ec = ac.accept(receiver);
+	CHECK_CZSPAS(ec);
+
+	// Test receive timeout, since there is no more data to read
+	char inBuf[1];
+	auto start = gTimer.GetTimeInMs();
+	auto done = receiver.receiveSome(inBuf, sizeof(inBuf), 20, ec);
+	CHECK_CLOSE(20, gTimer.GetTimeInMs() - start, 200);
+	CHECK_EQUAL(0, done);
+	CHECK_CZSPAS_EQUAL(Timeout, ec);
+}
+
+TEST(Socket_synchronous_receive_disconnect)
+{
+	ServiceThread ioth;
+	Service service;
+
+	Acceptor ac(service);
+	auto ec = ac.listen(SERVER_PORT);
+	CHECK_CZSPAS(ec);
+
+	Socket sender(service);
+	ec = sender.connect("127.0.0.1", SERVER_PORT);
+	CHECK_CZSPAS(ec);
+
+	Socket receiver(service);
+	ec = ac.accept(receiver);
+	CHECK_CZSPAS(ec);
+
+	sender._forceClose(false);
+	char inBuf[1];
+	auto done = receiver.receiveSome(inBuf, sizeof(inBuf), -1, ec);
+	CHECK_EQUAL(0, done);
+	CHECK_CZSPAS_EQUAL(ConnectionClosed, ec);
+}
+
+TEST(Socket_synchronous_receive_error)
+{
+	ServiceThread ioth;
+	Service service;
+
+	Acceptor ac(service);
+	auto ec = ac.listen(SERVER_PORT);
+	CHECK_CZSPAS(ec);
+
+	Socket sender(service);
+	ec = sender.connect("127.0.0.1", SERVER_PORT);
+	CHECK_CZSPAS(ec);
+
+	Socket receiver(service);
+	ec = ac.accept(receiver);
+	CHECK_CZSPAS(ec);
+
+	// Close our own socket before sending, just to test error detection
+	auto h = receiver.getHandle(); // Copying to a local, since detail::utils::closeSocket clears the input
+	detail::utils::closeSocket(h);
+	char inBuf[1];
+	auto done = receiver.receiveSome(inBuf, sizeof(inBuf), -1, ec);
+	CHECK_EQUAL(0, done);
+	CHECK_CZSPAS_EQUAL(Other, ec);
+}
+
+TEST(Socket_synchronous_send_timeout)
+{
+	// #TODO : No idea how to test this one :(
+}
+
+TEST(Socket_synchronous_send_disconnect)
+{
+	ServiceThread ioth;
+	Service service;
+
+	Acceptor ac(service);
+	auto ec = ac.listen(SERVER_PORT);
+	CHECK_CZSPAS(ec);
+
+	Socket sender(service);
+	ec = sender.connect("127.0.0.1", SERVER_PORT);
+	CHECK_CZSPAS(ec);
+
+	Socket receiver(service);
+	ec = ac.accept(receiver);
+	CHECK_CZSPAS(ec);
+	receiver._forceClose(false);
+
+	// Even thought the peer was closed, a send can still say it succeeded, so we need to loop until it eventually
+	// fails to test the desired code path.
+	size_t done;
+	while (!ec)
+	{
+		char outBuf[2];
+		done = sender.sendSome(outBuf, sizeof(outBuf), -1, ec);
+		if (!ec)
+			CHECK_EQUAL(2, done);
+	}
+	CHECK_EQUAL(0, done);
+	CHECK_CZSPAS_EQUAL(Other, ec);
+}
+
+TEST(Socket_synchronous_send_error)
+{
+	ServiceThread ioth;
+	Service service;
+
+	Acceptor ac(service);
+	auto ec = ac.listen(SERVER_PORT);
+	CHECK_CZSPAS(ec);
+
+	Socket sender(service);
+	ec = sender.connect("127.0.0.1", SERVER_PORT);
+	CHECK_CZSPAS(ec);
+
+	Socket receiver(service);
+	ec = ac.accept(receiver);
+	CHECK_CZSPAS(ec);
+
+	// Close our own socket before sending, just to test error detection
+	auto h = sender.getHandle(); // Copying to a local, since detail::utils::closeSocket clears the input
+	detail::utils::closeSocket(h);
+	char outBuf[1];
+	auto done = sender.sendSome(outBuf, sizeof(outBuf), -1, ec);
+	CHECK_EQUAL(0, done);
+	CHECK_CZSPAS_EQUAL(Other, ec);
+}
+
 
 }
