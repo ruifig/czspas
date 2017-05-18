@@ -13,12 +13,23 @@ set_target_properties(EchoServer PROPERTIES FOLDER Samples)
 
 ##################################################################
 ucm_add_files(
-	"Echo/EchoClient.cpp"
-	TO EchoClient_SRC
+	"Echo/EchoAsynchronousClient.cpp"
+	TO EchoAsynchronousClient_SRC
 	)
 
-add_executable(EchoClient ${EchoClient_SRC})
-cz_set_postfix(EchoClient)
-target_link_libraries(EchoClient czspas)
-set_target_properties(EchoClient PROPERTIES FOLDER Samples)
+add_executable(EchoAsynchronousClient ${EchoAsynchronousClient_SRC})
+cz_set_postfix(EchoAsynchronousClient)
+target_link_libraries(EchoAsynchronousClient czspas)
+set_target_properties(EchoAsynchronousClient PROPERTIES FOLDER Samples)
+
+##################################################################
+ucm_add_files(
+	"Echo/EchoSynchronousClient.cpp"
+	TO EchoSynchronousClient_SRC
+	)
+
+add_executable(EchoSynchronousClient ${EchoSynchronousClient_SRC})
+cz_set_postfix(EchoSynchronousClient)
+target_link_libraries(EchoSynchronousClient czspas)
+set_target_properties(EchoSynchronousClient PROPERTIES FOLDER Samples)
 

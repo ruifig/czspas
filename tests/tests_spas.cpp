@@ -25,6 +25,8 @@ using namespace cz::spas;
 
 SUITE(CZSPAS)
 {
+
+#if 0
 //////////////////////////////////////////////////////////////////////////
 // Service/Reactor tests
 //////////////////////////////////////////////////////////////////////////
@@ -590,7 +592,7 @@ TEST(Socket_bigTransfer)
 	clientth.join();
 }
 
-TEST(Socket_synchronous_Send_Receive_ok)
+TEST(Socket_sendSome_seceiveSome_ok)
 {
 	Service service;
 
@@ -619,7 +621,9 @@ TEST(Socket_synchronous_Send_Receive_ok)
 	CHECK_EQUAL(outBuf, inBuf);
 }
 
-TEST(Socket_synchronous_receive_timeout)
+#endif
+
+TEST(Socket_receiveSome_timeout)
 {
 	ServiceThread ioth;
 	Service service;
@@ -645,7 +649,7 @@ TEST(Socket_synchronous_receive_timeout)
 	CHECK_CZSPAS_EQUAL(Timeout, ec);
 }
 
-TEST(Socket_synchronous_receive_disconnect)
+TEST(Socket_receiveSome_disconnect)
 {
 	ServiceThread ioth;
 	Service service;
@@ -669,7 +673,7 @@ TEST(Socket_synchronous_receive_disconnect)
 	CHECK_CZSPAS_EQUAL(ConnectionClosed, ec);
 }
 
-TEST(Socket_synchronous_receive_error)
+TEST(Socket_receiveSome_error)
 {
 	ServiceThread ioth;
 	Service service;
@@ -695,12 +699,12 @@ TEST(Socket_synchronous_receive_error)
 	CHECK_CZSPAS_EQUAL(Other, ec);
 }
 
-TEST(Socket_synchronous_send_timeout)
+TEST(Socket_sendSome_timeout)
 {
 	// #TODO : No idea how to test this one :(
 }
 
-TEST(Socket_synchronous_send_disconnect)
+TEST(Socket_sendSome_disconnect)
 {
 	ServiceThread ioth;
 	Service service;
@@ -732,7 +736,7 @@ TEST(Socket_synchronous_send_disconnect)
 	CHECK_CZSPAS_EQUAL(Other, ec);
 }
 
-TEST(Socket_synchronous_send_error)
+TEST(Socket_sendSome_error)
 {
 	ServiceThread ioth;
 	Service service;
@@ -758,5 +762,133 @@ TEST(Socket_synchronous_send_error)
 	CHECK_CZSPAS_EQUAL(Other, ec);
 }
 
+TEST(receive_ok)
+{
+	ServiceThread ioth;
+	Service service;
+
+	Acceptor ac(service);
+	auto ec = ac.listen(SERVER_PORT);
+	CHECK_CZSPAS(ec);
+
+	Socket sender(service);
+	ec = sender.connect("127.0.0.1", SERVER_PORT);
+	CHECK_CZSPAS(ec);
+
+	Socket receiver(service);
+	ec = ac.accept(receiver);
+	CHECK_CZSPAS(ec);
+
+	auto senderFt = std::async(std::launch::async, [&sender]
+	{
+		// To understand that last string, see:
+		// http://stackoverflow.com/questions/164168/how-do-you-construct-a-stdstring-with-an-embedded-null
+		std::vector<std::string> out{ "Hello", " ", "World", "!", std::string("\0", 1)};
+		for (auto&& s : out)
+		{
+			Error ec;
+			auto transfered = send(sender, s.c_str(), s.size(), -1, ec);
+			CHECK_EQUAL(s.size(), transfered);
+			// Make a small pause, so we can test the receiver receiving it in parts.
+			UnitTest::TimeHelpers::SleepMs(20);
+		}
+	});
+
+	char in[128];
+	auto expected = strlen("Hello World!") + 1;
+	auto transfered = receive(receiver, in, expected, -1, ec);
+	CHECK_EQUAL(expected, transfered);
+	CHECK_EQUAL("Hello World!", in);
+	CHECK_CZSPAS(ec);
+	senderFt.get();
+}
+
+TEST(receive_timeout)
+{
+	ServiceThread ioth;
+	Service service;
+
+	Acceptor ac(service);
+	auto ec = ac.listen(SERVER_PORT);
+	CHECK_CZSPAS(ec);
+
+	Socket sender(service);
+	ec = sender.connect("127.0.0.1", SERVER_PORT);
+	CHECK_CZSPAS(ec);
+
+	Socket receiver(service);
+	ec = ac.accept(receiver);
+	CHECK_CZSPAS(ec);
+
+	auto senderFt = std::async(std::launch::async, [&sender]
+	{
+		// To understand that last string, see:
+		// http://stackoverflow.com/questions/164168/how-do-you-construct-a-stdstring-with-an-embedded-null
+		std::vector<std::string> out{ "Hello", " ", "World", "!", std::string("\0", 1)};
+		for (auto&& s : out)
+		{
+			Error ec;
+			auto transfered = send(sender, s.c_str(), s.size(), -1, ec);
+			CHECK_EQUAL(s.size(), transfered);
+			// Make a small pause, so we can test the receiver receiving it in parts.
+			UnitTest::TimeHelpers::SleepMs(20);
+		}
+	});
+
+	char in[128];
+	auto expected = strlen("Hello World!") + 1;
+	// By passing an expected size bigger than what the sender will send, we should get all the data sent,
+	// but get a Timeout error.
+	auto transfered = receive(receiver, in, sizeof(in), 500, ec);
+	CHECK_EQUAL(expected, transfered);
+	CHECK_EQUAL("Hello World!", in);
+	CHECK_CZSPAS_EQUAL(Timeout, ec);
+	senderFt.get();
+}
+
+TEST(receive_peerDisconnect)
+{
+	ServiceThread ioth;
+	Service service;
+
+	Acceptor ac(service);
+	auto ec = ac.listen(SERVER_PORT);
+	CHECK_CZSPAS(ec);
+
+	Socket sender(service);
+	ec = sender.connect("127.0.0.1", SERVER_PORT);
+	CHECK_CZSPAS(ec);
+
+	Socket receiver(service);
+	ec = ac.accept(receiver);
+	CHECK_CZSPAS(ec);
+
+	auto senderFt = std::async(std::launch::async, [&sender]
+	{
+		// To understand that last string, see:
+		// http://stackoverflow.com/questions/164168/how-do-you-construct-a-stdstring-with-an-embedded-null
+		std::vector<std::string> out{ "Hello", " ", "World", "!", std::string("\0", 1)};
+		for (auto&& s : out)
+		{
+			Error ec;
+			auto transfered = send(sender, s.c_str(), s.size(), -1, ec);
+			CHECK_EQUAL(s.size(), transfered);
+			// Make a small pause, so we can test the receiver receiving it in parts.
+			UnitTest::TimeHelpers::SleepMs(10);
+		}
+
+		sender._forceClose(true);
+	});
+
+	char in[128];
+	auto expected = strlen("Hello World!") + 1;
+	// By passing an expected size bigger than what the sender will send, we should get all the data sent,
+	// but also a Timeout error;
+	auto transfered = receive(receiver, in, sizeof(in), 500, ec);
+	CHECK_EQUAL(expected, transfered);
+	CHECK_EQUAL("Hello World!", in);
+	CHECK_CZSPAS_EQUAL(ConnectionClosed, ec);
+	senderFt.get();
+}
 
 }

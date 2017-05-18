@@ -3,14 +3,15 @@ A simple echo client.
 
 It connects to a server, sends the specified string, and waits for the server to send it back.
 
-Note that at the moment, czspas doesn't have synchronous sends/writes, so everything needs to be done
-with the asyncXXX functions.
-Synchronous sends/receives will probably be implemented at some point.
+Using asynchronous functions for such a simple client only complicates the code, and this sample
+is only provided as an example.
+Take a look at the EchoSynchronousClient for the synchronous version of this, which is shorter and
+easy to follow.
 
-A completely synchronous client would be shorter than what's shown here.
 */
 
 #include <crazygaze/spas/spas.h>
+#include <iostream>
 
 using namespace cz;
 using namespace cz::spas;
@@ -54,29 +55,29 @@ private:
 	Socket m_socket;
 };
 
-int do_main(int argc, char* argv[])
-{
-	printf("EchoClient sample\n");
-	if (argc != 3)
-	{
-		fprintf(stderr, "Usage: EchoClient <ip> <port>\n");
-		return EXIT_FAILURE;
-	}
-
-	Service service;
-
-	auto session = std::make_shared<Session>(service, argv[1], std::stoi(argv[2]));
-	session->start("Hello World!");
-
-	service.run();
-	return EXIT_SUCCESS;
-}
-
 int main(int argc, char* argv[])
 {
 	try
 	{
-		return do_main(argc, argv);
+		printf("EchoAsynchronousClient sample\n");
+		if (argc != 3)
+		{
+			fprintf(stderr, "Usage: EchoAsynchronousClient <ip> <port>\n");
+			return EXIT_FAILURE;
+		}
+
+		Service service;
+
+		auto session = std::make_shared<Session>(service, argv[1], std::stoi(argv[2]));
+
+		constexpr int maxLength = 1024;
+		std::cout << "Enter message: ";
+		char out[maxLength];
+		std::cin.getline(out, maxLength);
+		session->start(out);
+
+		service.run();
+		return EXIT_SUCCESS;
 	}
 	catch (std::exception& e)
 	{

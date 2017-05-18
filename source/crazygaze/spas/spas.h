@@ -1646,5 +1646,39 @@ void asyncReceive(Socket& sock, char* buf, size_t len, int timeoutMs, H&& h)
 	asyncReceiveHelper(sock, buf, len, timeoutMs, Error(), 0, std::forward<H>(h));
 }
 
+// Putting the synchronous send/receive in a struct, so the implementation can be in in the header file.
+// This is needed, since send/receive are not templated.
+namespace detail
+{
+	struct syncImpl
+	{
+		static size_t send(Socket& sock, const char* buf, size_t len, int timeoutMs, Error& ec)
+		{
+			size_t transfered = 0;
+			while (!ec && transfered < len)
+				transfered += sock.sendSome(buf + transfered, len - transfered, timeoutMs, ec);
+			return transfered;
+		}
+
+		static size_t receive(Socket& sock, char* buf, size_t len, int timeoutMs, Error& ec)
+		{
+			size_t transfered = 0;
+			while (!ec && transfered < len)
+				transfered += sock.receiveSome(buf + transfered, len - transfered, timeoutMs, ec);
+			return transfered;
+		}
+	};
+}
+
+inline size_t send(Socket& sock, const char* buf, size_t len, int timeoutMs, Error& ec)
+{
+	return detail::syncImpl::send(sock, buf, len, timeoutMs, ec);
+}
+
+inline size_t receive(Socket& sock, char* buf, size_t len, int timeoutMs, Error& ec)
+{
+	return detail::syncImpl::receive(sock, buf, len, timeoutMs, ec);
+}
+
 } // namespace spas
 } // namespace cz
