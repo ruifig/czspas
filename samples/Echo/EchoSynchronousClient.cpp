@@ -39,7 +39,7 @@ int main(int argc, char* argv[])
 		std::cout << "Enter message: ";
 		char out[maxLength];
 		std::cin.getline(out, maxLength);
-		auto msgLength = std::strlen(out) + 1;
+		auto msgLength = strlen(out) + 1;
 		send(s, out, msgLength, -1, ec);
 
 		// Receive message
