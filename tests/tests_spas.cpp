@@ -26,7 +26,6 @@ using namespace cz::spas;
 SUITE(CZSPAS)
 {
 
-#if 0
 //////////////////////////////////////////////////////////////////////////
 // Service/Reactor tests
 //////////////////////////////////////////////////////////////////////////
@@ -620,8 +619,6 @@ TEST(Socket_sendSome_seceiveSome_ok)
 	CHECK_CZSPAS(ec);
 	CHECK_EQUAL(outBuf, inBuf);
 }
-
-#endif
 
 TEST(Socket_receiveSome_timeout)
 {
