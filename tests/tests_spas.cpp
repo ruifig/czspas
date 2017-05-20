@@ -226,8 +226,10 @@ TEST(Socket_asyncConnect_ok)
 // right away that if a connect is not possible, without taking into consideration the timeout specified in
 // the "select" function.
 // On Windows, connect attempts to localhost still take into consideration the timeout.
-// The solution is to try an connect to some external ip, like "254.254.254.254". This causes Linux to
-// to actually wait for the connect attempt.
+// The solution is to try an connect to some external ip, like "254.254.254.254".
+// This causes Linux to to actually wait for the connect attempt.
+// NOTE: WSL (Windows Subsystem for Linux) doesn't support non-blocking connects at this moment, so this test will fail
+// although it seems in some systems, such has Windows
 TEST(Socket_asyncConnect_cancel)
 {
 	ServiceThread ioth;

@@ -223,9 +223,9 @@ struct Error
 	std::shared_ptr<std::string> optionalMsg;
 };
 
-using ConnectHandler = std::function<void(const Error&)>;
+using PostHandler = std::function<void()>;
+using SimpleHandler = std::function<void(const Error& ec)>;
 using TransferHandler = std::function<void(const Error& ec, size_t transfered)>;
-using AcceptHandler = std::function<void(const Error& ec)>;
 
 
 namespace detail
@@ -270,11 +270,11 @@ namespace detail
 	};
 
 	template<typename H>
-	using IsTransferHandler = std::enable_if_t<check_signature<H, void(const Error&, size_t)>::value>;
+	using IsPostHandler = std::enable_if_t<detail::check_signature<H, void()>::value>;
 	template<typename H>
-	using IsSimpleHandler = std::enable_if_t<check_signature<H, void()>::value>;
+	using IsSimpleHandler = std::enable_if_t<detail::check_signature<H, void(const Error&)>::value>;
 	template<typename H>
-	using IsAcceptHandler = std::enable_if_t<detail::check_signature<H, void(const Error&)>::value>;
+	using IsTransferHandler = std::enable_if_t<detail::check_signature<H, void(const Error&, size_t)>::value>;
 
 	class ErrorWrapper
 	{
@@ -740,7 +740,7 @@ namespace detail
 
 	struct PostOperation : Operation
 	{
-		std::function<void()> userHandler;
+		PostHandler userHandler;
 		template<typename H>
 		PostOperation(H&& h)
 			: userHandler(std::forward<H>(h)) {}
@@ -758,7 +758,7 @@ namespace detail
 
 	struct AcceptOperation : public SocketOperation
 	{
-		std::function<void(const Error& ec)> userHandler;
+		SimpleHandler userHandler;
 		BaseSocket& sock;
 
 		template<typename H>
@@ -798,7 +798,7 @@ namespace detail
 
 	struct ConnectOperation : public SocketOperation
 	{
-		std::function<void(const Error& ec)> userHandler;
+		SimpleHandler userHandler;
 
 		template<typename H>
 		ConnectOperation(BaseSocket& owner, H&& h)
@@ -831,7 +831,7 @@ namespace detail
 		char* buf;
 		size_t bufSize;
 		size_t transfered = 0;
-		std::function<void(const Error& ec, size_t transfered)> userHandler;
+		TransferHandler userHandler;
 
 		template<typename H>
 		TransferOperation(BaseSocket& owner, char* buf, size_t bufSize, H&& h)
@@ -1245,7 +1245,7 @@ public:
 	{
 	}
 
-	template<typename H, typename = detail::IsSimpleHandler<H>>
+	template<typename H, typename = detail::IsPostHandler<H>>
 	void post(H&& h)
 	{
 		std::lock_guard<std::mutex> lk(m_mtx);
@@ -1255,19 +1255,29 @@ public:
 
 	void stop()
 	{
-		m_stopping = true;
+		m_stopped = true;
 		m_reactor.interrupt();
+	}
+
+	bool isStopped() const
+	{
+		return m_stopped.load();
+	}
+
+	void reset()
+	{
+		m_stopped = false;
 	}
 
 	void run(bool loop=true)
 	{
-		// NOTE: At first, I was resetting m_stopping to false here, but that is problematic:
+		// NOTE: At first, I was resetting m_stopped to false here, but that is problematic:
 		// E.g:
 		// - One thread id created to call run
 		// - Another thread calls stop() before the first thread has a chance to call run().
-		// - The stop would be ignored (since we would be setting m_stopping to true here.
+		// - The stop would be ignored (since we would be setting m_stopped to true here.
 
-		while (loop && !m_stopping)
+		while (loop && !m_stopped)
 		{
 			{
 				std::lock_guard<std::mutex> lk(m_mtx);
@@ -1315,7 +1325,7 @@ private:
 	detail::Reactor m_reactor;
 	std::queue<std::unique_ptr<detail::Operation>> m_ready;
 	std::queue<std::unique_ptr<detail::Operation>> m_tmpready;
-	std::atomic<bool> m_stopping{false};
+	std::atomic<bool> m_stopped{false};
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -1357,7 +1367,7 @@ public:
 			getService().cancel(m_s);
 	}
 
-	void asyncConnect(const char* ip, int port, int timeoutMs, ConnectHandler h)
+	void asyncConnect(const char* ip, int port, int timeoutMs, SimpleHandler h)
 	{
 		CZSPAS_ASSERT(!isValid());
 		CZSPAS_ASSERT(m_pendingConnect.load()==false && "There is already a pending connect operation");
@@ -1577,7 +1587,7 @@ public:
 		return Error();
 	}
 
-	template< typename H, typename = detail::IsAcceptHandler<H> >
+	template< typename H, typename = detail::IsSimpleHandler<H> >
 	void asyncAccept(Socket& sock, int timeoutMs, H&& h)
 	{
 		CZSPAS_ASSERT(isValid());
