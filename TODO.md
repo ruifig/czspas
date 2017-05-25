@@ -13,6 +13,7 @@ API
 	* Create unit tests
 * Implement Service::dispatch
 	* This will require some version of http://www.crazygaze.com/blog/2016/03/11/callstack-markers-boostasiodetailcall_stack/ 
+* Implement a Resolver class, to resolve host names
 
 Unit Tests
 ----------
