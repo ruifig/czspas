@@ -224,7 +224,7 @@ struct Error
 };
 
 using PostHandler = std::function<void()>;
-using SimpleHandler = std::function<void(const Error& ec)>;
+using ConnectHandler = std::function<void(const Error& ec)>;
 using TransferHandler = std::function<void(const Error& ec, size_t transfered)>;
 
 
@@ -272,7 +272,7 @@ namespace detail
 	template<typename H>
 	using IsPostHandler = std::enable_if_t<detail::check_signature<H, void()>::value>;
 	template<typename H>
-	using IsSimpleHandler = std::enable_if_t<detail::check_signature<H, void(const Error&)>::value>;
+	using IsConnectHandler = std::enable_if_t<detail::check_signature<H, void(const Error&)>::value>;
 	template<typename H>
 	using IsTransferHandler = std::enable_if_t<detail::check_signature<H, void(const Error&, size_t)>::value>;
 
@@ -758,7 +758,7 @@ namespace detail
 
 	struct AcceptOperation : public SocketOperation
 	{
-		SimpleHandler userHandler;
+		ConnectHandler userHandler;
 		BaseSocket& sock;
 
 		template<typename H>
@@ -798,7 +798,7 @@ namespace detail
 
 	struct ConnectOperation : public SocketOperation
 	{
-		SimpleHandler userHandler;
+		ConnectHandler userHandler;
 
 		template<typename H>
 		ConnectOperation(BaseSocket& owner, H&& h)
@@ -1361,13 +1361,7 @@ public:
 		return Error();
 	}
 
-	void cancel()
-	{
-		if (isValid())
-			getService().cancel(m_s);
-	}
-
-	void asyncConnect(const char* ip, int port, int timeoutMs, SimpleHandler h)
+	void asyncConnect(const char* ip, int port, int timeoutMs, ConnectHandler h)
 	{
 		CZSPAS_ASSERT(!isValid());
 		CZSPAS_ASSERT(m_pendingConnect.load()==false && "There is already a pending connect operation");
@@ -1420,24 +1414,6 @@ public:
 		}
 	}
 
-	template< typename H, typename = detail::IsTransferHandler<H> >
-	void asyncSendSome(const char* buf, size_t len, int timeoutMs, H&& h)
-	{
-		CZSPAS_ASSERT(isValid());
-		CZSPAS_ASSERT(m_pendingSend.load()==false && "There is already a pending send operation");
-		auto op = std::make_unique<detail::SendOperation>(*this, buf, len, std::forward<H>(h));
-		getService().addOperation(m_s, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
-	}
-
-	template< typename H, typename = detail::IsTransferHandler<H> >
-	void asyncReceiveSome(char* buf, size_t len, int timeoutMs, H&& h)
-	{
-		CZSPAS_ASSERT(isValid());
-		CZSPAS_ASSERT(m_pendingReceive.load()==false && "There is already a pending receive operation");
-		auto op = std::make_unique<detail::ReceiveOperation>(*this, buf, len, std::forward<H>(h));
-		getService().addOperation(m_s, detail::Reactor::EventType::Read, std::move(op), timeoutMs);
-	}
-
 	size_t sendSome(const char* buf, size_t bufSize, int timeoutMs, Error& ec)
 	{
 		auto res = detail::utils::doSelect(m_s, false, timeoutMs);
@@ -1466,6 +1442,15 @@ public:
 			ec = Error();
 			return len;
 		}
+	}
+
+	template< typename H, typename = detail::IsTransferHandler<H> >
+	void asyncSendSome(const char* buf, size_t len, int timeoutMs, H&& h)
+	{
+		CZSPAS_ASSERT(isValid());
+		CZSPAS_ASSERT(m_pendingSend.load()==false && "There is already a pending send operation");
+		auto op = std::make_unique<detail::SendOperation>(*this, buf, len, std::forward<H>(h));
+		getService().addOperation(m_s, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
 	}
 
 	size_t receiveSome(char* buf, size_t bufSize, int timeoutMs, Error& ec)
@@ -1504,6 +1489,21 @@ public:
 			ec = Error();
 			return len;
 		}
+	}
+
+	template< typename H, typename = detail::IsTransferHandler<H> >
+	void asyncReceiveSome(char* buf, size_t len, int timeoutMs, H&& h)
+	{
+		CZSPAS_ASSERT(isValid());
+		CZSPAS_ASSERT(m_pendingReceive.load()==false && "There is already a pending receive operation");
+		auto op = std::make_unique<detail::ReceiveOperation>(*this, buf, len, std::forward<H>(h));
+		getService().addOperation(m_s, detail::Reactor::EventType::Read, std::move(op), timeoutMs);
+	}
+
+	void cancel()
+	{
+		if (isValid())
+			getService().cancel(m_s);
 	}
 
 private:
@@ -1587,7 +1587,7 @@ public:
 		return Error();
 	}
 
-	template< typename H, typename = detail::IsSimpleHandler<H> >
+	template< typename H, typename = detail::IsConnectHandler<H> >
 	void asyncAccept(Socket& sock, int timeoutMs, H&& h)
 	{
 		CZSPAS_ASSERT(isValid());
