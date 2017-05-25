@@ -8,7 +8,7 @@ Features:
 * Currently works on Windows and Linux.
 	* Should be easy to port to any platform that supports BSD sockets.
 * No external dependencies.
-* Small codebase (~1500 lines at the time of writting)
+* Small codebase
 * Asynchronous Asio-like API.
 * Only IPv4 at the moment.
 
@@ -18,7 +18,6 @@ Intent
 czspas was created with the intent of being used where a simple asynchronous TCP api is needed, but adding a dependency on something like Boost Asio (or Asio standalone) is overkill.
 
 It was originally created for [https://bitbucket.org/ruifig/czrpc](https://bitbucket.org/ruifig/czrpc) to remove the dependency on Asio (although it is not yet being used in czrpc).
-
 
 How to build
 ============
@@ -30,28 +29,15 @@ Visual Studio 2015 or higher is required on Windows. On Linux, any recent versio
 Documentation
 =============
 
-The only documentation available at the moment are the unit tests themselves and any samples provided.
-
-The API guarantees the following:
-
-* Completion handlers will only be called from the thread running ```Service::run()```
-	* This is the same as Asio
-* Calls to ```Service::post``` and ```Service::stop``` are thread safe, but ```Service::run``` is NOT.
-	* This it not the same as Asio. On Asio you can call ```io_service::run()``` from multiple threads.
-	* This is an intentional design decision to keep czspas as simple as possible. It might change in the future to make ```Service``` fully thread safe.
-
-The API expects the following from the user code:
-
-* ```Socket``` and ```Acceptor``` instances are NOT thread safe.
-	* This is the same as Asio.
-	* Calls to any member functions should be posted with ```Service::post```.
-* Is the responsability of the user code to manage the lifetime of objects used in the completion handlers (e.g: Sockets, Acceptor, buffers)
-	* This is the same as Asio.
-	* For example, a given ```Socket``` instance must stay alive while there are pending asynchronous operations using it.
-	* A common solution to this lifetime problem is to put all the relevant objects and buffers in a class/struct and bind a shared_ptr to any completion handler that needs it. This effectively keeps the relevant objects alive for the duration of the asynchronous operation.
+Check the [Wiki](https://github.com/ruifig/czspas/wiki) for documentation.
 
 Donations
 =========
 
+If you like czspas (or any of my other open source libraries), consider helping out with donations:
+
+[![Paypal](https://www.paypalobjects.com/webstatic/en_US/i/btn/png/btn_donate_cc_147x47.png)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=YYWNU5LWRH8HS)
+
 [![Patreon](https://cloud.githubusercontent.com/assets/8225057/5990484/70413560-a9ab-11e4-8942-1a63607c0b00.png)](https://www.patreon.com/RuiMVFigueira)
+
 
