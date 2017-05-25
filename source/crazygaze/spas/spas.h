@@ -645,6 +645,7 @@ namespace detail
 	class BaseSocket
 	{
 	public:
+
 		BaseSocket(detail::BaseService& owner)
 			: m_owner(owner)
 			, m_pendingAccept(false)
@@ -653,6 +654,7 @@ namespace detail
 			, m_pendingReceive(false)
 		{
 		}
+
 		virtual ~BaseSocket()
 		{
 			CZSPAS_ASSERT(m_pendingAccept.load() == false);
@@ -1245,6 +1247,36 @@ public:
 	{
 	}
 
+	void run()
+	{
+		// NOTE: At first, I was resetting m_stopped to false here, but that is problematic:
+		// E.g:
+		// - One thread id created to call run
+		// - Another thread calls stop() before the first thread has a chance to call run().
+		// - The stop would be ignored (since we would be setting m_stopped to true here.
+
+		while (!m_stopped)
+		{
+			{
+				std::lock_guard<std::mutex> lk(m_mtx);
+				std::swap(m_tmpready, m_ready);
+			}
+			while (m_tmpready.size())
+			{
+				m_tmpready.front()->callUserHandler();
+				m_tmpready.pop();
+			}
+
+			m_reactor.runOnce(m_tmpready);
+
+			while (m_tmpready.size())
+			{
+				m_tmpready.front()->callUserHandler();
+				m_tmpready.pop();
+			}
+		}
+	}
+
 	template<typename H, typename = detail::IsPostHandler<H>>
 	void post(H&& h)
 	{
@@ -1269,35 +1301,6 @@ public:
 		m_stopped = false;
 	}
 
-	void run(bool loop=true)
-	{
-		// NOTE: At first, I was resetting m_stopped to false here, but that is problematic:
-		// E.g:
-		// - One thread id created to call run
-		// - Another thread calls stop() before the first thread has a chance to call run().
-		// - The stop would be ignored (since we would be setting m_stopped to true here.
-
-		while (loop && !m_stopped)
-		{
-			{
-				std::lock_guard<std::mutex> lk(m_mtx);
-				std::swap(m_tmpready, m_ready);
-			}
-			while (m_tmpready.size())
-			{
-				m_tmpready.front()->callUserHandler();
-				m_tmpready.pop();
-			}
-
-			m_reactor.runOnce(m_tmpready);
-
-			while (m_tmpready.size())
-			{
-				m_tmpready.front()->callUserHandler();
-				m_tmpready.pop();
-			}
-		}
-	}
 
 private:
 
