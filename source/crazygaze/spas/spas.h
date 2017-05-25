@@ -642,95 +642,87 @@ namespace detail
 	{
 	};
 
-	class BaseSocket
+	struct BaseSocket
 	{
 	public:
 
 		BaseSocket(detail::BaseService& owner)
-			: m_owner(owner)
-			, m_pendingAccept(false)
-			, m_pendingConnect(false)
-			, m_pendingSend(false)
-			, m_pendingReceive(false)
+			: owner(owner)
+			, pendingAccept(false)
+			, pendingConnect(false)
+			, pendingSend(false)
+			, pendingReceive(false)
 		{
 		}
 
 		virtual ~BaseSocket()
 		{
-			CZSPAS_ASSERT(m_pendingAccept.load() == false);
-			CZSPAS_ASSERT(m_pendingConnect.load() == false);
-			CZSPAS_ASSERT(m_pendingSend.load() == false);
-			CZSPAS_ASSERT(m_pendingReceive.load() == false);
+			CZSPAS_ASSERT(pendingAccept.load() == false);
+			CZSPAS_ASSERT(pendingConnect.load() == false);
+			CZSPAS_ASSERT(pendingSend.load() == false);
+			CZSPAS_ASSERT(pendingReceive.load() == false);
 		}
 
 		//! Only to be used with care, if the user wants to access the underlying socket handle
 		SocketHandle getHandle()
 		{
-			return m_s;
+			return s;
 		}
 
 		Service& getService()
 		{
-			return *((Service*)&m_owner);
+			return *((Service*)&owner);
 		}
 
 		void setLinger(bool enabled, unsigned short timeout)
 		{
-			detail::utils::setLinger(m_s, enabled, timeout);
+			detail::utils::setLinger(s, enabled, timeout);
 		}
 
 		// For internal use in the unit tests. DO NOT USE
 		void _forceClose(bool doshutdown)
 		{
-			detail::utils::closeSocket(m_s, doshutdown);
+			detail::utils::closeSocket(s, doshutdown);
 		}
 
 		const std::pair<std::string, int>& getLocalAddr() const
 		{
-			return m_localAddr;
+			return localAddr;
 		}
 
 		const std::pair<std::string, int>& getPeerAddr() const
 		{
-			return m_peerAddr;
+			return peerAddr;
 		}
 			
 		BaseSocket(const BaseSocket&) = delete;
 		void operator=(const BaseSocket&) = delete;
 
-	protected:
-		friend SocketOperation;
-		friend AcceptOperation;
-		friend ConnectOperation;
-		friend SendOperation;
-		friend ReceiveOperation;
-		friend Acceptor;
-		friend Socket;
 		bool isValid() const
 		{
-			return m_s != CZSPAS_INVALID_SOCKET;
+			return s != CZSPAS_INVALID_SOCKET;
 		}
 
 		void resolveAddrs()
 		{
-			m_localAddr = detail::utils::getLocalAddr(m_s);
-			m_peerAddr = detail::utils::getRemoteAddr(m_s);
+			localAddr = detail::utils::getLocalAddr(s);
+			peerAddr = detail::utils::getRemoteAddr(s);
 		}
 
-		detail::BaseService& m_owner;
-		SocketHandle m_s = CZSPAS_INVALID_SOCKET;
+		detail::BaseService& owner;
+		SocketHandle s = CZSPAS_INVALID_SOCKET;
 
 		// Only for debugging: #TODO : Add a define to have it available only on Debug build
 		// NOTE: In the Operation structs, these need to be set to false in both the destructor and BEFORE calling the user handler
 		//		1. Its needed in the destructor, because the operation might be destroyed without calling the user handler (e.g: Cancelled)
 		//		2. BEFORE calling the user handler, because from the handle the user might want to queue another operation of the same type
-		std::atomic<bool> m_pendingAccept; 
-		std::atomic<bool> m_pendingConnect;
-		std::atomic<bool> m_pendingSend;
-		std::atomic<bool> m_pendingReceive;
+		std::atomic<bool> pendingAccept; 
+		std::atomic<bool> pendingConnect;
+		std::atomic<bool> pendingSend;
+		std::atomic<bool> pendingReceive;
 
-		std::pair<std::string, int> m_localAddr;
-		std::pair<std::string, int> m_peerAddr;
+		std::pair<std::string, int> localAddr;
+		std::pair<std::string, int> peerAddr;
 	};
 
 	struct Operation
@@ -770,31 +762,31 @@ namespace detail
 			, sock(dst)
 			, userHandler(std::forward<H>(h))
 		{
-			owner.m_pendingAccept = true;
+			owner.pendingAccept = true;
 		}
 
 		~AcceptOperation()
 		{
-			owner.m_pendingAccept = false;
+			owner.pendingAccept = false;
 		}
 
 		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override
 		{
 			sockaddr_in addr;
 			socklen_t size = sizeof(addr);
-			sock.m_s = ::accept(fd, (struct sockaddr*)&addr, &size);
-			if (sock.m_s == CZSPAS_INVALID_SOCKET)
+			sock.s = ::accept(fd, (struct sockaddr*)&addr, &size);
+			if (sock.s == CZSPAS_INVALID_SOCKET)
 				ec = detail::ErrorWrapper().getError();
 			else
 			{
-				detail::utils::setBlocking(sock.m_s, false);
+				detail::utils::setBlocking(sock.s, false);
 				sock.resolveAddrs();
 			}
 		}
 
 		virtual void callUserHandler() override
 		{
-			owner.m_pendingAccept = false;
+			owner.pendingAccept = false;
 			userHandler(ec);
 		}
 	};
@@ -808,12 +800,12 @@ namespace detail
 			: SocketOperation(owner)
 			, userHandler(std::forward<H>(h))
 		{
-			owner.m_pendingConnect = true;
+			owner.pendingConnect = true;
 		}
 
 		~ConnectOperation()
 		{
-			owner.m_pendingConnect = false;
+			owner.pendingConnect = false;
 		}
 
 		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override
@@ -824,7 +816,7 @@ namespace detail
 
 		virtual void callUserHandler() override
 		{
-			owner.m_pendingConnect = false;
+			owner.pendingConnect = false;
 			userHandler(ec);
 		}
 	};
@@ -853,12 +845,12 @@ namespace detail
 		SendOperation(BaseSocket& owner, const char* buf, size_t bufSize, H&& h)
 			: TransferOperation(owner, const_cast<char*>(buf), bufSize, std::forward<H>(h))
 		{
-			owner.m_pendingSend = true;
+			owner.pendingSend = true;
 		}
 
 		~SendOperation()
 		{
-			owner.m_pendingSend = false;
+			owner.pendingSend = false;
 		}
 
 		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override
@@ -895,7 +887,7 @@ namespace detail
 
 		virtual void callUserHandler() override
 		{
-			owner.m_pendingSend = false;
+			owner.pendingSend = false;
 			userHandler(ec, transfered);
 		}
 	};
@@ -906,12 +898,12 @@ namespace detail
 		ReceiveOperation(BaseSocket& owner, char* buf, size_t bufSize, H&& h)
 			: TransferOperation(owner, buf, bufSize, std::forward<H>(h))
 		{
-			owner.m_pendingReceive = true;
+			owner.pendingReceive = true;
 		}
 
 		~ReceiveOperation()
 		{
-			owner.m_pendingReceive = false;
+			owner.pendingReceive = false;
 		}
 
 		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override
@@ -958,7 +950,7 @@ namespace detail
 
 		virtual void callUserHandler() override
 		{
-			owner.m_pendingReceive = false;
+			owner.pendingReceive = false;
 			userHandler(ec, transfered);
 		}
 	};
@@ -1345,7 +1337,7 @@ public:
 
 	~Socket()
 	{
-		detail::utils::closeSocket(m_base.m_s);
+		detail::utils::closeSocket(m_base.s);
 	}
 
 	//! Synchronous connect
@@ -1360,7 +1352,7 @@ public:
 			CZSPAS_ERROR("Socket %p: %s", this, res.first.msg());
 			return res.first;
 		}
-		m_base.m_s = res.second;
+		m_base.s = res.second;
 		m_base.resolveAddrs();
 		CZSPAS_INFO("Socket %p: Connected to %s:%d", this, m_peerAddr.first.c_str(), m_peerAddr.second);
 		return Error();
@@ -1369,13 +1361,13 @@ public:
 	void asyncConnect(const char* ip, int port, int timeoutMs, ConnectHandler h)
 	{
 		CZSPAS_ASSERT(!m_base.isValid());
-		CZSPAS_ASSERT(m_base.m_pendingConnect.load()==false && "There is already a pending connect operation");
+		CZSPAS_ASSERT(m_base.pendingConnect.load()==false && "There is already a pending connect operation");
 		CZSPAS_INFO("Socket %p: asyncConnect(%s,%d, H, %d)", this, ip, port, timeoutMs);
 
 		auto op = std::make_unique<detail::ConnectOperation>(m_base, std::move(h));
 
-		m_base.m_s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-		if (m_base.m_s == CZSPAS_INVALID_SOCKET)
+		m_base.s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (m_base.s == CZSPAS_INVALID_SOCKET)
 		{
 			op->ec = detail::ErrorWrapper().getError();
 			CZSPAS_ERROR("Socket %p: %s", this, op->ec.msg());
@@ -1384,9 +1376,9 @@ public:
 		}
 
 		// Enable any loopback optimizations (in case this socket is used in loopback)
-		detail::utils::optimizeLoopback(m_base.m_s);
+		detail::utils::optimizeLoopback(m_base.s);
 		// Set to non-blocking, so we can do an asynchronous connect
-		detail::utils::setBlocking(m_base.m_s, false);
+		detail::utils::setBlocking(m_base.s, false);
 
 		sockaddr_in addr;
 		memset(&addr, 0, sizeof(addr));
@@ -1394,14 +1386,14 @@ public:
 		addr.sin_port = htons(port);
 		inet_pton(AF_INET, ip, &(addr.sin_addr));
 
-		if (::connect(m_base.m_s, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR)
+		if (::connect(m_base.s, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR)
 		{
 			detail::ErrorWrapper err;
 			if (err.isBlockError())
 			{
 				// Normal behavior.
 				// A asynchronous connect is done when we receive a write event on the socket
-				getService().addOperation(m_base.m_s, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
+				getService().addOperation(m_base.s, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
 			}
 			else
 			{
@@ -1415,13 +1407,13 @@ public:
 		{
 			// It may happen that the connect succeeds right away ?
 			// If that happens, we can still wait for the reactor to detect the "ready to write" event.
-			getService().addOperation(m_base.m_s, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
+			getService().addOperation(m_base.s, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
 		}
 	}
 
 	size_t sendSome(const char* buf, size_t bufSize, int timeoutMs, Error& ec)
 	{
-		auto res = detail::utils::doSelect(m_base.m_s, false, timeoutMs);
+		auto res = detail::utils::doSelect(m_base.s, false, timeoutMs);
 		if (res.second)
 		{
 			ec = res.second;
@@ -1434,7 +1426,7 @@ public:
 #if __linux__
 		flags = MSG_NOSIGNAL;
 #endif
-		int len = ::send(m_base.m_s, buf, todo, flags);
+		int len = ::send(m_base.s, buf, todo, flags);
 		// I believe no errors should occur at this point, since the select told us the socket was ready, but doesn't
 		// hurt to handle it.
 		if (len == CZSPAS_SOCKET_ERROR)
@@ -1453,14 +1445,14 @@ public:
 	void asyncSendSome(const char* buf, size_t len, int timeoutMs, H&& h)
 	{
 		CZSPAS_ASSERT(m_base.isValid());
-		CZSPAS_ASSERT(m_base.m_pendingSend.load()==false && "There is already a pending send operation");
+		CZSPAS_ASSERT(m_base.pendingSend.load()==false && "There is already a pending send operation");
 		auto op = std::make_unique<detail::SendOperation>(m_base, buf, len, std::forward<H>(h));
-		getService().addOperation(m_base.m_s, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
+		getService().addOperation(m_base.s, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
 	}
 
 	size_t receiveSome(char* buf, size_t bufSize, int timeoutMs, Error& ec)
 	{
-		auto res = detail::utils::doSelect(m_base.m_s, true, timeoutMs);
+		auto res = detail::utils::doSelect(m_base.s, true, timeoutMs);
 		if (res.second)
 		{
 			ec = res.second;
@@ -1473,7 +1465,7 @@ public:
 #if __linux__
 		flags = MSG_NOSIGNAL;
 #endif
-		int len = ::recv(m_base.m_s, buf, todo, flags);
+		int len = ::recv(m_base.s, buf, todo, flags);
 		// I believe no errors should occur at this point, since the select told us the socket was ready, but doesn't
 		// hurt to handle it.
 		if (len == CZSPAS_SOCKET_ERROR)
@@ -1500,15 +1492,15 @@ public:
 	void asyncReceiveSome(char* buf, size_t len, int timeoutMs, H&& h)
 	{
 		CZSPAS_ASSERT(m_base.isValid());
-		CZSPAS_ASSERT(m_base.m_pendingReceive.load()==false && "There is already a pending receive operation");
+		CZSPAS_ASSERT(m_base.pendingReceive.load()==false && "There is already a pending receive operation");
 		auto op = std::make_unique<detail::ReceiveOperation>(m_base, buf, len, std::forward<H>(h));
-		getService().addOperation(m_base.m_s, detail::Reactor::EventType::Read, std::move(op), timeoutMs);
+		getService().addOperation(m_base.s, detail::Reactor::EventType::Read, std::move(op), timeoutMs);
 	}
 
 	void cancel()
 	{
 		if (m_base.isValid())
-			getService().cancel(m_base.m_s);
+			getService().cancel(m_base.s);
 	}
 
 	//! Only to be used with care, if the user wants to access the underlying socket handle
@@ -1564,9 +1556,9 @@ public:
 		// Close the socket without calling shutdown, and setting linger to 0, so it doesn't linger around and we can
 		// run another server right after
 		// Not sure this is necessary for listening sockets. ;(
-		if (m_base.m_s != CZSPAS_INVALID_SOCKET)
-			detail::utils::setLinger(m_base.m_s, true, 0);
-		detail::utils::closeSocket(m_base.m_s, false);
+		if (m_base.s != CZSPAS_INVALID_SOCKET)
+			detail::utils::setLinger(m_base.s, true, 0);
+		detail::utils::closeSocket(m_base.s, false);
 	}
 
 	//! Starts listening for new connections at the specified port
@@ -1590,7 +1582,7 @@ public:
 			CZSPAS_ERROR("Acceptor %p: %s", this, res.first.msg());
 			return res.first;
 		}
-		m_base.m_s = res.second;
+		m_base.s = res.second;
 
 		m_base.resolveAddrs();
 		// No error
@@ -1611,13 +1603,13 @@ public:
 		CZSPAS_ASSERT(m_base.isValid());
 		CZSPAS_ASSERT(!sock.m_base.isValid());
 
-		auto res = detail::utils::accept(m_base.m_s, timeoutMs);
+		auto res = detail::utils::accept(m_base.s, timeoutMs);
 		if (res.first)
 		{
 			CZSPAS_ERROR("Acceptor %p: %s", this, res.first.msg());
 			return res.first;
 		}
-		sock.m_base.m_s = res.second;
+		sock.m_base.s = res.second;
 		sock.m_base.resolveAddrs();
 		CZSPAS_INFO("Acceptor %p: Socket %p connected to %s:%d", this, &sock, sock.m_peerAddr.first.c_str(),
 		            sock.m_peerAddr.second);
@@ -1631,15 +1623,15 @@ public:
 	{
 		CZSPAS_ASSERT(m_base.isValid());
 		CZSPAS_ASSERT(!sock.m_base.isValid());
-		CZSPAS_ASSERT(m_base.m_pendingAccept.load()==false && "There is already a pending accept operation");
+		CZSPAS_ASSERT(m_base.pendingAccept.load()==false && "There is already a pending accept operation");
 		auto op = std::make_unique<detail::AcceptOperation>(m_base, sock.m_base, std::forward<H>(h));
-		getService().addOperation(m_base.m_s, detail::Reactor::EventType::Read, std::move(op), timeoutMs);
+		getService().addOperation(m_base.s, detail::Reactor::EventType::Read, std::move(op), timeoutMs);
 	}
 
 	void cancel()
 	{
 		if (m_base.isValid())
-			m_base.getService().cancel(m_base.m_s);
+			m_base.getService().cancel(m_base.s);
 	}
 
 	//! Only to be used with care, if the user wants to access the underlying socket handle
