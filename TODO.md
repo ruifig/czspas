@@ -4,6 +4,8 @@ GENERAL
 API
 ---
 
+* Remove BaseSocket, by using composition instead of inheritance
+	* Make it a struct, and remove the m_ prefix from members
 * Revise the timeoutMs parameters.
 	* Some methods/functions probably don't need a timeout parameter
 * Allow move-semantics for all the objects (Service, Acceptor, Socket)
