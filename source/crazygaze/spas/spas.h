@@ -427,11 +427,11 @@ namespace detail
 		}
 
 		// Set the linger option, in seconds
-		static void setLinger(SocketHandle s, bool enabled, u_short timeout)
+		static void setLinger(SocketHandle s, bool enabled, u_short timeoutSeconds)
 		{
 			linger l;
 			l.l_onoff = enabled ? 1 : 0;
-			l.l_linger = timeout;
+			l.l_linger = timeoutSeconds;
 			int res = setsockopt(s, SOL_SOCKET, SO_LINGER, (const char*)&l, sizeof(l));
 			if (res != 0)
 				CZSPAS_FATAL(ErrorWrapper().msg().c_str());
@@ -467,15 +467,12 @@ namespace detail
 			if (getpeername(s, (sockaddr*)&addr, &size) != CZSPAS_SOCKET_ERROR)
 				return addrToPair(addr);
 			else
-			{
-				//CZSPAS_FATAL(ErrorWrapper().msg().c_str());
-				return std::make_pair("", 0);
-			}
+				return std::make_pair("0.0.0.0", 0);
 		}
 
 		//! Creates a socket and puts it into listen mode
 		//
-		// \param bindIp
+		// \param bindIP
 		//		What IP to bind to.
 		// \param port
 		//		What port to listen on. If 0, the OS will pick a port from the dynamic range
@@ -485,7 +482,7 @@ namespace detail
 		//		Size of the the connection backlog.
 		//		Also, this is only an hint to the OS. It's not guaranteed.
 		//
-		static std::pair<Error, SocketHandle> createListenSocketEx(const char* bindIp, int port, int backlog, bool reuseAddr)
+		static std::pair<Error, SocketHandle> createListenSocket(const char* bindIP, int port, int backlog, bool reuseAddr)
 		{
 			SocketHandle s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 			if (s == CZSPAS_INVALID_SOCKET)
@@ -497,8 +494,8 @@ namespace detail
 			sockaddr_in addr;
 			addr.sin_family = AF_INET;
 			addr.sin_port = htons(port);
-			if (bindIp)
-				inet_pton(AF_INET, bindIp, &(addr.sin_addr));
+			if (bindIP)
+				inet_pton(AF_INET, bindIP, &(addr.sin_addr));
 			else
 				addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
@@ -520,7 +517,7 @@ namespace detail
 
 		static std::pair<Error, SocketHandle> createListenSocket(int port)
 		{
-			return createListenSocketEx(nullptr, port, SOMAXCONN, false);
+			return createListenSocket(nullptr, port, SOMAXCONN, false);
 		}
 
 		//! Synchronous connect
@@ -674,9 +671,9 @@ namespace detail
 			return *((Service*)&owner);
 		}
 
-		void setLinger(bool enabled, unsigned short timeout)
+		void setLinger(bool enabled, unsigned short timeoutSeconds)
 		{
-			detail::utils::setLinger(s, enabled, timeout);
+			detail::utils::setLinger(s, enabled, timeoutSeconds);
 		}
 
 		// For internal use in the unit tests. DO NOT USE
@@ -1100,7 +1097,7 @@ public:
 	Reactor()
 	{
 		// Create a listening socket on a port picked by the OS (because we passed 0 as port)
-		auto acceptor = utils::createListenSocketEx("127.0.0.1", 0, 1, false);
+		auto acceptor = utils::createListenSocket("127.0.0.1", 0, 1, false);
 		// If this fails, then the OS probably ran out of resources (e.g: Too many connections or too many connection 
 		// on TIME_WAIT)
 		CZSPAS_ASSERT(!acceptor.first);
@@ -1411,6 +1408,12 @@ public:
 		}
 	}
 
+	template< typename H, typename = detail::IsConnectHandler<H> >
+	void asyncConnect(const char* ip, int port, H&& h)
+	{
+		asyncConnect(ip, port, -1, std::forward<H>(h));
+	}
+
 	size_t sendSome(const char* buf, size_t bufSize, int timeoutMs, Error& ec)
 	{
 		auto res = detail::utils::doSelect(m_base.s, false, timeoutMs);
@@ -1441,6 +1444,11 @@ public:
 		}
 	}
 
+	size_t sendSome(const char* buf, size_t bufSize, Error& ec)
+	{
+		return sendSome(buf, bufSize, -1, ec);
+	}
+
 	template< typename H, typename = detail::IsTransferHandler<H> >
 	void asyncSendSome(const char* buf, size_t len, int timeoutMs, H&& h)
 	{
@@ -1448,6 +1456,12 @@ public:
 		CZSPAS_ASSERT(m_base.pendingSend.load()==false && "There is already a pending send operation");
 		auto op = std::make_unique<detail::SendOperation>(m_base, buf, len, std::forward<H>(h));
 		getService().addOperation(m_base.s, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
+	}
+
+	template< typename H, typename = detail::IsTransferHandler<H> >
+	void asyncSendSome(const char* buf, size_t len, H&& h)
+	{
+		asyncSendSome(buf, len, -1, std::forward<H>(h));
 	}
 
 	size_t receiveSome(char* buf, size_t bufSize, int timeoutMs, Error& ec)
@@ -1488,6 +1502,11 @@ public:
 		}
 	}
 
+	size_t receiveSome(char* buf, size_t bufSize, Error& ec)
+	{
+		return receiveSome(buf, bufSize, -1, ec);
+	}
+
 	template< typename H, typename = detail::IsTransferHandler<H> >
 	void asyncReceiveSome(char* buf, size_t len, int timeoutMs, H&& h)
 	{
@@ -1495,6 +1514,12 @@ public:
 		CZSPAS_ASSERT(m_base.pendingReceive.load()==false && "There is already a pending receive operation");
 		auto op = std::make_unique<detail::ReceiveOperation>(m_base, buf, len, std::forward<H>(h));
 		getService().addOperation(m_base.s, detail::Reactor::EventType::Read, std::move(op), timeoutMs);
+	}
+
+	template< typename H, typename = detail::IsTransferHandler<H> >
+	void asyncReceiveSome(char* buf, size_t len, H&& h)
+	{
+		asyncReceiveSome(buf, len, -1, std::forward<H>(h));
 	}
 
 	void cancel()
@@ -1514,9 +1539,9 @@ public:
 		return m_base.getService();
 	}
 
-	void setLinger(bool enabled, unsigned short timeout)
+	void setLinger(bool enabled, unsigned short timeoutSeconds)
 	{
-		m_base.setLinger(enabled, timeout);
+		m_base.setLinger(enabled, timeoutSeconds);
 	}
 
 	// For internal use in the unit tests. DO NOT USE
@@ -1571,12 +1596,12 @@ public:
 		Size of the connection backlog.
 		This is only an hint to the OS. It's not guaranteed.
 	*/
-	Error listenEx(const char* bindIp, int port, int backlog, bool reuseAddr)
+	Error listen(const char* bindIP, int port, int backlog, bool reuseAddr)
 	{
 		CZSPAS_ASSERT(!m_base.isValid());
 		CZSPAS_INFO("Acceptor %p: listen(%d, %d)", this, port, backlog);
 
-		auto res = detail::utils::createListenSocketEx(bindIp, port, backlog, reuseAddr);
+		auto res = detail::utils::createListenSocket(bindIP, port, backlog, reuseAddr);
 		if (res.first)
 		{
 			CZSPAS_ERROR("Acceptor %p: %s", this, res.first.msg());
@@ -1595,7 +1620,7 @@ public:
 #if __linux__
         reuseAddr = true;
 #endif
-		return listenEx(nullptr, port, SOMAXCONN, reuseAddr);
+		return listen(nullptr, port, SOMAXCONN, reuseAddr);
 	}
 
 	Error accept(Socket& sock, int timeoutMs = -1)
@@ -1628,16 +1653,16 @@ public:
 		getService().addOperation(m_base.s, detail::Reactor::EventType::Read, std::move(op), timeoutMs);
 	}
 
+	template< typename H, typename = detail::IsConnectHandler<H> >
+	void asyncAccept(Socket& sock, H&& h)
+	{
+		asyncAccept(sock, -1, std::forward<H>(h));
+	}
+
 	void cancel()
 	{
 		if (m_base.isValid())
 			m_base.getService().cancel(m_base.s);
-	}
-
-	//! Only to be used with care, if the user wants to access the underlying socket handle
-	SocketHandle getHandle()
-	{
-		return m_base.getHandle();
 	}
 
 	Service& getService()
@@ -1650,20 +1675,21 @@ public:
 		m_base.setLinger(enabled, timeout);
 	}
 
-	// For internal use in the unit tests. DO NOT USE
-	void _forceClose(bool doshutdown)
-	{
-		m_base._forceClose(doshutdown);
-	}
-
 	const std::pair<std::string, int>& getLocalAddr() const
 	{
 		return m_base.getLocalAddr();
 	}
 
-	const std::pair<std::string, int>& getPeerAddr() const
+	//! Only to be used with care, if the user wants to access the underlying socket handle
+	SocketHandle getHandle()
 	{
-		return m_base.getPeerAddr();
+		return m_base.getHandle();
+	}
+
+	// For internal use in the unit tests. DO NOT USE
+	void _forceClose(bool doshutdown)
+	{
+		m_base._forceClose(doshutdown);
 	}
 
 private:
@@ -1708,9 +1734,21 @@ namespace detail
 }
 
 template< typename H, typename = detail::IsTransferHandler<H> >
+void asyncSend(Socket& sock, const char* buf, size_t len, H&& h)
+{
+	detail::asyncSendHelper(sock, buf, len, -1, Error(), 0, std::forward<H>(h));
+}
+
+template< typename H, typename = detail::IsTransferHandler<H> >
 void asyncSend(Socket& sock, const char* buf, size_t len, int timeoutMs, H&& h)
 {
 	detail::asyncSendHelper(sock, buf, len, timeoutMs, Error(), 0, std::forward<H>(h));
+}
+
+template< typename H, typename = detail::IsTransferHandler<H> >
+void asyncReceive(Socket& sock, char* buf, size_t len, H&& h)
+{
+	detail::asyncReceiveHelper(sock, buf, len, -1, Error(), 0, std::forward<H>(h));
 }
 
 template< typename H, typename = detail::IsTransferHandler<H> >
@@ -1748,9 +1786,19 @@ inline size_t send(Socket& sock, const char* buf, size_t len, int timeoutMs, Err
 	return detail::syncImpl::send(sock, buf, len, timeoutMs, ec);
 }
 
+inline size_t send(Socket& sock, const char* buf, size_t len, Error& ec)
+{
+	return detail::syncImpl::send(sock, buf, len, -1, ec);
+}
+
 inline size_t receive(Socket& sock, char* buf, size_t len, int timeoutMs, Error& ec)
 {
 	return detail::syncImpl::receive(sock, buf, len, timeoutMs, ec);
+}
+
+inline size_t receive(Socket& sock, char* buf, size_t len, Error& ec)
+{
+	return detail::syncImpl::receive(sock, buf, len, -1, ec);
 }
 
 } // namespace spas

@@ -73,6 +73,29 @@ TEST(Acceptor_listen_ok)
 	CHECK_CZSPAS(ec);
 }
 
+TEST(Acceptor_getLocalAddr)
+{
+	Service io;
+	// Listening on all interfaces
+	{
+		Acceptor ac(io);
+		auto ec = ac.listen(SERVER_PORT);
+		CHECK_CZSPAS(ec);
+		auto addr = ac.getLocalAddr();
+		CHECK_EQUAL("0.0.0.0", addr.first);
+		CHECK_EQUAL(SERVER_PORT, addr.second);
+	}
+	// Listening on a specific interface
+	{
+		Acceptor ac(io);
+		auto ec = ac.listen("127.0.0.1", SERVER_PORT, SOMAXCONN, false);
+		CHECK_CZSPAS(ec);
+		auto addr = ac.getLocalAddr();
+		CHECK_EQUAL("127.0.0.1", addr.first);
+		CHECK_EQUAL(SERVER_PORT, addr.second);
+	}
+}
+
 // Checks behavior when trying to listen on an invalid port
 TEST(Acceptor_listen_failure)
 {
@@ -90,7 +113,7 @@ TEST(Acceptor_asyncAccept_ok)
 
 	Semaphore done;
 	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
-	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [&done, this_=ac, con = serverSideSession](const Error& ec)
+	ac->acceptor.asyncAccept(serverSideSession->sock, [&done, this_=ac, con = serverSideSession](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
 		done.notify();
@@ -135,7 +158,7 @@ TEST(Acceptor_asyncAccept_cancel)
 
 	Semaphore done;
 	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
-	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [&done, this_=ac, con = serverSideSession](const Error& ec)
+	ac->acceptor.asyncAccept(serverSideSession->sock, [&done, this_=ac, con = serverSideSession](const Error& ec)
 	{
 		CHECK_CZSPAS_EQUAL(Cancelled, ec);
 		done.notify();
@@ -181,7 +204,7 @@ TEST(Socket_connect_ok)
 	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
 
 	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
-	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [this_=ac, con = serverSideSession](const Error& ec)
+	ac->acceptor.asyncAccept(serverSideSession->sock, [this_=ac, con = serverSideSession](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
 	});
@@ -189,6 +212,42 @@ TEST(Socket_connect_ok)
 	Socket clientSock(ioth.service);
 	auto ec = clientSock.connect("127.0.0.1", SERVER_PORT);
 	CHECK_CZSPAS(ec);
+}
+
+TEST(Socket_getLocalAddr_getPeerAddr)
+{
+	ServiceThread ioth;
+
+	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
+
+	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
+	Semaphore done;
+	ac->acceptor.asyncAccept(serverSideSession->sock, [this_=ac, &done, con = serverSideSession](const Error& ec)
+	{
+		CHECK_CZSPAS(ec);
+		done.notify();
+	});
+
+	Socket clientSock(ioth.service);
+	auto ec = clientSock.connect("127.0.0.1", SERVER_PORT);
+	CHECK_CZSPAS(ec);
+	done.wait();
+
+	// Check server side things
+	auto serverLocal = serverSideSession->sock.getLocalAddr();
+	auto serverPeer = serverSideSession->sock.getPeerAddr();
+	auto clientLocal = clientSock.getLocalAddr();
+	auto clientPeer = clientSock.getPeerAddr();
+
+	CHECK_EQUAL("127.0.0.1", serverLocal.first);
+	CHECK_EQUAL("127.0.0.1", serverPeer.first);
+	CHECK_EQUAL("127.0.0.1", clientLocal.first);
+	CHECK_EQUAL("127.0.0.1", clientPeer.first);
+
+	CHECK_EQUAL(SERVER_PORT, serverLocal.second);
+	CHECK_EQUAL(SERVER_PORT, clientPeer.second);
+	CHECK(serverPeer.second != SERVER_PORT && serverPeer.second > 0);
+	CHECK_EQUAL(serverPeer.second, clientLocal.second);
 }
 
 TEST(Socket_connect_failure)
@@ -206,13 +265,13 @@ TEST(Socket_asyncConnect_ok)
 	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
 	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
 	Semaphore done;
-	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [this_=ac, con = serverSideSession](const Error& ec)
+	ac->acceptor.asyncAccept(serverSideSession->sock, [this_=ac, con = serverSideSession](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
 	});
 
 	auto clientSideSession = std::make_shared<Session<>> (ioth.service);
-	clientSideSession->sock.asyncConnect("127.0.0.1", SERVER_PORT, -1, [&done, con = clientSideSession](const Error& ec)
+	clientSideSession->sock.asyncConnect("127.0.0.1", SERVER_PORT, [&done, con = clientSideSession](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
 		done.notify();
@@ -236,7 +295,7 @@ TEST(Socket_asyncConnect_cancel)
 
 	Semaphore done;
 	auto clientSideSession = std::make_shared<Session<>> (ioth.service);
-	clientSideSession->sock.asyncConnect("254.254.254.254", SERVER_PORT, -1, [&done, con = clientSideSession](const Error& ec)
+	clientSideSession->sock.asyncConnect("254.254.254.254", SERVER_PORT, [&done, con = clientSideSession](const Error& ec)
 	{
 		CHECK_CZSPAS_EQUAL(Cancelled, ec);
 		done.notify();
@@ -277,11 +336,11 @@ TEST(Socket_asyncSendSome_asyncReceiveSome_ok)
 	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
 	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
 	Semaphore done;
-	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [&done, this_=ac, con = serverSideSession](const Error& ec)
+	ac->acceptor.asyncAccept(serverSideSession->sock, [&done, this_=ac, con = serverSideSession](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
 		static uint32_t buf;
-		con->sock.asyncReceiveSome(reinterpret_cast<char*>(&buf), sizeof(buf), -1,
+		con->sock.asyncReceiveSome(reinterpret_cast<char*>(&buf), sizeof(buf), 
 			[&done, con, bufPtr=&buf](const Error& ec, size_t transfered)
 		{
 			// Note: Capturing bufPtr is not necessary, but makes it easier to debug.
@@ -292,11 +351,11 @@ TEST(Socket_asyncSendSome_asyncReceiveSome_ok)
 	});
 
 	auto clientSideSession = std::make_shared<Session<>> (ioth.service);
-	clientSideSession->sock.asyncConnect("127.0.0.1", SERVER_PORT, -1, [con = clientSideSession](const Error& ec)
+	clientSideSession->sock.asyncConnect("127.0.0.1", SERVER_PORT, [con = clientSideSession](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
 		static uint32_t buf = 0x11223344;
-		con->sock.asyncSendSome(reinterpret_cast<char*>(&buf), sizeof(buf), -1,
+		con->sock.asyncSendSome(reinterpret_cast<char*>(&buf), sizeof(buf),
 			[con](const Error& ec, size_t transfered)
 		{
 			CHECK_EQUAL(4, transfered);
@@ -313,7 +372,7 @@ TEST(Socket_asyncReceiveSome_cancel)
 	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
 	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
 	Semaphore done;
-	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [&done, this_=ac, con = serverSideSession](const Error& ec)
+	ac->acceptor.asyncAccept(serverSideSession->sock, [&done, this_=ac, con = serverSideSession](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
 	});
@@ -322,7 +381,7 @@ TEST(Socket_asyncReceiveSome_cancel)
 	auto ec = clientSideSession->sock.connect("127.0.0.1", SERVER_PORT);
 	CHECK_CZSPAS(ec);
 	char rcvBuf[4];
-	clientSideSession->sock.asyncReceiveSome(rcvBuf, sizeof(rcvBuf), -1,
+	clientSideSession->sock.asyncReceiveSome(rcvBuf, sizeof(rcvBuf),
 		[&done, con = clientSideSession](const Error& ec, size_t transfered)
 	{
 		CHECK_CZSPAS_EQUAL(Cancelled, ec);
@@ -345,7 +404,7 @@ TEST(Socket_asyncReceiveSome_timeout)
 	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
 	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
 	Semaphore done;
-	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [&done, this_=ac, con = serverSideSession](const Error& ec)
+	ac->acceptor.asyncAccept(serverSideSession->sock, [&done, this_=ac, con = serverSideSession](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
 	});
@@ -375,7 +434,7 @@ TEST(Socket_asyncReceiveSome_peerDisconnect)
 	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
 	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
 	Semaphore done;
-	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [&done, this_=ac, con = serverSideSession](const Error& ec)
+	ac->acceptor.asyncAccept(serverSideSession->sock, [&done, this_=ac, con = serverSideSession](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
 	});
@@ -385,7 +444,7 @@ TEST(Socket_asyncReceiveSome_peerDisconnect)
 	auto ec = clientSideSession->sock.connect("127.0.0.1", SERVER_PORT);
 	CHECK_CZSPAS(ec);
 	char rcvBuf[4];
-	clientSideSession->sock.asyncReceiveSome(rcvBuf, sizeof(rcvBuf), -1,
+	clientSideSession->sock.asyncReceiveSome(rcvBuf, sizeof(rcvBuf),
 		[&done, con = clientSideSession](const Error& ec, size_t transfered)
 	{
 		CHECK_CZSPAS_EQUAL(ConnectionClosed, ec);
@@ -408,13 +467,13 @@ TEST(Socket_asyncSendSome_cancel)
 	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
 	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
 	Semaphore done;
-	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [&done, this_=ac, con = serverSideSession](const Error& ec)
+	ac->acceptor.asyncAccept(serverSideSession->sock, [&done, this_=ac, con = serverSideSession](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
 		static char sndBuf[4];
 		// Do the two calls here inside the Service thread, so the Reactor doesn't have the chance to initiate the
 		// send
-		con->sock.asyncSendSome(sndBuf, sizeof(sndBuf), -1, [&done, con](const Error& ec, size_t transfered)
+		con->sock.asyncSendSome(sndBuf, sizeof(sndBuf), [&done, con](const Error& ec, size_t transfered)
 		{
 			CHECK_CZSPAS_EQUAL(Cancelled, ec);
 			CHECK_EQUAL(0, transfered);
@@ -446,7 +505,7 @@ TEST(Socket_asyncSendSome_peerDisconnect)
 	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
 	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
 	Semaphore done;
-	ac->acceptor.asyncAccept(serverSideSession->sock, -1, [&done, this_=ac, con = serverSideSession](const Error& ec) mutable
+	ac->acceptor.asyncAccept(serverSideSession->sock, [&done, this_=ac, con = serverSideSession](const Error& ec) mutable
 	{
 		CHECK_CZSPAS(ec);
 		con = nullptr; // So the socket is destroyed right now
@@ -459,7 +518,7 @@ TEST(Socket_asyncSendSome_peerDisconnect)
 	CHECK_CZSPAS(ec);
 	done.wait(); // wait for the peer to disconnect, so when we try to send, the peer disconnected already
 	char sndBuf[4];
-	clientSideSession->sock.asyncSendSome(sndBuf, sizeof(sndBuf), -1,
+	clientSideSession->sock.asyncSendSome(sndBuf, sizeof(sndBuf), 
 		[&done, &sndBuf, con = clientSideSession](const Error& ec, size_t transfered)
 	{
 		// It might happen we detect the connection as closed right away, or the OS still considers some data was sent
@@ -473,7 +532,7 @@ TEST(Socket_asyncSendSome_peerDisconnect)
 			CHECK_CZSPAS(ec);
 			CHECK(transfered > 0);
 			// Try another send. This one should already fail
-			con->sock.asyncSendSome(sndBuf, sizeof(sndBuf), -1,
+			con->sock.asyncSendSome(sndBuf, sizeof(sndBuf), 
 				[&done, con](const Error& ec, size_t transfered)
 			{
 				CHECK_CZSPAS_EQUAL(ConnectionClosed, ec);
@@ -491,7 +550,7 @@ TEST(Socket_asyncSendSome_peerDisconnect)
 void Socket_multiple_connections_acceptorHelper(std::shared_ptr<AcceptorSession<>> session, std::atomic<int>& numAccepts)
 {
 	auto serverSideSession = std::make_shared<Session<>>(session->acceptor.getService());
-	session->acceptor.asyncAccept(serverSideSession->sock, -1, [&numAccepts, this_ = session, con = serverSideSession](const Error& ec) mutable
+	session->acceptor.asyncAccept(serverSideSession->sock, [&numAccepts, this_ = session, con = serverSideSession](const Error& ec) mutable
 	{
 		CHECK_CZSPAS(ec);
 		++numAccepts;
@@ -554,7 +613,7 @@ TEST(Socket_bigTransfer)
 		auto ec = acceptor.accept(*sock);
 		CHECK_CZSPAS(ec);
 		Semaphore done;
-		asyncReceive(*sock, bigbuf.get(), bigbufsize, -1, [&, sock, bigbuf](const Error& ec, size_t transfered)
+		asyncReceive(*sock, bigbuf.get(), bigbufsize, [&, sock, bigbuf](const Error& ec, size_t transfered)
 		{
 			CHECK_CZSPAS(ec);
 			CHECK_EQUAL(bigbufsize, transfered);
@@ -580,7 +639,7 @@ TEST(Socket_bigTransfer)
 		auto ec = sock->connect("127.0.0.1", SERVER_PORT);
 		CHECK_CZSPAS(ec);
 		Semaphore done;
-		asyncSend(*sock, bigbuf.get(), bigbufsize, -1, [&, sock, bigbuf](const Error& ec, size_t transfered)
+		asyncSend(*sock, bigbuf.get(), bigbufsize, [&, sock, bigbuf](const Error& ec, size_t transfered)
 		{
 			CHECK_CZSPAS(ec);
 			CHECK_EQUAL(bigbufsize, transfered);
@@ -610,13 +669,13 @@ TEST(Socket_sendSome_seceiveSome_ok)
 	CHECK_CZSPAS(ec);
 
 	const char* outBuf = "Hello World!";
-	auto done = sender.sendSome("Hello World!", strlen(outBuf), -1, ec);
+	auto done = sender.sendSome("Hello World!", strlen(outBuf), ec);
 	CHECK_EQUAL(strlen(outBuf), done);
 	CHECK_CZSPAS(ec);
 
 	char inBuf[64];
 	memset(inBuf, 0, sizeof(inBuf));
-	done = receiver.receiveSome(inBuf, sizeof(inBuf), -1, ec);
+	done = receiver.receiveSome(inBuf, sizeof(inBuf), ec);
 	CHECK_EQUAL(strlen(outBuf), done);
 	CHECK_CZSPAS(ec);
 	CHECK_EQUAL(outBuf, inBuf);
@@ -667,7 +726,7 @@ TEST(Socket_receiveSome_disconnect)
 
 	sender._forceClose(false);
 	char inBuf[1];
-	auto done = receiver.receiveSome(inBuf, sizeof(inBuf), -1, ec);
+	auto done = receiver.receiveSome(inBuf, sizeof(inBuf), ec);
 	CHECK_EQUAL(0, done);
 	CHECK_CZSPAS_EQUAL(ConnectionClosed, ec);
 }
@@ -693,7 +752,7 @@ TEST(Socket_receiveSome_error)
 	auto h = receiver.getHandle(); // Copying to a local, since detail::utils::closeSocket clears the input
 	detail::utils::closeSocket(h);
 	char inBuf[1];
-	auto done = receiver.receiveSome(inBuf, sizeof(inBuf), -1, ec);
+	auto done = receiver.receiveSome(inBuf, sizeof(inBuf), ec);
 	CHECK_EQUAL(0, done);
 	CHECK_CZSPAS_EQUAL(Other, ec);
 }
@@ -727,7 +786,7 @@ TEST(Socket_sendSome_disconnect)
 	while (!ec)
 	{
 		char outBuf[2];
-		done = sender.sendSome(outBuf, sizeof(outBuf), -1, ec);
+		done = sender.sendSome(outBuf, sizeof(outBuf), ec);
 		if (!ec)
 			CHECK_EQUAL(2, done);
 	}
@@ -756,7 +815,7 @@ TEST(Socket_sendSome_error)
 	auto h = sender.getHandle(); // Copying to a local, since detail::utils::closeSocket clears the input
 	detail::utils::closeSocket(h);
 	char outBuf[1];
-	auto done = sender.sendSome(outBuf, sizeof(outBuf), -1, ec);
+	auto done = sender.sendSome(outBuf, sizeof(outBuf), ec);
 	CHECK_EQUAL(0, done);
 	CHECK_CZSPAS_EQUAL(Other, ec);
 }
@@ -786,7 +845,7 @@ TEST(receive_ok)
 		for (auto&& s : out)
 		{
 			Error ec;
-			auto transfered = send(sender, s.c_str(), s.size(), -1, ec);
+			auto transfered = send(sender, s.c_str(), s.size(), ec);
 			CHECK_EQUAL(s.size(), transfered);
 			// Make a small pause, so we can test the receiver receiving it in parts.
 			UnitTest::TimeHelpers::SleepMs(20);
@@ -795,7 +854,7 @@ TEST(receive_ok)
 
 	char in[128];
 	auto expected = strlen("Hello World!") + 1;
-	auto transfered = receive(receiver, in, expected, -1, ec);
+	auto transfered = receive(receiver, in, expected, ec);
 	CHECK_EQUAL(expected, transfered);
 	CHECK_EQUAL("Hello World!", in);
 	CHECK_CZSPAS(ec);
@@ -827,7 +886,7 @@ TEST(receive_timeout)
 		for (auto&& s : out)
 		{
 			Error ec;
-			auto transfered = send(sender, s.c_str(), s.size(), -1, ec);
+			auto transfered = send(sender, s.c_str(), s.size(), ec);
 			CHECK_EQUAL(s.size(), transfered);
 			// Make a small pause, so we can test the receiver receiving it in parts.
 			UnitTest::TimeHelpers::SleepMs(20);
@@ -870,7 +929,7 @@ TEST(receive_peerDisconnect)
 		for (auto&& s : out)
 		{
 			Error ec;
-			auto transfered = send(sender, s.c_str(), s.size(), -1, ec);
+			auto transfered = send(sender, s.c_str(), s.size(), ec);
 			CHECK_EQUAL(s.size(), transfered);
 			// Make a small pause, so we can test the receiver receiving it in parts.
 			UnitTest::TimeHelpers::SleepMs(10);

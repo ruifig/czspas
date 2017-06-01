@@ -24,14 +24,10 @@ Unit Tests
 	* Service::isStopped
 	* Service::reset
 	* Service::run(false)
-	* getLocalAddr()
-	* getPeerAddr()
 	* BaseSocket::setLinger , if I keep that function
 
 INTERNALS
 ---------
 
-* Remote Socket::_forceClose ???
-
-
+* Remove Socket::_forceClose ???
 
