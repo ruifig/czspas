@@ -88,7 +88,11 @@ TEST(Acceptor_getLocalAddr)
 	// Listening on a specific interface
 	{
 		Acceptor ac(io);
-		auto ec = ac.listen("127.0.0.1", SERVER_PORT, SOMAXCONN, false);
+		bool reuseAddr = false;
+#if __linux__
+		reuseAddr = true;
+#endif
+		auto ec = ac.listen("127.0.0.1", SERVER_PORT, SOMAXCONN, reuseAddr);
 		CHECK_CZSPAS(ec);
 		auto addr = ac.getLocalAddr();
 		CHECK_EQUAL("127.0.0.1", addr.first);
