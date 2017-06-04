@@ -826,10 +826,10 @@ namespace detail
 		TransferHandler userHandler;
 
 		template<typename H>
-		TransferOperation(BaseSocket& owner, char* buf, size_t bufSize, H&& h)
+		TransferOperation(BaseSocket& owner, char* buf, size_t len, H&& h)
 			: SocketOperation(owner)
 			, buf(buf)
-			, bufSize(bufSize)
+			, bufSize(len)
 			, userHandler(std::forward<H>(h))
 		{
 		}
@@ -839,8 +839,8 @@ namespace detail
 	struct SendOperation : public TransferOperation
 	{
 		template<typename H>
-		SendOperation(BaseSocket& owner, const char* buf, size_t bufSize, H&& h)
-			: TransferOperation(owner, const_cast<char*>(buf), bufSize, std::forward<H>(h))
+		SendOperation(BaseSocket& owner, const char* buf, size_t len, H&& h)
+			: TransferOperation(owner, const_cast<char*>(buf), len, std::forward<H>(h))
 		{
 			owner.pendingSend = true;
 		}
@@ -859,8 +859,8 @@ namespace detail
 #if __linux__
 			flags = MSG_NOSIGNAL;
 #endif
-			int len = ::send(fd, buf, todo, flags);
-			if (len == CZSPAS_SOCKET_ERROR)
+			int done = ::send(fd, buf, todo, flags);
+			if (done == CZSPAS_SOCKET_ERROR)
 			{
 				if (hasPOLLHUP)
 				{
@@ -878,7 +878,7 @@ namespace detail
 			}
 			else
 			{
-				transfered = len;
+				transfered = done;
 			}
 		}
 
@@ -892,8 +892,8 @@ namespace detail
 	struct ReceiveOperation : public TransferOperation
 	{
 		template<typename H>
-		ReceiveOperation(BaseSocket& owner, char* buf, size_t bufSize, H&& h)
-			: TransferOperation(owner, buf, bufSize, std::forward<H>(h))
+		ReceiveOperation(BaseSocket& owner, char* buf, size_t len, H&& h)
+			: TransferOperation(owner, buf, len, std::forward<H>(h))
 		{
 			owner.pendingReceive = true;
 		}
@@ -912,8 +912,8 @@ namespace detail
 #if __linux__
 			flags = MSG_NOSIGNAL;
 #endif
-			int len = ::recv(fd, buf, todo, flags);
-			if (len == CZSPAS_SOCKET_ERROR)
+			int done = ::recv(fd, buf, todo, flags);
+			if (done == CZSPAS_SOCKET_ERROR)
 			{
 				if (hasPOLLHUP)
 				{
@@ -929,7 +929,7 @@ namespace detail
 					}
 				}
 			}
-			else if (len == 0) // A disconnect
+			else if (done == 0) // A disconnect
 			{
 				// On Windows, we never get here, since WSAPoll doesn't work exactly the same way has poll, according to what I've seen with my tests
 				// Example, while on a WSAPoll, when a peer disconnects, the following happens:
@@ -941,7 +941,7 @@ namespace detail
 			}
 			else
 			{
-				transfered = len;
+				transfered = done;
 			}
 		}
 
@@ -1414,7 +1414,7 @@ public:
 		asyncConnect(ip, port, -1, std::forward<H>(h));
 	}
 
-	size_t sendSome(const char* buf, size_t bufSize, int timeoutMs, Error& ec)
+	size_t sendSome(const char* buf, size_t len, int timeoutMs, Error& ec)
 	{
 		auto res = detail::utils::doSelect(m_base.s, false, timeoutMs);
 		if (res.second)
@@ -1424,15 +1424,15 @@ public:
 		}
 
 		// The interface allows size_t, but the implementation only allows int
-		int todo = bufSize > INT_MAX ? INT_MAX : static_cast<int>(bufSize);
+		int todo = len > INT_MAX ? INT_MAX : static_cast<int>(len);
 		int flags = 0;
 #if __linux__
 		flags = MSG_NOSIGNAL;
 #endif
-		int len = ::send(m_base.s, buf, todo, flags);
+		int done = ::send(m_base.s, buf, todo, flags);
 		// I believe no errors should occur at this point, since the select told us the socket was ready, but doesn't
 		// hurt to handle it.
-		if (len == CZSPAS_SOCKET_ERROR)
+		if (done == CZSPAS_SOCKET_ERROR)
 		{
 			ec = detail::ErrorWrapper().getError();
 			return 0;
@@ -1440,13 +1440,13 @@ public:
 		else
 		{
 			ec = Error();
-			return len;
+			return done;
 		}
 	}
 
-	size_t sendSome(const char* buf, size_t bufSize, Error& ec)
+	size_t sendSome(const char* buf, size_t len, Error& ec)
 	{
-		return sendSome(buf, bufSize, -1, ec);
+		return sendSome(buf, len, -1, ec);
 	}
 
 	template< typename H, typename = detail::IsTransferHandler<H> >
@@ -1464,7 +1464,7 @@ public:
 		asyncSendSome(buf, len, -1, std::forward<H>(h));
 	}
 
-	size_t receiveSome(char* buf, size_t bufSize, int timeoutMs, Error& ec)
+	size_t receiveSome(char* buf, size_t len, int timeoutMs, Error& ec)
 	{
 		auto res = detail::utils::doSelect(m_base.s, true, timeoutMs);
 		if (res.second)
@@ -1474,20 +1474,20 @@ public:
 		}
 
 		// The interface allows size_t, but the implementation only allows int
-		int todo = bufSize > INT_MAX ? INT_MAX : static_cast<int>(bufSize);
+		int todo = len > INT_MAX ? INT_MAX : static_cast<int>(len);
 		int flags = 0;
 #if __linux__
 		flags = MSG_NOSIGNAL;
 #endif
-		int len = ::recv(m_base.s, buf, todo, flags);
+		int done = ::recv(m_base.s, buf, todo, flags);
 		// I believe no errors should occur at this point, since the select told us the socket was ready, but doesn't
 		// hurt to handle it.
-		if (len == CZSPAS_SOCKET_ERROR)
+		if (done == CZSPAS_SOCKET_ERROR)
 		{
 			ec = detail::ErrorWrapper().getError();
 			return 0;
 		}
-		else if (len == 0)
+		else if (done == 0)
 		{
 			// As per the ::recv documentation, 0 can be returned in two situations:
 			// 1. A stream socket peer has performed a orderly shutdown.
@@ -1498,13 +1498,13 @@ public:
 		else
 		{
 			ec = Error();
-			return len;
+			return done;
 		}
 	}
 
-	size_t receiveSome(char* buf, size_t bufSize, Error& ec)
+	size_t receiveSome(char* buf, size_t len, Error& ec)
 	{
-		return receiveSome(buf, bufSize, -1, ec);
+		return receiveSome(buf, len, -1, ec);
 	}
 
 	template< typename H, typename = detail::IsTransferHandler<H> >
@@ -1528,12 +1528,6 @@ public:
 			getService().cancel(m_base.s);
 	}
 
-	//! Only to be used with care, if the user wants to access the underlying socket handle
-	SocketHandle getHandle()
-	{
-		return m_base.getHandle();
-	}
-
 	Service& getService()
 	{
 		return m_base.getService();
@@ -1544,12 +1538,6 @@ public:
 		m_base.setLinger(enabled, timeoutSeconds);
 	}
 
-	// For internal use in the unit tests. DO NOT USE
-	void _forceClose(bool doshutdown)
-	{
-		m_base._forceClose(doshutdown);
-	}
-
 	const std::pair<std::string, int>& getLocalAddr() const
 	{
 		return m_base.getLocalAddr();
@@ -1558,6 +1546,18 @@ public:
 	const std::pair<std::string, int>& getPeerAddr() const
 	{
 		return m_base.getPeerAddr();
+	}
+
+	//! Only to be used with care, if the user wants to access the underlying socket handle
+	SocketHandle getHandle()
+	{
+		return m_base.getHandle();
+	}
+
+	// For internal use in the unit tests. DO NOT USE
+	void _forceClose(bool doshutdown)
+	{
+		m_base._forceClose(doshutdown);
 	}
 
 private:
