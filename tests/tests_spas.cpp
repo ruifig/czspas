@@ -64,7 +64,7 @@ TEST(Service_Reactor_internal_sockets)
 //////////////////////////////////////////////////////////////////////////
 // Acceptor tests
 //////////////////////////////////////////////////////////////////////////
-// Checks behavior for a simple listen
+// Checks behaviour for a simple listen
 TEST(Acceptor_listen_ok)
 {
 	Service io;
@@ -100,7 +100,7 @@ TEST(Acceptor_getLocalAddr)
 	}
 }
 
-// Checks behavior when trying to listen on an invalid port
+// Checks behaviour when trying to listen on an invalid port
 TEST(Acceptor_listen_failure)
 {
 	Service io;
@@ -131,7 +131,7 @@ TEST(Acceptor_asyncAccept_ok)
 	done.wait();
 }
 
-// Tests the accept timeout behavior
+// Tests the accept timeout behaviour
 // Because internally the timeout is split in two fields (microseconds and seconds, because it uses select), we need to
 // test something below 1 second, and something above, to make sure the split is done correctly
 TEST(Acceptor_accept_timeout)
@@ -284,13 +284,13 @@ TEST(Socket_asyncConnect_ok)
 	done.wait();
 }
 
-// Initially I was using "127.0.0.1" to test the asynchronous connect timeout or cancel, but it seems that on linux
+// Initially I was using "127.0.0.1" to test the asynchronous connect timeout or cancel, but it seems that on Linux
 // it fails right away. Probably the kernel treats connections to the localhost in a different way, detecting
 // right away that if a connect is not possible, without taking into consideration the timeout specified in
 // the "select" function.
 // On Windows, connect attempts to localhost still take into consideration the timeout.
 // The solution is to try an connect to some external ip, like "254.254.254.254".
-// This causes Linux to to actually wait for the connect attempt.
+// This causes Linux to actually wait for the connect attempt.
 // NOTE: WSL (Windows Subsystem for Linux) doesn't support non-blocking connects at this moment, so this test will fail
 // although it seems in some systems, such has Windows
 TEST(Socket_asyncConnect_cancel)
