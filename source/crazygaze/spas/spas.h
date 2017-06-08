@@ -639,11 +639,11 @@ namespace detail
 	{
 	};
 
-	struct BaseSocket
+	struct SocketHelper
 	{
 	public:
 
-		BaseSocket(detail::BaseService& owner)
+		SocketHelper(detail::BaseService& owner)
 			: owner(owner)
 			, pendingAccept(false)
 			, pendingConnect(false)
@@ -652,7 +652,7 @@ namespace detail
 		{
 		}
 
-		virtual ~BaseSocket()
+		virtual ~SocketHelper()
 		{
 			CZSPAS_ASSERT(pendingAccept.load() == false);
 			CZSPAS_ASSERT(pendingConnect.load() == false);
@@ -692,8 +692,8 @@ namespace detail
 			return peerAddr;
 		}
 			
-		BaseSocket(const BaseSocket&) = delete;
-		void operator=(const BaseSocket&) = delete;
+		SocketHelper(const SocketHelper&) = delete;
+		void operator=(const SocketHelper&) = delete;
 
 		bool isValid() const
 		{
@@ -742,8 +742,8 @@ namespace detail
 
 	struct SocketOperation : public Operation
 	{
-		BaseSocket& owner;
-		explicit SocketOperation(BaseSocket& owner) : owner(owner)
+		SocketHelper& owner;
+		explicit SocketOperation(SocketHelper& owner) : owner(owner)
 		{
 		}
 	};
@@ -751,10 +751,10 @@ namespace detail
 	struct AcceptOperation : public SocketOperation
 	{
 		ConnectHandler userHandler;
-		BaseSocket& sock;
+		SocketHelper& sock;
 
 		template<typename H>
-		AcceptOperation(BaseSocket& owner, BaseSocket& dst, H&& h)
+		AcceptOperation(SocketHelper& owner, SocketHelper& dst, H&& h)
 			: SocketOperation(owner)
 			, sock(dst)
 			, userHandler(std::forward<H>(h))
@@ -793,7 +793,7 @@ namespace detail
 		ConnectHandler userHandler;
 
 		template<typename H>
-		ConnectOperation(BaseSocket& owner, H&& h)
+		ConnectOperation(SocketHelper& owner, H&& h)
 			: SocketOperation(owner)
 			, userHandler(std::forward<H>(h))
 		{
@@ -826,7 +826,7 @@ namespace detail
 		TransferHandler userHandler;
 
 		template<typename H>
-		TransferOperation(BaseSocket& owner, char* buf, size_t len, H&& h)
+		TransferOperation(SocketHelper& owner, char* buf, size_t len, H&& h)
 			: SocketOperation(owner)
 			, buf(buf)
 			, bufSize(len)
@@ -839,7 +839,7 @@ namespace detail
 	struct SendOperation : public TransferOperation
 	{
 		template<typename H>
-		SendOperation(BaseSocket& owner, const char* buf, size_t len, H&& h)
+		SendOperation(SocketHelper& owner, const char* buf, size_t len, H&& h)
 			: TransferOperation(owner, const_cast<char*>(buf), len, std::forward<H>(h))
 		{
 			owner.pendingSend = true;
@@ -892,7 +892,7 @@ namespace detail
 	struct ReceiveOperation : public TransferOperation
 	{
 		template<typename H>
-		ReceiveOperation(BaseSocket& owner, char* buf, size_t len, H&& h)
+		ReceiveOperation(SocketHelper& owner, char* buf, size_t len, H&& h)
 			: TransferOperation(owner, buf, len, std::forward<H>(h))
 		{
 			owner.pendingReceive = true;
@@ -1562,7 +1562,7 @@ public:
 
 private:
 	friend Acceptor;
-	detail::BaseSocket m_base;
+	detail::SocketHelper m_base;
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -1693,7 +1693,7 @@ public:
 	}
 
 private:
-	detail::BaseSocket m_base;
+	detail::SocketHelper m_base;
 };
 
 namespace detail
