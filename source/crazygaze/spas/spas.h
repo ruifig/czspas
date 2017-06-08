@@ -48,8 +48,8 @@ Windows Loopback fast path:
 
 Notes on WSAPoll:
 	https://blogs.msdn.microsoft.com/wndp/2006/10/26/wsapoll-a-new-winsock-api-to-simplify-porting-poll-applications-to-winsock/
-	WSAPoll() is not exactly like poll(). It has a couple of bugs that microsoft never fixed. Example: 
-		- Doesn't report failed connections. (E.g: A connect attempt to an address&port without listener and timeout -1 will block forever):
+	WSAPoll() is not exactly like poll(). It has a couple of bugs that Microsoft never fixed. Example: 
+		- Doesn't report failed connections. (E.g: A connect attempt to an address & port without listener and timeout -1 will block forever):
 			https://social.msdn.microsoft.com/Forums/windowsdesktop/en-US/18769abd-fca0-4d3c-9884-1a38ce27ae90/wsapoll-and-nonblocking-connects-to-nonexistent-ports?forum=wsk
 
 */
@@ -378,7 +378,7 @@ namespace detail
 				ErrorWrapper err;
 				if (err.getCode() == WSAEOPNOTSUPP)
 				{
-					// This system is not Windows Windows Server 2012, and the call is not supported.
+					// This system is not Windows Server 2012, and the call is not supported.
 					// Do nothing
 				}
 				else 
@@ -479,7 +479,7 @@ namespace detail
 		// \param ec
 		//		If an error occurs, this contains the error.
 		// \param backlog
-		//		Size of the the connection backlog.
+		//		Size of the connection backlog.
 		//		Also, this is only an hint to the OS. It's not guaranteed.
 		//
 		static std::pair<Error, SocketHandle> createListenSocket(const char* bindIP, int port, int backlog, bool reuseAddr)
@@ -1388,7 +1388,7 @@ public:
 			detail::ErrorWrapper err;
 			if (err.isBlockError())
 			{
-				// Normal behavior.
+				// Normal behaviour.
 				// A asynchronous connect is done when we receive a write event on the socket
 				getService().addOperation(m_base.s, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
 			}
@@ -1757,7 +1757,7 @@ void asyncReceive(Socket& sock, char* buf, size_t len, int timeoutMs, H&& h)
 	detail::asyncReceiveHelper(sock, buf, len, timeoutMs, Error(), 0, std::forward<H>(h));
 }
 
-// Putting the synchronous send/receive in a struct, so the implementation can be in in the header file.
+// Putting the synchronous send/receive in a struct, so the implementation can be in the header file.
 // This is needed, since send/receive are not templated.
 namespace detail
 {
