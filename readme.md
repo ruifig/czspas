@@ -26,6 +26,8 @@ There is nothing to build. Just include ```spas.h``` (found in ```source\crazyga
 
 Visual Studio 2015 or higher is required on Windows. On Linux, any recent version of gcc/clang should work.
 
+The **master** branch is the most stable one, and **dev** is where development happens.
+
 Documentation
 =============
 
