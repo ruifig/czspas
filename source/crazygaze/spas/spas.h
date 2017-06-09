@@ -220,6 +220,7 @@ struct Error
 	}
 
 	Code code;
+private:
 	std::shared_ptr<std::string> optionalMsg;
 };
 
