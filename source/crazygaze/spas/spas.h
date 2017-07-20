@@ -1417,6 +1417,7 @@ public:
 
 	size_t sendSome(const char* buf, size_t len, int timeoutMs, Error& ec)
 	{
+		CZSPAS_ASSERT(len > 0);
 		auto res = detail::utils::doSelect(m_base.s, false, timeoutMs);
 		if (res.second)
 		{
@@ -1453,6 +1454,7 @@ public:
 	template< typename H, typename = detail::IsTransferHandler<H> >
 	void asyncSendSome(const char* buf, size_t len, int timeoutMs, H&& h)
 	{
+		CZSPAS_ASSERT(len > 0);
 		CZSPAS_ASSERT(m_base.isValid());
 		CZSPAS_ASSERT(m_base.pendingSend.load()==false && "There is already a pending send operation");
 		auto op = std::make_unique<detail::SendOperation>(m_base, buf, len, std::forward<H>(h));
@@ -1467,6 +1469,7 @@ public:
 
 	size_t receiveSome(char* buf, size_t len, int timeoutMs, Error& ec)
 	{
+		CZSPAS_ASSERT(len > 0);
 		auto res = detail::utils::doSelect(m_base.s, true, timeoutMs);
 		if (res.second)
 		{
@@ -1511,6 +1514,7 @@ public:
 	template< typename H, typename = detail::IsTransferHandler<H> >
 	void asyncReceiveSome(char* buf, size_t len, int timeoutMs, H&& h)
 	{
+		CZSPAS_ASSERT(len > 0);
 		CZSPAS_ASSERT(m_base.isValid());
 		CZSPAS_ASSERT(m_base.pendingReceive.load()==false && "There is already a pending receive operation");
 		auto op = std::make_unique<detail::ReceiveOperation>(m_base, buf, len, std::forward<H>(h));
@@ -1737,24 +1741,28 @@ namespace detail
 template< typename H, typename = detail::IsTransferHandler<H> >
 void asyncSend(Socket& sock, const char* buf, size_t len, H&& h)
 {
+	CZSPAS_ASSERT(len > 0);
 	detail::asyncSendHelper(sock, buf, len, -1, Error(), 0, std::forward<H>(h));
 }
 
 template< typename H, typename = detail::IsTransferHandler<H> >
 void asyncSend(Socket& sock, const char* buf, size_t len, int timeoutMs, H&& h)
 {
+	CZSPAS_ASSERT(len > 0);
 	detail::asyncSendHelper(sock, buf, len, timeoutMs, Error(), 0, std::forward<H>(h));
 }
 
 template< typename H, typename = detail::IsTransferHandler<H> >
 void asyncReceive(Socket& sock, char* buf, size_t len, H&& h)
 {
+	CZSPAS_ASSERT(len > 0);
 	detail::asyncReceiveHelper(sock, buf, len, -1, Error(), 0, std::forward<H>(h));
 }
 
 template< typename H, typename = detail::IsTransferHandler<H> >
 void asyncReceive(Socket& sock, char* buf, size_t len, int timeoutMs, H&& h)
 {
+	CZSPAS_ASSERT(len > 0);
 	detail::asyncReceiveHelper(sock, buf, len, timeoutMs, Error(), 0, std::forward<H>(h));
 }
 
@@ -1784,21 +1792,25 @@ namespace detail
 
 inline size_t send(Socket& sock, const char* buf, size_t len, int timeoutMs, Error& ec)
 {
+	CZSPAS_ASSERT(len > 0);
 	return detail::syncImpl::send(sock, buf, len, timeoutMs, ec);
 }
 
 inline size_t send(Socket& sock, const char* buf, size_t len, Error& ec)
 {
+	CZSPAS_ASSERT(len > 0);
 	return detail::syncImpl::send(sock, buf, len, -1, ec);
 }
 
 inline size_t receive(Socket& sock, char* buf, size_t len, int timeoutMs, Error& ec)
 {
+	CZSPAS_ASSERT(len > 0);
 	return detail::syncImpl::receive(sock, buf, len, timeoutMs, ec);
 }
 
 inline size_t receive(Socket& sock, char* buf, size_t len, Error& ec)
 {
+	CZSPAS_ASSERT(len > 0);
 	return detail::syncImpl::receive(sock, buf, len, -1, ec);
 }
 
