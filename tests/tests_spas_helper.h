@@ -8,7 +8,7 @@ struct Session : std::enable_shared_from_this<Session<Data>>
 	{
 	}
 	Socket sock;
-	Data data;
+	// ... Add more state here if necessary
 };
 
 template<typename Data=int>
@@ -38,7 +38,7 @@ struct AcceptorSession : std::enable_shared_from_this<AcceptorSession<Data>>
 	Data data;
 };
 
-//! Helper class to run a Service in a seperate thread.
+//! Helper class to run a Service in a separate thread.
 struct ServiceThread
 {
 	Service service;
