@@ -232,12 +232,12 @@ TEST(Acceptor_asyncAccept_timeout)
 
 	Semaphore done;
 	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
-	auto start = ioth.timer.GetTimeInMs();
+	auto start = gTimer.GetTimeInMs();
 	ac->acceptor.asyncAccept(serverSideSession->sock, 50,
 		[&done, start, &ioth, this_=ac, con = serverSideSession](const Error& ec)
 	{
 		CHECK_CZSPAS_EQUAL(Timeout, ec);
-		auto elapsed = ioth.timer.GetTimeInMs() - start;
+		auto elapsed = gTimer.GetTimeInMs() - start;
 		CHECK_CLOSE(50.0, elapsed, 1000); // Giving a big tolerance, since the API doesn't guarantee any specific tolerance.
 		done.notify();
 	});

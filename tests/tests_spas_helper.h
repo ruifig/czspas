@@ -43,14 +43,12 @@ struct ServiceThread
 {
 	Service service;
 	std::thread th;
-	UnitTest::Timer timer;
 	bool doStop = false;
 	bool keepAlive = false;
 	explicit ServiceThread(bool autoRun, bool keepAlive, bool doStop)
 		: doStop(doStop)
 		, keepAlive(keepAlive)
 	{
-		timer.Start();
 		if (autoRun)
 			run();
 	}
