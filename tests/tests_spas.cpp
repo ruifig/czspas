@@ -61,6 +61,52 @@ TEST(Service_Reactor_internal_sockets)
 	CHECK_EQUAL(numThreads*itemsPerThread, done.load());
 }
 
+// Tests a call to Service::run when there is no work
+TEST(Service_run_nowork)
+{
+	Service service;
+	auto done = service.run();
+	CHECK_EQUAL(0, done);
+	CHECK(service.isStopped());
+}
+
+// Tests a call to Service::run when it has a dummy work to keep the run() call alive
+// After an interval, it destroys the work item, which should cause the call to run() to unblock
+TEST(Service_run_work_release)
+{
+	Service service;
+	auto work = std::make_unique<Service::Work>(service); // Dummy work item
+
+	auto ft = std::async(std::launch::async, [&work]
+	{
+		UnitTest::TimeHelpers::SleepMs(100);
+		work.reset();
+	});
+
+	auto done = service.run();
+	CHECK_EQUAL(0, done);
+	CHECK(service.isStopped());
+}
+
+// Tests a call to Service::run when it has a dummy work to keep the run() call alive
+// After an interval, it calls Service::stop . This should cause the call to run() to unblock even though the work item
+// still exists
+TEST(Service_run_work_stop)
+{
+	Service service;
+	auto work = std::make_unique<Service::Work>(service); // Dummy work item
+
+	auto ft = std::async(std::launch::async, [&service]
+	{
+		UnitTest::TimeHelpers::SleepMs(100);
+		service.stop();
+	});
+
+	auto done = service.run();
+	CHECK_EQUAL(0, done);
+	CHECK(service.isStopped());
+}
+
 //////////////////////////////////////////////////////////////////////////
 // Acceptor tests
 //////////////////////////////////////////////////////////////////////////
@@ -111,7 +157,7 @@ TEST(Acceptor_listen_failure)
 
 TEST(Acceptor_asyncAccept_ok)
 {
-	ServiceThread ioth;
+	ServiceThread ioth(true, true, true);
 
 	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
 
@@ -156,7 +202,7 @@ TEST(Acceptor_accept_timeout)
 
 TEST(Acceptor_asyncAccept_cancel)
 {
-	ServiceThread ioth;
+	ServiceThread ioth(false, false, false);
 
 	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
 
@@ -168,6 +214,8 @@ TEST(Acceptor_asyncAccept_cancel)
 		done.notify();
 	});
 
+	ioth.run();
+
 	ioth.service.post([ac]
 	{
 		ac->acceptor.cancel();
@@ -178,7 +226,7 @@ TEST(Acceptor_asyncAccept_cancel)
 
 TEST(Acceptor_asyncAccept_timeout)
 {
-	ServiceThread ioth;
+	ServiceThread ioth(true, true, true);
 
 	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
 
@@ -203,7 +251,7 @@ TEST(Acceptor_asyncAccept_timeout)
 
 TEST(Socket_connect_ok)
 {
-	ServiceThread ioth;
+	ServiceThread ioth(false, false, false);
 
 	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
 
@@ -213,6 +261,8 @@ TEST(Socket_connect_ok)
 		CHECK_CZSPAS(ec);
 	});
 
+	ioth.run();
+
 	Socket clientSock(ioth.service);
 	auto ec = clientSock.connect("127.0.0.1", SERVER_PORT);
 	CHECK_CZSPAS(ec);
@@ -220,7 +270,7 @@ TEST(Socket_connect_ok)
 
 TEST(Socket_getLocalAddr_getPeerAddr)
 {
-	ServiceThread ioth;
+	ServiceThread ioth(true, true, true);
 
 	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
 
@@ -256,7 +306,7 @@ TEST(Socket_getLocalAddr_getPeerAddr)
 
 TEST(Socket_connect_failure)
 {
-	ServiceThread ioth;
+	ServiceThread ioth(false, false, false);
 	Socket clientSock(ioth.service);
 	auto ec = clientSock.connect("127.0.0.1", SERVER_PORT);
 	CHECK_CZSPAS_EQUAL(Other,ec);
@@ -264,15 +314,18 @@ TEST(Socket_connect_failure)
 
 TEST(Socket_asyncConnect_ok)
 {
-	ServiceThread ioth;
+	ServiceThread ioth(false, false, false);
 
 	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
 	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
 	Semaphore done;
-	ac->acceptor.asyncAccept(serverSideSession->sock, [this_=ac, con = serverSideSession](const Error& ec)
+	ac->acceptor.asyncAccept(serverSideSession->sock, [this_=ac, &done, con = serverSideSession](const Error& ec)
 	{
 		CHECK_CZSPAS(ec);
+		done.notify();
 	});
+
+	ioth.run();
 
 	auto clientSideSession = std::make_shared<Session<>> (ioth.service);
 	clientSideSession->sock.asyncConnect("127.0.0.1", SERVER_PORT, [&done, con = clientSideSession](const Error& ec)
@@ -281,7 +334,10 @@ TEST(Socket_asyncConnect_ok)
 		done.notify();
 	});
 
-	done.wait();
+	// Wait for it to finish, to see if we got both handlers executed, followed by an automatic exit of Service::run,
+	// since it ran out of work
+	ioth.finish();
+	CHECK_EQUAL(2, done.getCount());
 }
 
 // Initially I was using "127.0.0.1" to test the asynchronous connect timeout or cancel, but it seems that on Linux
@@ -295,7 +351,7 @@ TEST(Socket_asyncConnect_ok)
 // although it seems in some systems, such has Windows
 TEST(Socket_asyncConnect_cancel)
 {
-	ServiceThread ioth;
+	ServiceThread ioth(true, true, true);
 
 	Semaphore done;
 	auto clientSideSession = std::make_shared<Session<>> (ioth.service);
@@ -317,7 +373,7 @@ TEST(Socket_asyncConnect_cancel)
 
 TEST(Socket_asyncConnect_timeout)
 {
-	ServiceThread ioth;
+	ServiceThread ioth(true, true, true);
 
 	Semaphore done;
 	auto clientSideSession = std::make_shared<Session<>> (ioth.service);
@@ -335,7 +391,7 @@ TEST(Socket_asyncConnect_timeout)
 
 TEST(Socket_asyncSendSome_asyncReceiveSome_ok)
 {
-	ServiceThread ioth;
+	ServiceThread ioth(true, true, true);
 
 	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
 	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
@@ -371,7 +427,7 @@ TEST(Socket_asyncSendSome_asyncReceiveSome_ok)
 
 TEST(Socket_asyncReceiveSome_cancel)
 {
-	ServiceThread ioth;
+	ServiceThread ioth(true, true, true);
 
 	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
 	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
@@ -403,7 +459,7 @@ TEST(Socket_asyncReceiveSome_cancel)
 
 TEST(Socket_asyncReceiveSome_timeout)
 {
-	ServiceThread ioth;
+	ServiceThread ioth(true, true, true);
 
 	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
 	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
@@ -433,7 +489,7 @@ TEST(Socket_asyncReceiveSome_timeout)
 
 TEST(Socket_asyncReceiveSome_peerDisconnect)
 {
-	ServiceThread ioth;
+	ServiceThread ioth(true, true, true);
 
 	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
 	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
@@ -466,7 +522,7 @@ TEST(Socket_asyncReceiveSome_peerDisconnect)
 // Service thread itself, so the Reactor doesn't have a chance to run.
 TEST(Socket_asyncSendSome_cancel)
 {
-	ServiceThread ioth;
+	ServiceThread ioth(true, true, true);
 
 	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
 	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
@@ -504,7 +560,7 @@ TEST(Socket_asyncSendSome_timeout)
 
 TEST(Socket_asyncSendSome_peerDisconnect)
 {
-	ServiceThread ioth;
+	ServiceThread ioth(true, true, true);
 
 	auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT);
 	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
@@ -576,7 +632,7 @@ TEST(Socket_multiple_connections)
 	{
 		auto ft = std::async(std::launch::async, [&numAccepts, &numDone, &itemsPerThread, i]
 		{
-			ServiceThread ioth;
+			ServiceThread ioth(true, true, true);
 
 			auto ac = std::make_shared<AcceptorSession<>>(ioth.service, SERVER_PORT+i);
 			Semaphore done;
@@ -602,13 +658,15 @@ TEST(Socket_multiple_connections)
 	CHECK_EQUAL(numThreads*itemsPerThread, numDone.load());
 }
 
+//! Tests a big transfer, to make it can really handle size_t sizes.
+// This is because sockets sends/receives only allow a 32-bits size, but the API puts together multiple socket
+// calls to make it possible to send/receive data with a real size_t size.
 TEST(Socket_bigTransfer)
 {
-
 	constexpr size_t bigbufsize = INTENSIVE_TEST ? (size_t(INT_MAX) + 1) : (size_t(INT_MAX) / 4);
 
 	auto serverth = std::thread( [bigbufsize]{
-		ServiceThread ioth;
+		ServiceThread ioth(false, false, false);
 		auto bigbuf = std::shared_ptr<char>(new char[bigbufsize], [](char* p) { delete[] p; });
 
 		Acceptor acceptor(ioth.service);
@@ -629,11 +687,13 @@ TEST(Socket_bigTransfer)
 			done.notify();
 		});
 
+		ioth.run();
+		ioth.finish();
 		done.wait();
 	});
 
 	auto clientth = std::thread( [bigbufsize]{
-		ServiceThread ioth;
+		ServiceThread ioth(false, false, false);
 		auto bigbuf = std::shared_ptr<char>(new char[bigbufsize], [](char* p) { delete[] p; });
 		auto ptr = bigbuf.get();
 		for (size_t i = 0; i < bigbufsize; i++)
@@ -649,6 +709,8 @@ TEST(Socket_bigTransfer)
 			CHECK_EQUAL(bigbufsize, transfered);
 			done.notify();
 		});
+		ioth.run();
+		ioth.finish();
 		done.wait();
 	});
 
@@ -687,7 +749,6 @@ TEST(Socket_sendSome_seceiveSome_ok)
 
 TEST(Socket_receiveSome_timeout)
 {
-	ServiceThread ioth;
 	Service service;
 
 	Acceptor ac(service);
@@ -713,7 +774,6 @@ TEST(Socket_receiveSome_timeout)
 
 TEST(Socket_receiveSome_disconnect)
 {
-	ServiceThread ioth;
 	Service service;
 
 	Acceptor ac(service);
@@ -737,7 +797,6 @@ TEST(Socket_receiveSome_disconnect)
 
 TEST(Socket_receiveSome_error)
 {
-	ServiceThread ioth;
 	Service service;
 
 	Acceptor ac(service);
@@ -768,7 +827,6 @@ TEST(Socket_sendSome_timeout)
 
 TEST(Socket_sendSome_disconnect)
 {
-	ServiceThread ioth;
 	Service service;
 
 	Acceptor ac(service);
@@ -800,7 +858,6 @@ TEST(Socket_sendSome_disconnect)
 
 TEST(Socket_sendSome_error)
 {
-	ServiceThread ioth;
 	Service service;
 
 	Acceptor ac(service);
@@ -826,7 +883,6 @@ TEST(Socket_sendSome_error)
 
 TEST(receive_ok)
 {
-	ServiceThread ioth;
 	Service service;
 
 	Acceptor ac(service);
@@ -867,7 +923,6 @@ TEST(receive_ok)
 
 TEST(receive_timeout)
 {
-	ServiceThread ioth;
 	Service service;
 
 	Acceptor ac(service);
@@ -910,7 +965,6 @@ TEST(receive_timeout)
 
 TEST(receive_peerDisconnect)
 {
-	ServiceThread ioth;
 	Service service;
 
 	Acceptor ac(service);

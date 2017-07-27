@@ -38,24 +38,47 @@ struct AcceptorSession : std::enable_shared_from_this<AcceptorSession<Data>>
 	Data data;
 };
 
+//! Helper class to run a Service in a seperate thread.
 struct ServiceThread
 {
 	Service service;
 	std::thread th;
 	UnitTest::Timer timer;
-	ServiceThread()
+	bool doStop = false;
+	bool keepAlive = false;
+	explicit ServiceThread(bool autoRun, bool keepAlive, bool doStop)
+		: doStop(doStop)
+		, keepAlive(keepAlive)
 	{
 		timer.Start();
-		th = std::thread([this]()
-		{
-			//UnitTest::TimeHelpers::SleepMs(500);
-			service.run();
-		});
+		if (autoRun)
+			run();
 	}
 
 	~ServiceThread()
 	{
-		service.stop();
-		th.join();
+		finish();
 	}
+
+	void run()
+	{
+		CHECK(th.joinable() == false);
+		th = std::thread([this]()
+		{
+			//UnitTest::TimeHelpers::SleepMs(500);
+			std::unique_ptr<Service::Work> work;
+			if (keepAlive)
+				work = std::make_unique<Service::Work>(service);
+			service.run();
+		});
+	}
+
+	void finish()
+	{
+		if (doStop)
+			service.stop();
+		if (th.joinable())
+			th.join();
+	}
+
 };

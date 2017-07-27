@@ -78,9 +78,8 @@ private:
 		auto session = std::make_shared<ServerSession>(m_acceptor.getService());
 		m_acceptor.asyncAccept(session->m_socket, -1, [this, session](const Error& ec)
 		{
-			if (ec)
-				throw std::runtime_error(ec.msg());
-			session->start();
+			if (!ec)
+				session->start();
 			do_accept();
 		});
 	}

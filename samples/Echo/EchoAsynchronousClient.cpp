@@ -4,9 +4,9 @@ A simple echo client.
 It connects to a server, sends the specified string, and waits for the server to send it back.
 
 Using asynchronous functions for such a simple client only complicates the code, and this sample
-is only provided as an example.
+is only provided as an example how it can be done.
 Take a look at the EchoSynchronousClient for the synchronous version of this, which is shorter and
-easy to follow.
+easier to follow.
 
 */
 
@@ -36,7 +36,7 @@ public:
 		asyncSend(m_socket, msg, len, -1, [this, self](const Error& ec, size_t transfered)
 		{
 			if (ec)
-				throw std::runtime_error(ec.msg());
+				printf("Error sending data: '%s'", ec.msg());
 		});
 
 		auto inBuf = std::shared_ptr<char>(new char[len+1], [](char* p) { delete[] p; });
@@ -74,7 +74,8 @@ int main(int argc, char* argv[])
 		std::cout << "Enter message: ";
 		char out[maxLength];
 		std::cin.getline(out, maxLength);
-		session->start(out);
+		if (strlen(out))
+			session->start(out);
 
 		service.run();
 		return EXIT_SUCCESS;

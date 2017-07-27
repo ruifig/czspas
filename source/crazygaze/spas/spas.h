@@ -735,8 +735,7 @@ namespace detail
 	{
 		PostHandler userHandler;
 		template<typename H>
-		PostOperation(H&& h)
-			: userHandler(std::forward<H>(h)) {}
+		PostOperation(Service& io, H&& h) : userHandler(std::forward<H>(h)) { }
 		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override {}
 		virtual void callUserHandler() { userHandler(); }
 	};
@@ -744,9 +743,7 @@ namespace detail
 	struct SocketOperation : public Operation
 	{
 		SocketHelper& owner;
-		explicit SocketOperation(SocketHelper& owner) : owner(owner)
-		{
-		}
+		explicit SocketOperation(SocketHelper& owner) : owner(owner) { }
 	};
 
 	struct AcceptOperation : public SocketOperation
@@ -1231,6 +1228,35 @@ public:
 class Service : public detail::BaseService
 {
 public:
+
+	// #TODO Document this
+	class Work
+	{
+	public:
+		explicit Work(Service& io) : m_io(&io)
+		{
+			m_io->workStarted();
+		}
+		explicit Work(const Work& other) : m_io(other.m_io)
+		{
+			m_io->workStarted();
+		}
+		explicit Work(Work&& other) : m_io(other.m_io)
+		{
+			other.m_io = nullptr;
+		}
+		// No need to complicate further by allowing assignment. Constructors are enough.
+		Work& operator=(const Work& other) = delete;
+
+		~Work()
+		{
+			if (m_io)
+				m_io->workFinished();
+		}
+	private:
+		Service* m_io;
+	};
+
 	Service()
 	{
 	}
@@ -1238,13 +1264,22 @@ public:
 	{
 	}
 
-	void run()
+	// #TODO : make this the only "run". This is experimental to behave more like Asio. It returns when there is no
+	// more work
+	size_t run()
 	{
+		if (m_outstandingWork == 0)
+		{
+			stop();
+			return 0;
+		}
+
 		// NOTE: At first, I was resetting m_stopped to false here, but that is problematic:
 		// E.g:
 		// - One thread id created to call run
 		// - Another thread calls stop() before the first thread has a chance to call run().
 		// - The stop would be ignored (since we would be setting m_stopped to true here.
+		size_t done = 0;
 
 		while (!m_stopped)
 		{
@@ -1252,28 +1287,44 @@ public:
 				std::lock_guard<std::mutex> lk(m_mtx);
 				std::swap(m_tmpready, m_ready);
 			}
-			while (m_tmpready.size())
-			{
-				m_tmpready.front()->callUserHandler();
-				m_tmpready.pop();
-			}
 
+			// NOTE: We need to run ready handlers before and after checking the reactor.
+			// If for example we only run ready handlers after the reactor.runOnce, then the service might get stuck
+			// even if it has handlers to execute. Example of such case:
+			// - Thread A calls Service::run, and blocks on the reactor, waiting for work
+			// - Thread B calls (e.g) Acceptor::asyncAccept
+			// - Thread B waits X seconds, so that thread A has time to process anything and get again blocked on the reactor
+			// - Thread B calls Acceptor::cancel . This adds the cancelled handler to m_ready
+			// - Thread A will gets unblocked, and does
+			//		- runReadyHandlers(m_tmpready); // Nothing done, since the only m_ready has handlers
+			//		- loop and do std::swap(m_tmpread, m_ready) 
+			//		- next m_reactor.runOnce will block forever, even tho we have handlers in m_tmpready
+			//
+			done += runReadyHandlers(m_tmpready);
 			m_reactor.runOnce(m_tmpready);
-
-			while (m_tmpready.size())
-			{
-				m_tmpready.front()->callUserHandler();
-				m_tmpready.pop();
-			}
+			done += runReadyHandlers(m_tmpready);
 		}
+
+		return done;
+	}
+
+	size_t runReadyHandlers(std::queue<std::unique_ptr<detail::Operation>>& q)
+	{
+		size_t done = 0;
+		while (q.size())
+		{
+			q.front()->callUserHandler();
+			workFinished();
+			done++;
+			q.pop();
+		}
+		return done;
 	}
 
 	template<typename H, typename = detail::IsPostHandler<H>>
 	void post(H&& h)
 	{
-		std::lock_guard<std::mutex> lk(m_mtx);
-		m_ready.push(std::make_unique<detail::PostOperation>(std::forward<H>(h)));
-		m_reactor.interrupt();
+		post(std::make_unique<detail::PostOperation>(*this, std::forward<H>(h)));
 	}
 
 	void stop()
@@ -1292,8 +1343,22 @@ public:
 		m_stopped = false;
 	}
 
-
 private:
+
+	void workStarted()
+	{
+		++m_outstandingWork;
+	}
+
+	void workFinished()
+	{
+		auto n = --m_outstandingWork;
+		CZSPAS_ASSERT(n >= 0);
+		if (n==0)
+		{
+			stop();
+		}
+	}
 
 	void cancel(SocketHandle fd)
 	{
@@ -1304,22 +1369,26 @@ private:
 	void post(std::unique_ptr<detail::Operation> op)
 	{
 		std::lock_guard<std::mutex> lk(m_mtx);
+		workStarted();
 		m_ready.push(std::move(op));
 		m_reactor.interrupt();
 	}
 
 	void addOperation(SocketHandle fd, detail::Reactor::EventType type, std::unique_ptr<detail::Operation> op, int timeoutMs)
 	{
+		workStarted();
 		m_reactor.addOperation(fd, type, std::move(op), timeoutMs);
 	}
 
 	friend class Acceptor;
 	friend class Socket;
+	friend class Work;
 	std::mutex m_mtx;
 	detail::Reactor m_reactor;
 	std::queue<std::unique_ptr<detail::Operation>> m_ready;
 	std::queue<std::unique_ptr<detail::Operation>> m_tmpready;
 	std::atomic<bool> m_stopped{false};
+	std::atomic<int> m_outstandingWork{ 0 };
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -1332,6 +1401,11 @@ public:
 		: m_base(service)
 	{
 	}
+
+	Socket(const Socket&) = delete;
+	Socket& operator= (const Socket&) = delete;
+	Socket(Socket&&) = delete;
+	Socket& operator= (Socket&&) = delete;
 
 	~Socket()
 	{
