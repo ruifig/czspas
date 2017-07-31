@@ -119,6 +119,8 @@ class Acceptor;
 class Socket;
 class Service;
 
+//#define CZSPAS_ENABLE_LOGGING 1
+
 #if CZSPAS_ENABLE_LOGGING
 	#ifndef CZSPAS_INFO
 		#define CZSPAS_INFO(fmt, ...) ::cz::spas::detail::DefaultLog::out(false, "Info: ", fmt, ##__VA_ARGS__)
@@ -319,11 +321,13 @@ namespace detail
 		}
 
 		ErrorWrapper() { err = WSAGetLastError(); }
+		explicit ErrorWrapper(int err_) : err(err_) {}
 		std::string msg() const { return getWin32ErrorMsg(err); }
 		bool isBlockError() const { return err == WSAEWOULDBLOCK; }
 		int getCode() const { return err; };
 #else
 		ErrorWrapper() { err = errno; }
+		explicit ErrorWrapper(int err_) : err(err_) {}
 		bool isBlockError() const { return err == EAGAIN || err == EWOULDBLOCK || err == EINPROGRESS; }
 		// #TODO Build custom error depending on the error number
 		std::string msg() const { return strerror(err); }
@@ -394,15 +398,37 @@ namespace detail
 		{
 			if (s == CZSPAS_INVALID_SOCKET)
 				return;
+			int res;
 #if _WIN32
 			if (doshutdown)
 				::shutdown(s, SD_BOTH);
-			::closesocket(s);
+			res = ::closesocket(s);
 #else
 			if (doshutdown)
 				::shutdown(s, SHUT_RDWR);
-			::close(s);
+			res = ::close(s);
 #endif
+
+			//
+			// According to Unix and Windows documentation, it is possible for the close to fail
+			// with EWOULDBLOCK.
+			// If that happens, put the socket back to blocking mode and try again
+			// Asio also does this (include\asio\detail\impl\socket_ops.ipp : close)
+			if (res!=0 && ErrorWrapper().isBlockError())
+			{
+				detail::utils::setBlocking(s, true);
+#if _WIN32
+				res = ::closesocket(s);
+#else
+				res = ::close(s);
+#endif
+				if (res!=0)
+				{
+					ErrorWrapper e;
+					CZSPAS_ERROR("Socket close failed and it will leak the handle: '%s'", e.msg().c_str());
+				}
+			}
+
 			s = CZSPAS_INVALID_SOCKET;
 		}
 
@@ -1607,6 +1633,13 @@ public:
 			getService().cancel(m_base.s);
 	}
 
+	void close()
+	{
+		cancel();
+		if (m_base.isValid())
+			detail::utils::closeSocket(m_base.s, false);
+	}
+
 	Service& getService()
 	{
 		return m_base.getService();
@@ -1742,6 +1775,13 @@ public:
 	{
 		if (m_base.isValid())
 			m_base.getService().cancel(m_base.s);
+	}
+
+	void close()
+	{
+		cancel();
+		if (m_base.isValid())
+			detail::utils::closeSocket(m_base.s, false);
 	}
 
 	Service& getService()
