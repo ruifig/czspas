@@ -230,9 +230,92 @@ using PostHandler = std::function<void()>;
 using ConnectHandler = std::function<void(const Error& ec)>;
 using TransferHandler = std::function<void(const Error& ec, size_t transfered)>;
 
-
 namespace detail
 {
+
+	//////////////////////////////////////////////////////////////////////////
+	//! Utility class to make sure a give chunk of code is executed no matter what when unwinding the callstack
+	template<class Func>
+	class ScopeGuard
+	{
+	public:
+		ScopeGuard(Func f)
+			: m_fun(std::move(f))
+			, m_active(true)
+		{
+		}
+
+		~ScopeGuard()
+		{
+			if (m_active)
+				m_fun();
+		}
+
+		void dismiss()
+		{
+			m_active = false;
+		}
+
+		ScopeGuard() = delete;
+		ScopeGuard(const ScopeGuard&) = delete;
+		ScopeGuard& operator=(const ScopeGuard&) = delete;
+		ScopeGuard(ScopeGuard&& rhs)
+			: m_func(std::move(rhs.m_func))
+			, m_active(rhs.active)
+		{
+			rhs.dismiss();
+		}
+
+	private:
+		Func m_fun;
+		bool m_active;
+	};
+
+	/**
+		Using a template function to create guards, since template functions can do type deduction,
+		meaning shorter code.
+
+		auto g1 = scopeGuard( [&] { cleanup(); } );
+	*/
+	template< class Func>
+	ScopeGuard<Func> scopeGuard(Func f)
+	{
+		return ScopeGuard<Func>(std::move(f));
+	}
+
+	/**
+		Some macro magic so it's easy to set anonymous scope guards. e.g:
+
+		// some code ...
+		SCOPE_EXIT { some cleanup code };
+		// more code ...
+		SCOPE_EXIT { more cleanup code };
+		// more code ...
+	 */
+	enum class ScopeGuardOnExit {};
+	template <typename Func>
+	__forceinline cz::spas::detail::ScopeGuard<Func> operator+(ScopeGuardOnExit, Func&& fn) {
+		return cz::spas::detail::ScopeGuard<Func>(std::forward<Func>(fn));
+	}
+
+	#define CZSPAS_CONCATENATE_IMPL(s1,s2) s1##s2
+	#define CZSPAS_CONCATENATE(s1,s2) CZSPAS_CONCATENATE_IMPL(s1,s2)
+
+	// Note: __COUNTER__ Expands to an integer starting with 0 and incrementing by 1 every time it is used in a source file or included headers of the source file.
+	#ifdef __COUNTER__
+		#define CZSPAS_ANONYMOUS_VARIABLE(str) \
+			CZSPAS_CONCATENATE(str,__COUNTER__)
+	#else
+		#define CZSPAS_ANONYMOUS_VARIABLE(str) \
+			CZSPAS_CONCATENATE(str,__LINE__)
+	#endif
+
+	#define CZSPAS_SCOPE_EXIT \
+		auto CZSPAS_ANONYMOUS_VARIABLE(SCOPE_EXIT_STATE) \
+		= cz::spas::detail::ScopeGuardOnExit() + [&]()
+	//////////////////////////////////////////////////////////////////////////
+
+
 	// To work around the Windows vs Linux shenanigans with strncpy/strcpy/strlcpy, etc.
 	template<unsigned int N>
 	inline void copyStrToFixedBuffer(char (&dst)[N], const char* src)
@@ -1311,7 +1394,20 @@ public:
 		{
 			{
 				std::lock_guard<std::mutex> lk(m_mtx);
-				std::swap(m_tmpready, m_ready);
+				// If an exception is thrown from a user handler, m_tmpready might still have items to execute. So
+				// we do:
+				// - If m_tmpready is empty, and we can do a swap since its faster
+				// - If m_tmpready is not empty, append the m_ready contents
+				if (m_tmpready.size() == 0)
+					std::swap(m_tmpready, m_ready);
+				else
+				{
+					while (m_ready.size())
+					{
+						m_tmpready.push(std::move(m_ready.front()));
+						m_ready.pop();
+					}
+				}
 			}
 
 			// NOTE: We need to run ready handlers before and after checking the reactor.
@@ -1339,10 +1435,12 @@ public:
 		size_t done = 0;
 		while (q.size())
 		{
-			q.front()->callUserHandler();
-			workFinished();
 			done++;
+			std::unique_ptr<detail::Operation> op = std::move(q.front());
 			q.pop();
+			// Make sure we consider this item as finished even if an exception is thrown from the user handler
+			CZSPAS_SCOPE_EXIT{ workFinished(); };
+			op->callUserHandler();
 		}
 		return done;
 	}
