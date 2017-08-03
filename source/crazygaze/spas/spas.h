@@ -755,19 +755,19 @@ namespace detail
 
 		SocketHelper(detail::BaseService& owner)
 			: owner(owner)
-			, pendingAccept(false)
-			, pendingConnect(false)
-			, pendingSend(false)
-			, pendingReceive(false)
+			, pendingAccept(0)
+			, pendingConnect(0)
+			, pendingSend(0)
+			, pendingReceive(0)
 		{
 		}
 
 		virtual ~SocketHelper()
 		{
-			CZSPAS_ASSERT(pendingAccept.load() == false);
-			CZSPAS_ASSERT(pendingConnect.load() == false);
-			CZSPAS_ASSERT(pendingSend.load() == false);
-			CZSPAS_ASSERT(pendingReceive.load() == false);
+			CZSPAS_ASSERT(pendingAccept.load() == 0);
+			CZSPAS_ASSERT(pendingConnect.load() == 0);
+			CZSPAS_ASSERT(pendingSend.load() == 0);
+			CZSPAS_ASSERT(pendingReceive.load() == 0);
 		}
 
 		//! Only to be used with care, if the user wants to access the underlying socket handle
@@ -823,10 +823,10 @@ namespace detail
 		// NOTE: In the Operation structs, these need to be set to false in both the destructor and BEFORE calling the user handler
 		//		1. Its needed in the destructor, because the operation might be destroyed without calling the user handler (e.g: Cancelled)
 		//		2. BEFORE calling the user handler, because from the handle the user might want to queue another operation of the same type
-		std::atomic<bool> pendingAccept; 
-		std::atomic<bool> pendingConnect;
-		std::atomic<bool> pendingSend;
-		std::atomic<bool> pendingReceive;
+		std::atomic<int> pendingAccept; 
+		std::atomic<int> pendingConnect;
+		std::atomic<int> pendingSend;
+		std::atomic<int> pendingReceive;
 
 		std::pair<std::string, int> localAddr;
 		std::pair<std::string, int> peerAddr;
@@ -835,6 +835,7 @@ namespace detail
 	struct Operation
 	{
 		Error ec;
+		bool handlerCalled = false;
 		virtual ~Operation() { }
 		virtual void exec(SocketHandle fd, bool hasPOLLHUP) = 0;
 		virtual void callUserHandler() = 0;
@@ -846,7 +847,11 @@ namespace detail
 		template<typename H>
 		PostOperation(Service& io, H&& h) : userHandler(std::forward<H>(h)) { }
 		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override {}
-		virtual void callUserHandler() { userHandler(); }
+		virtual void callUserHandler()
+		{
+			handlerCalled = true;
+			userHandler();
+		}
 	};
 
 	struct SocketOperation : public Operation
@@ -866,12 +871,13 @@ namespace detail
 			, sock(dst)
 			, userHandler(std::forward<H>(h))
 		{
-			owner.pendingAccept = true;
+			++owner.pendingAccept;
 		}
 
 		~AcceptOperation()
 		{
-			owner.pendingAccept = false;
+			if (!handlerCalled)
+				--owner.pendingAccept;
 		}
 
 		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override
@@ -890,7 +896,8 @@ namespace detail
 
 		virtual void callUserHandler() override
 		{
-			owner.pendingAccept = false;
+			handlerCalled = true;
+			--owner.pendingAccept; // Decrement this BEFORE calling the user handler
 			userHandler(ec);
 		}
 	};
@@ -904,12 +911,13 @@ namespace detail
 			: SocketOperation(owner)
 			, userHandler(std::forward<H>(h))
 		{
-			owner.pendingConnect = true;
+			++owner.pendingConnect;
 		}
 
 		~ConnectOperation()
 		{
-			owner.pendingConnect = false;
+			if (!handlerCalled)
+				--owner.pendingConnect;
 		}
 
 		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override
@@ -920,7 +928,8 @@ namespace detail
 
 		virtual void callUserHandler() override
 		{
-			owner.pendingConnect = false;
+			handlerCalled = true;
+			--owner.pendingConnect; // Decrement this BEFORE calling the user handler
 			userHandler(ec);
 		}
 	};
@@ -949,12 +958,13 @@ namespace detail
 		SendOperation(SocketHelper& owner, const char* buf, size_t len, H&& h)
 			: TransferOperation(owner, const_cast<char*>(buf), len, std::forward<H>(h))
 		{
-			owner.pendingSend = true;
+			++owner.pendingSend;
 		}
 
 		~SendOperation()
 		{
-			owner.pendingSend = false;
+			if (!handlerCalled)
+				--owner.pendingSend;
 		}
 
 		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override
@@ -991,7 +1001,8 @@ namespace detail
 
 		virtual void callUserHandler() override
 		{
-			owner.pendingSend = false;
+			handlerCalled = true;
+			--owner.pendingSend; // Decrement this BEFORE calling the user handler
 			userHandler(ec, transfered);
 		}
 	};
@@ -1002,12 +1013,13 @@ namespace detail
 		ReceiveOperation(SocketHelper& owner, char* buf, size_t len, H&& h)
 			: TransferOperation(owner, buf, len, std::forward<H>(h))
 		{
-			owner.pendingReceive = true;
+			++owner.pendingReceive;
 		}
 
 		~ReceiveOperation()
 		{
-			owner.pendingReceive = false;
+			if (!handlerCalled)
+				--owner.pendingReceive;
 		}
 
 		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override
@@ -1054,7 +1066,8 @@ namespace detail
 
 		virtual void callUserHandler() override
 		{
-			owner.pendingReceive = false;
+			handlerCalled = true;
+			--owner.pendingReceive; // Decrement this BEFORE calling the user handler
 			userHandler(ec, transfered);
 		}
 	};
@@ -1557,7 +1570,7 @@ public:
 	void asyncConnect(const char* ip, int port, int timeoutMs, ConnectHandler h)
 	{
 		CZSPAS_ASSERT(!m_base.isValid());
-		CZSPAS_ASSERT(m_base.pendingConnect.load()==false && "There is already a pending connect operation");
+		CZSPAS_ASSERT(m_base.pendingConnect.load()==0 && "There is already a pending connect operation");
 		CZSPAS_INFO("Socket %p: asyncConnect(%s,%d, H, %d)", this, ip, port, timeoutMs);
 
 		auto op = std::make_unique<detail::ConnectOperation>(m_base, std::move(h));
@@ -1654,7 +1667,7 @@ public:
 	{
 		CZSPAS_ASSERT(len > 0);
 		CZSPAS_ASSERT(m_base.isValid());
-		CZSPAS_ASSERT(m_base.pendingSend.load()==false && "There is already a pending send operation");
+		CZSPAS_ASSERT(m_base.pendingSend.load()==0 && "There is already a pending send operation");
 		auto op = std::make_unique<detail::SendOperation>(m_base, buf, len, std::forward<H>(h));
 		getService().addOperation(m_base.s, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
 	}
@@ -1714,7 +1727,7 @@ public:
 	{
 		CZSPAS_ASSERT(len > 0);
 		CZSPAS_ASSERT(m_base.isValid());
-		CZSPAS_ASSERT(m_base.pendingReceive.load()==false && "There is already a pending receive operation");
+		CZSPAS_ASSERT(m_base.pendingReceive.load()==0 && "There is already a pending receive operation");
 		auto op = std::make_unique<detail::ReceiveOperation>(m_base, buf, len, std::forward<H>(h));
 		getService().addOperation(m_base.s, detail::Reactor::EventType::Read, std::move(op), timeoutMs);
 	}
@@ -1858,7 +1871,7 @@ public:
 	{
 		CZSPAS_ASSERT(m_base.isValid());
 		CZSPAS_ASSERT(!sock.m_base.isValid());
-		CZSPAS_ASSERT(m_base.pendingAccept.load()==false && "There is already a pending accept operation");
+		CZSPAS_ASSERT(m_base.pendingAccept.load()==0 && "There is already a pending accept operation");
 		auto op = std::make_unique<detail::AcceptOperation>(m_base, sock.m_base, std::forward<H>(h));
 		getService().addOperation(m_base.s, detail::Reactor::EventType::Read, std::move(op), timeoutMs);
 	}
