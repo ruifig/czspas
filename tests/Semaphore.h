@@ -43,7 +43,7 @@ private:
 class ZeroSemaphore
 {
 public:
-	ZeroSemaphore() {}
+	ZeroSemaphore(int count = 0) : m_count(count) {}
 	void increment()
 	{
 		std::unique_lock<std::mutex> lock(m_mtx);
@@ -84,5 +84,5 @@ public:
 private:
 	std::mutex m_mtx;
 	std::condition_variable m_cv;
-	int m_count = 0;
+	int m_count;
 };

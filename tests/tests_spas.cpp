@@ -1007,4 +1007,90 @@ TEST(receive_peerDisconnect)
 	senderFt.get();
 }
 
+//
+//
+// Throw exceptions from user handlers
+void exception_safety_setupAccept(cz::spas::Acceptor& ac, ZeroSemaphore& sem, bool& cancelled)
+{
+	auto serverSideSession = std::make_shared<Session<>>(ac.getService());
+	ac.asyncAccept(serverSideSession->sock, [&ac, &sem, &cancelled, serverSideSession](const Error& ec)
+	{
+		if (ec)
+		{
+			if (ec.code == Error::Code::Cancelled)
+			{
+				cancelled = true;
+				return;
+			}
+			else
+			{
+				CHECK(0); // always fail if it gets here
+			}
+
+		}
+		else
+		{
+			sem.decrement();
+		}
+
+		exception_safety_setupAccept(ac, sem, cancelled);
+	});
+}
+TEST(exception_safety)
+{
+	Service service;
+
+	int const numClients = 4;
+
+	// Setup the acceptor before starting the Service, so the service has work
+	spas::Acceptor acceptor(service);
+	auto ec = acceptor.listen(SERVER_PORT);
+	CHECK_CZSPAS(ec);
+	ZeroSemaphore acceptSem(numClients);
+	bool cancelled = false;
+	exception_safety_setupAccept(acceptor, acceptSem, cancelled);
+
+	int handledCount = 0;
+	auto ioth = std::thread([&service, &handledCount]
+	{
+		while (true)
+		{
+			try
+			{
+				service.run();
+				return; // Normal return
+			}
+			catch (std::exception& exc)
+			{
+				handledCount++;
+				CHECK_EQUAL("Testing exception", exc.what());
+			}
+		}
+	});
+
+	std::vector<std::unique_ptr<Session<bool>>> clients;
+	ZeroSemaphore sem2;
+	for (int i = 0; i < numClients; i++)
+	{
+		clients.push_back(std::make_unique<Session<bool>>(service));
+		sem2.increment();
+		clients.back()->sock.asyncConnect("127.0.0.1", SERVER_PORT, [&sem2, c = clients.back().get()](const spas::Error& ec)
+		{
+			sem2.decrement();
+			CHECK_CZSPAS(ec);
+			throw std::runtime_error("Testing exception");
+		});
+	}
+
+	sem2.wait();
+	acceptSem.wait();
+	service.post([&acceptor]
+	{
+		acceptor.cancel(); // The acceptor is the only one chaining operations, so cancelling should cause the Service to run out of work
+	});
+	ioth.join();
+	CHECK_EQUAL(numClients, handledCount);
+	CHECK(cancelled);
+}
+
 }

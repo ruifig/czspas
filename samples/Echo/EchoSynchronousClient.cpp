@@ -41,10 +41,14 @@ int main(int argc, char* argv[])
 		std::cin.getline(out, maxLength);
 		auto msgLength = strlen(out) + 1;
 		send(s, out, msgLength, -1, ec);
+		if (ec)
+			return EXIT_FAILURE;
 
 		// Receive message
 		char in[maxLength];
 		receive(s, in, msgLength, -1, ec);
+		if (ec)
+			return EXIT_FAILURE;
 		printf("Reply is: %s\n", in);
 
 		return EXIT_SUCCESS;

@@ -1,5 +1,6 @@
 #pragma once
 
+// The Data template type is just a dummy way to add state to a session if a unit test requires it
 template<typename Data=int>
 struct Session : std::enable_shared_from_this<Session<Data>>
 {
@@ -8,7 +9,7 @@ struct Session : std::enable_shared_from_this<Session<Data>>
 	{
 	}
 	Socket sock;
-	// ... Add more state here if necessary
+	Data data;
 };
 
 template<typename Data=int>
