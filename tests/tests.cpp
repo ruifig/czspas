@@ -2,7 +2,7 @@
 #include "UnitTest++/TestReporterStdout.h"
 
 // If set to 1, the tests will run non-stop, to try and find possible multithreaded problems
-#define LOOP_TESTS 1
+#define LOOP_TESTS 0
 
 UnitTest::Timer gTimer;
 

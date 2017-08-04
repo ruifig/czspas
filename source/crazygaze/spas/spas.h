@@ -835,8 +835,29 @@ namespace detail
 	struct Operation
 	{
 		Error ec;
-		bool handlerCalled = false;
-		virtual ~Operation() { }
+		std::atomic<int>* dbgCounter = false;
+		explicit Operation(std::atomic<int>* dbgCounter)
+			: dbgCounter(dbgCounter)
+		{
+			if (dbgCounter)
+				++(*dbgCounter);
+		}
+
+		virtual ~Operation()
+		{
+			// Derived classed must call setFinished where required
+			assert(dbgCounter==nullptr);
+		}
+
+		void setFinished()
+		{
+			if (dbgCounter)
+			{
+				--(*dbgCounter);
+				dbgCounter = nullptr;
+			}
+		}
+
 		virtual void exec(SocketHandle fd, bool hasPOLLHUP) = 0;
 		virtual void callUserHandler() = 0;
 	};
@@ -845,11 +866,14 @@ namespace detail
 	{
 		PostHandler userHandler;
 		template<typename H>
-		PostOperation(Service& io, H&& h) : userHandler(std::forward<H>(h)) { }
+		PostOperation(Service& io, H&& h)
+			: Operation(nullptr)
+			, userHandler(std::forward<H>(h))
+		{
+		}
 		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override {}
 		virtual void callUserHandler()
 		{
-			handlerCalled = true;
 			userHandler();
 		}
 	};
@@ -857,7 +881,11 @@ namespace detail
 	struct SocketOperation : public Operation
 	{
 		SocketHelper& owner;
-		explicit SocketOperation(SocketHelper& owner) : owner(owner) { }
+		explicit SocketOperation(SocketHelper& owner, std::atomic<int>* dbgCounter)
+			: Operation(dbgCounter)
+			, owner(owner)
+		{
+		}
 	};
 
 	struct AcceptOperation : public SocketOperation
@@ -867,17 +895,15 @@ namespace detail
 
 		template<typename H>
 		AcceptOperation(SocketHelper& owner, SocketHelper& dst, H&& h)
-			: SocketOperation(owner)
+			: SocketOperation(owner, &owner.pendingAccept)
 			, sock(dst)
 			, userHandler(std::forward<H>(h))
 		{
-			++owner.pendingAccept;
 		}
 
 		~AcceptOperation()
 		{
-			if (!handlerCalled)
-				--owner.pendingAccept;
+			setFinished();
 		}
 
 		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override
@@ -896,8 +922,6 @@ namespace detail
 
 		virtual void callUserHandler() override
 		{
-			handlerCalled = true;
-			--owner.pendingAccept; // Decrement this BEFORE calling the user handler
 			userHandler(ec);
 		}
 	};
@@ -908,16 +932,14 @@ namespace detail
 
 		template<typename H>
 		ConnectOperation(SocketHelper& owner, H&& h)
-			: SocketOperation(owner)
+			: SocketOperation(owner, &owner.pendingConnect)
 			, userHandler(std::forward<H>(h))
 		{
-			++owner.pendingConnect;
 		}
 
 		~ConnectOperation()
 		{
-			if (!handlerCalled)
-				--owner.pendingConnect;
+			setFinished();
 		}
 
 		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override
@@ -928,8 +950,6 @@ namespace detail
 
 		virtual void callUserHandler() override
 		{
-			handlerCalled = true;
-			--owner.pendingConnect; // Decrement this BEFORE calling the user handler
 			userHandler(ec);
 		}
 	};
@@ -942,29 +962,26 @@ namespace detail
 		TransferHandler userHandler;
 
 		template<typename H>
-		TransferOperation(SocketHelper& owner, char* buf, size_t len, H&& h)
-			: SocketOperation(owner)
+		TransferOperation(SocketHelper& owner, std::atomic<int>* dbgCounter, char* buf, size_t len, H&& h)
+			: SocketOperation(owner, dbgCounter)
 			, buf(buf)
 			, bufSize(len)
 			, userHandler(std::forward<H>(h))
 		{
 		}
 
+		~TransferOperation()
+		{
+			setFinished();
+		}
 	};
 
 	struct SendOperation : public TransferOperation
 	{
 		template<typename H>
 		SendOperation(SocketHelper& owner, const char* buf, size_t len, H&& h)
-			: TransferOperation(owner, const_cast<char*>(buf), len, std::forward<H>(h))
+			: TransferOperation(owner, &owner.pendingSend, const_cast<char*>(buf), len, std::forward<H>(h))
 		{
-			++owner.pendingSend;
-		}
-
-		~SendOperation()
-		{
-			if (!handlerCalled)
-				--owner.pendingSend;
 		}
 
 		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override
@@ -1001,8 +1018,6 @@ namespace detail
 
 		virtual void callUserHandler() override
 		{
-			handlerCalled = true;
-			--owner.pendingSend; // Decrement this BEFORE calling the user handler
 			userHandler(ec, transfered);
 		}
 	};
@@ -1011,15 +1026,8 @@ namespace detail
 	{
 		template<typename H>
 		ReceiveOperation(SocketHelper& owner, char* buf, size_t len, H&& h)
-			: TransferOperation(owner, buf, len, std::forward<H>(h))
+			: TransferOperation(owner, &owner.pendingReceive, buf, len, std::forward<H>(h))
 		{
-			++owner.pendingReceive;
-		}
-
-		~ReceiveOperation()
-		{
-			if (!handlerCalled)
-				--owner.pendingReceive;
 		}
 
 		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override
@@ -1066,8 +1074,6 @@ namespace detail
 
 		virtual void callUserHandler() override
 		{
-			handlerCalled = true;
-			--owner.pendingReceive; // Decrement this BEFORE calling the user handler
 			userHandler(ec, transfered);
 		}
 	};
@@ -1453,6 +1459,7 @@ public:
 			q.pop();
 			// Make sure we consider this item as finished even if an exception is thrown from the user handler
 			CZSPAS_SCOPE_EXIT{ workFinished(); };
+			op->setFinished();
 			op->callUserHandler();
 		}
 		return done;
