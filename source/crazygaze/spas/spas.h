@@ -1256,7 +1256,6 @@ public:
 
 	~Reactor()
 	{
-		m_sockData.clear();
 		// To avoid the TIME_WAIT, we do the following:
 		// 1. Disable lingering on the client socket (m_signalOut)
 		// 2. Close client socket
@@ -1265,6 +1264,14 @@ public:
 		detail::utils::setLinger(m_signalOut, true, 0);
 		detail::utils::closeSocket(m_signalOut, false);
 		detail::utils::closeSocket(m_signalIn, false);
+	}
+
+	// Putting this in a method, so Service can call this.
+	// This is required, to make sure all Operations (the ones in Service queues, and in Reactor) are destroyed BEFORE
+	// Socket instances, otherwise we can get the asserts that there are pending Operations when destroying a Socket
+	void deleteOps()
+	{
+		m_sockData.clear();
 	}
 
 	void interrupt()
@@ -1390,10 +1397,11 @@ public:
 	}
 	~Service()
 	{
+		// Making sure all Operation objects are destroyed before Sockets, so we don't get the "pending" operations
+		// asserts while destroying sockets.
+		m_reactor.deleteOps();
 	}
 
-	// #TODO : make this the only "run". This is experimental to behave more like Asio. It returns when there is no
-	// more work
 	size_t run()
 	{
 		if (m_outstandingWork == 0)
