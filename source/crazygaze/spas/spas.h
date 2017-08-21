@@ -551,6 +551,23 @@ namespace detail
 				CZSPAS_FATAL(ErrorWrapper().msg().c_str());
 		}
 
+		static Error getSocketError(SocketHandle s)
+		{
+			int result;
+			socklen_t result_len = sizeof(result);
+			if (getsockopt(s, SOL_SOCKET, SO_ERROR, &result, &result_len)<0)
+			{
+				return ErrorWrapper().getError();
+			}
+			else
+			{
+				if (result)
+					return ErrorWrapper(result).getError();
+				else
+					return Error();
+			}
+		}
+
 		static std::pair<std::string, int> addrToPair(sockaddr_in& addr)
 		{
 			std::pair<std::string, int> res;
@@ -949,7 +966,9 @@ namespace detail
 		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override
 		{
 			CZSPAS_ASSERT(fd == owner.getHandle());
-			owner.resolveAddrs();
+			ec = detail::utils::getSocketError(fd);
+			if (!ec)
+				owner.resolveAddrs();
 		}
 
 		virtual void callUserHandler() override
@@ -1067,7 +1086,7 @@ namespace detail
 				//	- Windows:
 				//		- WSAPoll reports an error (POLLHUP)
 				//	- Linux:
-				//		- poll reports ready to ready (success), and then recv reads 0 (which means the peer disconnected)
+				//		- poll reports ready to read (success), and then recv reads 0 (which means the peer disconnected)
 				ec = Error(Error::Code::ConnectionClosed);
 			}
 			else
