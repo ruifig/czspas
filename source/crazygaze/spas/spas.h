@@ -109,6 +109,10 @@ Notes on WSAPoll:
 	#define CZSPAS_DEBUG_BREAK __builtin_trap
 #endif
 
+#ifdef __GNUG__
+	#define __forceinline __attribute__((always_inline)) inline
+#endif
+
 namespace cz
 {
 namespace spas
@@ -260,8 +264,8 @@ namespace detail
 		ScopeGuard(const ScopeGuard&) = delete;
 		ScopeGuard& operator=(const ScopeGuard&) = delete;
 		ScopeGuard(ScopeGuard&& rhs)
-			: m_func(std::move(rhs.m_func))
-			, m_active(rhs.active)
+			: m_fun(std::move(rhs.m_fun))
+			, m_active(rhs.m_active)
 		{
 			rhs.dismiss();
 		}
@@ -835,7 +839,7 @@ namespace detail
 	struct Operation
 	{
 		Error ec;
-		std::atomic<int>* dbgCounter = false;
+		std::atomic<int>* dbgCounter = nullptr;
 		explicit Operation(std::atomic<int>* dbgCounter)
 			: dbgCounter(dbgCounter)
 		{
