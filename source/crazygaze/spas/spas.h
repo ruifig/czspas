@@ -555,7 +555,7 @@ namespace detail
 		{
 			int result;
 			socklen_t result_len = sizeof(result);
-			if (getsockopt(s, SOL_SOCKET, SO_ERROR, &result, &result_len)<0)
+			if (getsockopt(s, SOL_SOCKET, SO_ERROR, (char*)&result, &result_len)<0)
 			{
 				return ErrorWrapper().getError();
 			}
