@@ -298,7 +298,7 @@ namespace detail
 	 */
 	enum class ScopeGuardOnExit {};
 	template <typename Func>
-	__forceinline cz::spas::detail::ScopeGuard<Func> operator+(ScopeGuardOnExit, Func&& fn) {
+	inline cz::spas::detail::ScopeGuard<Func> operator+(ScopeGuardOnExit, Func&& fn) {
 		return cz::spas::detail::ScopeGuard<Func>(std::forward<Func>(fn));
 	}
 
@@ -586,7 +586,7 @@ namespace detail
 				return addrToPair(addr);
 			else
 			{
-				CZSPAS_FATAL(ErrorWrapper().msg().c_str());
+				CZSPAS_ERROR(ErrorWrapper().msg().c_str());
 				return std::make_pair("", 0);
 			}
 		}
@@ -624,7 +624,7 @@ namespace detail
 
 			sockaddr_in addr;
 			addr.sin_family = AF_INET;
-			addr.sin_port = htons(port);
+			addr.sin_port = htons(static_cast<uint16_t>(port));
 			if (bindIP)
 				inet_pton(AF_INET, bindIP, &(addr.sin_addr));
 			else
@@ -664,7 +664,7 @@ namespace detail
 			sockaddr_in addr;
 			memset(&addr, 0, sizeof(addr));
 			addr.sin_family = AF_INET;
-			addr.sin_port = htons(port);
+			addr.sin_port = htons(static_cast<uint16_t>(port));
 			inet_pton(AF_INET, ip, &(addr.sin_addr));
 			if (::connect(s, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR)
 			{
@@ -1630,7 +1630,7 @@ public:
 		sockaddr_in addr;
 		memset(&addr, 0, sizeof(addr));
 		addr.sin_family = AF_INET;
-		addr.sin_port = htons(port);
+		addr.sin_port = htons(static_cast<uint16_t>(port));
 		inet_pton(AF_INET, ip, &(addr.sin_addr));
 
 		if (::connect(m_base.s, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR)
