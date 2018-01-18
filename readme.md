@@ -33,13 +33,5 @@ Documentation
 
 Check the [Wiki](https://github.com/ruifig/czspas/wiki) for documentation.
 
-Donations
-=========
-
-If you like czspas (or any of my other open source libraries), consider helping out with donations:
-
-[![Paypal](https://www.paypalobjects.com/webstatic/en_US/i/btn/png/btn_donate_cc_147x47.png)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=YYWNU5LWRH8HS)
-
-[![Patreon](https://cloud.githubusercontent.com/assets/8225057/5990484/70413560-a9ab-11e4-8942-1a63607c0b00.png)](https://www.patreon.com/RuiMVFigueira)
 
 
