@@ -1399,7 +1399,7 @@ public:
 		{
 			m_io->workStarted();
 		}
-		explicit Work(Work&& other) : m_io(other.m_io)
+		explicit Work(Work&& other) noexcept : m_io(other.m_io)
 		{
 			other.m_io = nullptr;
 		}
