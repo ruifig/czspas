@@ -1,37 +1,21 @@
-cmake_minimum_required(VERSION 3.5)
-project(czspas)
+cmake_minimum_required(VERSION 3.16)
 
-include(cmake/ucm.cmake)
-include(cmake/utils.cmake)
-
-set_property( GLOBAL PROPERTY USE_FOLDERS ON )
-
-# Will cause building to display what compiler parameters are being used, among other things
-SET(CMAKE_VERBOSE_MAKEFILE_ON)
-
-# Remove the MinSizeRel and RelWithDebInfo configs
-# https://cmake.org/Wiki/CMake_FAQ#How_can_I_specify_my_own_configurations_.28for_generators_that_allow_it.29_.3F
-if(CMAKE_CONFIGURATION_TYPES)
-	set(CMAKE_CONFIGURATION_TYPES Debug Release)
-	set(CMAKE_CONFIGURATION_TYPES "${CMAKE_CONFIGURATION_TYPES}" CACHE STRING
-		"Reset the configurations to what we need"
- 		FORCE)
-endif()
-
-# Tweak some more things
-if(MSVC)
-	add_compile_options(/MP /DNOMINMAX)
-	# Add debug information to Release (By default, the "Release" configuration cmake creates has no debug info)
-	ucm_add_flags(/Zi CONFIG Release)
-	if (MSVC_VERSION GREATER 1800)
-		ucm_add_linker_flags(EXE /DEBUG:Fastlink CONFIG Release)
-	else()
-		ucm_add_linker_flags(EXE /DEBUG CONFIG Release)
-	endif()
-endif()
+project(czspas
+		DESCRIPTION "Minimalistic socket library inspired by Asio/Boost Asio, implemented in 1 single header file"
+		LANGUAGES CXX)
 
 add_subdirectory(source)
-add_subdirectory(UnitTest++)
-add_subdirectory(tests)
 add_subdirectory(samples)
+
+# If we have a unittest-cpp folder but the parent project didn't add UnitTest++, then automatically
+# define the UnitTest++ target
+if (EXISTS "${CMAKE_CURRENT_LIST_DIR}/unittest-cpp" AND NOT TARGET UnitTest++)
+	message("unittest-cpp folder found in czspas. Adding UnitTest++ target")
+	add_subdirectory(unittest-cpp)
+endif()
+
+if (TARGET UnitTest++)
+	message("Enabling czspas tests")
+	add_subdirectory(tests)
+endif()
 

@@ -1,35 +1,45 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.16)
 
 ##################################################################
-ucm_add_files(
-	"Echo/EchoServer.cpp"
-	TO EchoServer_SRC
-	)
+# EchoServer
+##################################################################
 
-add_executable(EchoServer ${EchoServer_SRC})
-cz_set_postfix(EchoServer)
-target_link_libraries(EchoServer czspas)
-set_target_properties(EchoServer PROPERTIES FOLDER Samples)
+set(ECHOSERVER_SOURCE_FILES
+		"Echo/EchoServer.cpp"
+   )
+
+add_executable(czspas_sample_EchoServer ${SOURCE_FILES})
+target_link_libraries(czspas_sample_EchoServer cz::spas)
+set_target_properties(czspas_sample_EchoServer PROPERTIES
+		FOLDER "samples/czspas samples"
+		LINKER_LANGUAGE CXX
+		)
 
 ##################################################################
-ucm_add_files(
+# Echo asynchronous client
+##################################################################
+set(ECHOASYNCCLIENT_SOURCE_FILES
 	"Echo/EchoAsynchronousClient.cpp"
-	TO EchoAsynchronousClient_SRC
 	)
 
-add_executable(EchoAsynchronousClient ${EchoAsynchronousClient_SRC})
-cz_set_postfix(EchoAsynchronousClient)
-target_link_libraries(EchoAsynchronousClient czspas)
-set_target_properties(EchoAsynchronousClient PROPERTIES FOLDER Samples)
+add_executable(czspas_sample_EchoAsyncClient ${ECHOASYNCCLIENT_SOURCE_FILES})
+target_link_libraries(czspas_sample_EchoAsyncClient cz::spas)
+set_target_properties(czspas_sample_EchoAsyncClient PROPERTIES
+		FOLDER "samples/czspas samples"
+		LINKER_LANGUAGE CXX
+		)
 
 ##################################################################
-ucm_add_files(
+# Echo synchronous client
+##################################################################
+set(ECHOSYNCCLIENT_SOURCE_FILES
 	"Echo/EchoSynchronousClient.cpp"
-	TO EchoSynchronousClient_SRC
 	)
 
-add_executable(EchoSynchronousClient ${EchoSynchronousClient_SRC})
-cz_set_postfix(EchoSynchronousClient)
-target_link_libraries(EchoSynchronousClient czspas)
-set_target_properties(EchoSynchronousClient PROPERTIES FOLDER Samples)
+add_executable(czspas_sample_EchoSyncClient ${ECHOSYNCCLIENT_SOURCE_FILES})
+target_link_libraries(czspas_sample_EchoSyncClient cz::spas)
+set_target_properties(czspas_sample_EchoSyncClient PROPERTIES
+		FOLDER "samples/czspas samples"
+		LINKER_LANGUAGE CXX
+		)
 
