@@ -1,37 +1,20 @@
 cmake_minimum_required(VERSION 3.16)
 
-##################################################################
-# EchoServer
-##################################################################
+function(setup_czspas_sample target_name)
+	add_executable(${target_name} ${ARGN})
+	#target_precompile_headers(${target_name} PUBLIC "${target_name}PCH.h")
+	target_link_libraries(${target_name} cz::spas)
+	set_target_properties(${target_name} PROPERTIES
+			FOLDER "samples/czspas"
+			LINKER_LANGUAGE CXX
+			)
+endfunction()
 
-
-add_executable(czspas_sample_EchoServer
+setup_czspas_sample(czspas_sample_EchoServer
 		"Echo/EchoServer.cpp")
-target_link_libraries(czspas_sample_EchoServer cz::spas)
-set_target_properties(czspas_sample_EchoServer PROPERTIES
-		FOLDER "samples/czspas samples"
-		LINKER_LANGUAGE CXX
-		)
 
-##################################################################
-# Echo asynchronous client
-##################################################################
-add_executable(czspas_sample_EchoAsyncClient
+setup_czspas_sample(czspas_sample_EchoAsyncClient
 	"Echo/EchoAsynchronousClient.cpp")
-target_link_libraries(czspas_sample_EchoAsyncClient cz::spas)
-set_target_properties(czspas_sample_EchoAsyncClient PROPERTIES
-		FOLDER "samples/czspas samples"
-		LINKER_LANGUAGE CXX
-		)
-
-##################################################################
-# Echo synchronous client
-##################################################################
-add_executable(czspas_sample_EchoSyncClient
+setup_czspas_sample(czspas_sample_EchoSyncClient
 	"Echo/EchoSynchronousClient.cpp")
-target_link_libraries(czspas_sample_EchoSyncClient cz::spas)
-set_target_properties(czspas_sample_EchoSyncClient PROPERTIES
-		FOLDER "samples/czspas samples"
-		LINKER_LANGUAGE CXX
-		)
 

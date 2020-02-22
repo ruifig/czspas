@@ -7,8 +7,6 @@ set(SOURCE_FILES
 source_group("crazygaze\\spas" FILES ${SOURCE_FILES})
 
 add_library(czspas INTERFACE)
-target_sources(czspas INTERFACE ${SOURCE_FILES})
-
 add_library(cz::spas ALIAS czspas)
 
 target_include_directories(czspas INTERFACE "")
@@ -23,4 +21,6 @@ endif()
 
 # Dummy target so that header only libraries show up on the IDE
 add_custom_target(czspas_ SOURCES ${SOURCE_FILES})
+
+target_compile_features(czspas INTERFACE cxx_std_17)
 
