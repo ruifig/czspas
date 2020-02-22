@@ -5,16 +5,15 @@ function(setup_czspas_sample target_name)
 	#target_precompile_headers(${target_name} PUBLIC "${target_name}PCH.h")
 	target_link_libraries(${target_name} cz::spas)
 	set_target_properties(${target_name} PROPERTIES
-			FOLDER "samples/czspas"
+			FOLDER "${PROJECT_NAME}/samples"
 			LINKER_LANGUAGE CXX
 			)
 endfunction()
 
-setup_czspas_sample(czspas_sample_EchoServer
+setup_czspas_sample(czrpc_sample_EchoServer
 		"Echo/EchoServer.cpp")
-
-setup_czspas_sample(czspas_sample_EchoAsyncClient
+setup_czspas_sample(czrpc_sample_EchoAsyncClient
 	"Echo/EchoAsynchronousClient.cpp")
-setup_czspas_sample(czspas_sample_EchoSyncClient
+setup_czspas_sample(czrpc_sample_EchoSyncClient
 	"Echo/EchoSynchronousClient.cpp")
 
