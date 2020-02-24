@@ -1,0 +1,11 @@
+build/
+x64/
+# CLion IDE files
+.idea/
+
+# vim-vs temporary files
+/.vimvs-tmp*
+
+# ignore dependencies needes when doing standalone development
+/unittest-cpp
+
