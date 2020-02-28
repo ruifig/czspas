@@ -22,6 +22,6 @@ target_compile_features(czspas INTERFACE cxx_std_17)
 
 # Dummy target so that header only libraries show up on the IDE
 add_custom_target(czspas_ SOURCES ${SOURCE_FILES})
-set_target_properties(czspas_ PROPERTIES FOLDER "${PROJECT_NAME}")
+set_target_properties(czspas_ PROPERTIES FOLDER "${CZ_IDE_FOLDER}${PROJECT_NAME}")
 
 

@@ -12,5 +12,5 @@ set(SOURCE_FILES
 add_executable(czspas_tests ${SOURCE_FILES})
 target_precompile_headers(czspas_tests PUBLIC "testsPCH.h")
 target_link_libraries(czspas_tests cz::spas UnitTest++)
-set_property(TARGET czspas_tests PROPERTY FOLDER "${PROJECT_NAME}")
+set_property(TARGET czspas_tests PROPERTY FOLDER "${CZ_IDE_FOLDER}${PROJECT_NAME}")
 
