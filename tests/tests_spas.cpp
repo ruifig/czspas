@@ -1,8 +1,7 @@
-#include "testsPCH.h"
+
 using namespace cz;
 using namespace spas;
 
-extern UnitTest::Timer gTimer;
 #define INTENSIVE_TEST 0
 // Default port to use for the tests
 #define SERVER_PORT 9000
@@ -11,20 +10,19 @@ extern UnitTest::Timer gTimer;
 // On windows we use epmap (port 135)
 #define SERVER_UNUSABLE_PORT 135
 
+// This is the ip of example.com
+// Using this to test some of the timeouts
+#define TIMEOUT_TEST_IP "93.184.216.34"
+
 using namespace cz::spas;
 
-#define CHECK_CZSPAS_EQUAL(expected, ec)                                                                      \
-	if ((ec.code) != (Error::Code::expected))                                                                 \
-	{                                                                                                         \
-		UnitTest::CheckEqual(*UnitTest::CurrentTest::Results(), Error(Error::Code::expected).msg(), ec.msg(), \
-		                     UnitTest::TestDetails(*UnitTest::CurrentTest::Details(), __LINE__));             \
-	}
+#define CHECK_CZSPAS_EQUAL(expected, ec)    \
+	CHECK(ec.code == Error::Code::expected)
+
 #define CHECK_CZSPAS(ec) CHECK_CZSPAS_EQUAL(Success, ec)
 
 #include "tests_spas_helper.h"
 
-SUITE(CZSPAS)
-{
 
 //////////////////////////////////////////////////////////////////////////
 // Service/Reactor tests
@@ -33,7 +31,7 @@ SUITE(CZSPAS)
 // Try to exhaust OS resources by creating tons of Service objects.
 // Internally, czspas uses 2 sockets to allow interrupting a wsapoll/poll call.
 // This makes sure those sockets are not going into the TIME_WAIT state.
-TEST(Service_Reactor_internal_sockets)
+TEST_CASE("Service_Reactor_internal_sockets")
 {
 	std::atomic<int> done(0);
 
@@ -58,52 +56,52 @@ TEST(Service_Reactor_internal_sockets)
 	for (auto&& ft : fts)
 		ft.wait();
 
-	CHECK_EQUAL(numThreads*itemsPerThread, done.load());
+	CHECK(numThreads*itemsPerThread == done.load());
 }
 
 // Tests a call to Service::run when there is no work
-TEST(Service_run_nowork)
+TEST_CASE("Service_run_nowork")
 {
 	Service service;
 	auto done = service.run();
-	CHECK_EQUAL(0, done);
+	CHECK(done == 0);
 	CHECK(service.isStopped());
 }
 
 // Tests a call to Service::run when it has a dummy work to keep the run() call alive
 // After an interval, it destroys the work item, which should cause the call to run() to unblock
-TEST(Service_run_work_release)
+TEST_CASE("Service_run_work_release")
 {
 	Service service;
 	auto work = std::make_unique<Service::Work>(service); // Dummy work item
 
 	auto ft = std::async(std::launch::async, [&work]
 	{
-		UnitTest::TimeHelpers::SleepMs(100);
+		std::this_thread::sleep_for(100ms);
 		work.reset();
 	});
 
 	auto done = service.run();
-	CHECK_EQUAL(0, done);
+	CHECK(done == 0);
 	CHECK(service.isStopped());
 }
 
 // Tests a call to Service::run when it has a dummy work to keep the run() call alive
 // After an interval, it calls Service::stop . This should cause the call to run() to unblock even though the work item
 // still exists
-TEST(Service_run_work_stop)
+TEST_CASE("Service_run_work_stop")
 {
 	Service service;
 	auto work = std::make_unique<Service::Work>(service); // Dummy work item
 
 	auto ft = std::async(std::launch::async, [&service]
 	{
-		UnitTest::TimeHelpers::SleepMs(100);
+		std::this_thread::sleep_for(100ms);
 		service.stop();
 	});
 
 	auto done = service.run();
-	CHECK_EQUAL(0, done);
+	CHECK(done == 0);
 	CHECK(service.isStopped());
 }
 
@@ -111,7 +109,7 @@ TEST(Service_run_work_stop)
 // Acceptor tests
 //////////////////////////////////////////////////////////////////////////
 // Checks behaviour for a simple listen
-TEST(Acceptor_listen_ok)
+TEST_CASE("Acceptor_listen_ok")
 {
 	Service io;
 	Acceptor ac(io);
@@ -119,7 +117,7 @@ TEST(Acceptor_listen_ok)
 	CHECK_CZSPAS(ec);
 }
 
-TEST(Acceptor_getLocalAddr)
+TEST_CASE("Acceptor_getLocalAddr")
 {
 	Service io;
 	// Listening on all interfaces
@@ -128,8 +126,8 @@ TEST(Acceptor_getLocalAddr)
 		auto ec = ac.listen(SERVER_PORT);
 		CHECK_CZSPAS(ec);
 		auto addr = ac.getLocalAddr();
-		CHECK_EQUAL("0.0.0.0", addr.first);
-		CHECK_EQUAL(SERVER_PORT, addr.second);
+		CHECK(addr.first == "0.0.0.0");
+		CHECK(addr.second == SERVER_PORT);
 	}
 	// Listening on a specific interface
 	{
@@ -141,13 +139,13 @@ TEST(Acceptor_getLocalAddr)
 		auto ec = ac.listen("127.0.0.1", SERVER_PORT, SOMAXCONN, reuseAddr);
 		CHECK_CZSPAS(ec);
 		auto addr = ac.getLocalAddr();
-		CHECK_EQUAL("127.0.0.1", addr.first);
-		CHECK_EQUAL(SERVER_PORT, addr.second);
+		CHECK(addr.first == "127.0.0.1");
+		CHECK(addr.second == SERVER_PORT);
 	}
 }
 
 // Checks behaviour when trying to listen on an invalid port
-TEST(Acceptor_listen_failure)
+TEST_CASE("Acceptor_listen_failure")
 {
 	Service io;
 	Acceptor ac(io);
@@ -155,7 +153,7 @@ TEST(Acceptor_listen_failure)
 	CHECK_CZSPAS_EQUAL(Other, ec);
 }
 
-TEST(Acceptor_asyncAccept_ok)
+TEST_CASE("Acceptor_asyncAccept_ok")
 {
 	ServiceThread ioth(true, true, true);
 
@@ -177,10 +175,19 @@ TEST(Acceptor_asyncAccept_ok)
 	done.wait();
 }
 
+std::chrono::steady_clock::time_point getTime()
+{
+	return std::chrono::steady_clock::now();
+}
+
+#define CHECK_DELTA_TIME(from, to, expected, tolerance) \
+	CHECK( abs((to - from) - expected) <= tolerance )
+
+
 // Tests the accept timeout behaviour
 // Because internally the timeout is split in two fields (microseconds and seconds, because it uses select), we need to
 // test something below 1 second, and something above, to make sure the split is done correctly
-TEST(Acceptor_accept_timeout)
+TEST_CASE("Acceptor_accept_timeout")
 {
 	Service io;
 	Acceptor ac(io);
@@ -188,19 +195,19 @@ TEST(Acceptor_accept_timeout)
 	CHECK_CZSPAS(ec);
 
 	Socket s(io);
-	UnitTest::Timer timer;
-	timer.Start();
+	auto start = getTime();
 	ec = ac.accept(s, 50);
-	CHECK_CLOSE(50, timer.GetTimeInMs(), 200);
+
+	CHECK_DELTA_TIME(start, getTime(), 50ms, 20ms);
 	CHECK_CZSPAS_EQUAL(Timeout, ec);
 
-	timer.Start();
+	start = getTime();
 	ec = ac.accept(s, 1050);
-	CHECK_CLOSE(1050, timer.GetTimeInMs(), 200);
+	CHECK_DELTA_TIME(start, getTime(), 1050ms, 20ms);
 	CHECK_CZSPAS_EQUAL(Timeout, ec);
 }
 
-TEST(Acceptor_asyncAccept_cancel)
+TEST_CASE("Acceptor_asyncAccept_cancel")
 {
 	ServiceThread ioth(false, false, false);
 
@@ -224,7 +231,7 @@ TEST(Acceptor_asyncAccept_cancel)
 	done.wait();
 }
 
-TEST(Acceptor_asyncAccept_timeout)
+TEST_CASE("Acceptor_asyncAccept_timeout")
 {
 	ServiceThread ioth(true, true, true);
 
@@ -232,13 +239,12 @@ TEST(Acceptor_asyncAccept_timeout)
 
 	Semaphore done;
 	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
-	auto start = gTimer.GetTimeInMs();
+	auto start = getTime();
 	ac->acceptor.asyncAccept(serverSideSession->sock, 50,
 		[&done, start, &ioth, this_=ac, con = serverSideSession](const Error& ec)
 	{
 		CHECK_CZSPAS_EQUAL(Timeout, ec);
-		auto elapsed = gTimer.GetTimeInMs() - start;
-		CHECK_CLOSE(50.0, elapsed, 1000); // Giving a big tolerance, since the API doesn't guarantee any specific tolerance.
+		CHECK_DELTA_TIME(start, getTime(), 50ms, 1000ms); // Giving a big tolerance, since the API doesn't guarantee any specific tolerance.
 		done.notify();
 	});
 
@@ -249,7 +255,7 @@ TEST(Acceptor_asyncAccept_timeout)
 // Socket tests
 //////////////////////////////////////////////////////////////////////////
 
-TEST(Socket_connect_ok)
+TEST_CASE("Socket_connect_ok")
 {
 	ServiceThread ioth(false, false, false);
 
@@ -268,7 +274,7 @@ TEST(Socket_connect_ok)
 	CHECK_CZSPAS(ec);
 }
 
-TEST(Socket_getLocalAddr_getPeerAddr)
+TEST_CASE("Socket_getLocalAddr_getPeerAddr")
 {
 	ServiceThread ioth(true, true, true);
 
@@ -293,18 +299,18 @@ TEST(Socket_getLocalAddr_getPeerAddr)
 	auto clientLocal = clientSock.getLocalAddr();
 	auto clientPeer = clientSock.getPeerAddr();
 
-	CHECK_EQUAL("127.0.0.1", serverLocal.first);
-	CHECK_EQUAL("127.0.0.1", serverPeer.first);
-	CHECK_EQUAL("127.0.0.1", clientLocal.first);
-	CHECK_EQUAL("127.0.0.1", clientPeer.first);
+	CHECK("127.0.0.1" == serverLocal.first);
+	CHECK("127.0.0.1" == serverPeer.first);
+	CHECK("127.0.0.1" == clientLocal.first);
+	CHECK("127.0.0.1" == clientPeer.first);
 
-	CHECK_EQUAL(SERVER_PORT, serverLocal.second);
-	CHECK_EQUAL(SERVER_PORT, clientPeer.second);
-	CHECK(serverPeer.second != SERVER_PORT && serverPeer.second > 0);
-	CHECK_EQUAL(serverPeer.second, clientLocal.second);
+	CHECK(SERVER_PORT == serverLocal.second);
+	CHECK(SERVER_PORT == clientPeer.second);
+	CHECK( (serverPeer.second != SERVER_PORT && serverPeer.second > 0) );
+	CHECK(serverPeer.second == clientLocal.second);
 }
 
-TEST(Socket_connect_failure)
+TEST_CASE("Socket_connect_failure")
 {
 	ServiceThread ioth(false, false, false);
 	Socket clientSock(ioth.service);
@@ -312,7 +318,7 @@ TEST(Socket_connect_failure)
 	CHECK_CZSPAS_EQUAL(Other,ec);
 }
 
-TEST(Socket_asyncConnect_ok)
+TEST_CASE("Socket_asyncConnect_ok")
 {
 	ServiceThread ioth(false, false, false);
 
@@ -337,7 +343,7 @@ TEST(Socket_asyncConnect_ok)
 	// Wait for it to finish, to see if we got both handlers executed, followed by an automatic exit of Service::run,
 	// since it ran out of work
 	ioth.finish();
-	CHECK_EQUAL(2, done.getCount());
+	CHECK(2 == done.getCount());
 }
 
 // Initially I was using "127.0.0.1" to test the asynchronous connect timeout or cancel, but it seems that on Linux
@@ -345,11 +351,11 @@ TEST(Socket_asyncConnect_ok)
 // right away that if a connect is not possible, without taking into consideration the timeout specified in
 // the "select" function.
 // On Windows, connect attempts to localhost still take into consideration the timeout.
-// The solution is to try an connect to some external ip, like "254.254.254.254".
+// The solution is to try a connect to some external ip, like "254.254.254.254".
 // This causes Linux to actually wait for the connect attempt.
 // NOTE: WSL (Windows Subsystem for Linux) doesn't support non-blocking connects at this moment, so this test will fail
 // although it seems in some systems, such has Windows
-TEST(Socket_asyncConnect_cancel)
+TEST_CASE("Socket_asyncConnect_cancel")
 {
 	ServiceThread ioth(true, true, true);
 
@@ -371,17 +377,16 @@ TEST(Socket_asyncConnect_cancel)
 	done.wait();
 }
 
-TEST(Socket_asyncConnect_timeout)
+TEST_CASE("Socket_asyncConnect_timeout")
 {
 	ServiceThread ioth(true, true, true);
 
 	Semaphore done;
 	auto clientSideSession = std::make_shared<Session<>> (ioth.service);
-	auto start = gTimer.GetTimeInMs();
-	clientSideSession->sock.asyncConnect("254.254.254.254", SERVER_PORT, 50, [&done, start, con = clientSideSession](const Error& ec)
+	auto start = getTime();
+	clientSideSession->sock.asyncConnect(TIMEOUT_TEST_IP, SERVER_PORT, 200, [&done, start, con = clientSideSession](const Error& ec)
 	{
-		auto elapsed = gTimer.GetTimeInMs() - start;
-		CHECK_CLOSE(50.0, elapsed, 1000); // Giving a big tolerance, since the API doesn't guarantee any specific tolerance.
+		CHECK_DELTA_TIME(start, getTime(), 200ms, 1000ms); // Giving a big tolerance, since the API doesn't guarantee any specific tolerance.
 		CHECK_CZSPAS_EQUAL(Timeout, ec);
 		done.notify();
 	});
@@ -389,7 +394,7 @@ TEST(Socket_asyncConnect_timeout)
 	done.wait();
 }
 
-TEST(Socket_asyncSendSome_asyncReceiveSome_ok)
+TEST_CASE("Socket_asyncSendSome_asyncReceiveSome_ok")
 {
 	ServiceThread ioth(true, true, true);
 
@@ -404,8 +409,8 @@ TEST(Socket_asyncSendSome_asyncReceiveSome_ok)
 			[&done, con, bufPtr=&buf](const Error& ec, size_t transfered)
 		{
 			// Note: Capturing bufPtr is not necessary, but makes it easier to debug.
-			CHECK_EQUAL(4, transfered);
-			CHECK_EQUAL(0x11223344, *bufPtr);
+			CHECK(4 == transfered);
+			CHECK(0x11223344 == *bufPtr);
 			done.notify();
 		});
 	});
@@ -418,14 +423,14 @@ TEST(Socket_asyncSendSome_asyncReceiveSome_ok)
 		con->sock.asyncSendSome(reinterpret_cast<char*>(&buf), sizeof(buf),
 			[con](const Error& ec, size_t transfered)
 		{
-			CHECK_EQUAL(4, transfered);
+			CHECK(4 == transfered);
 		});
 	});
 
 	done.wait();
 }
 
-TEST(Socket_asyncReceiveSome_cancel)
+TEST_CASE("Socket_asyncReceiveSome_cancel")
 {
 	ServiceThread ioth(true, true, true);
 
@@ -445,7 +450,7 @@ TEST(Socket_asyncReceiveSome_cancel)
 		[&done, con = clientSideSession](const Error& ec, size_t transfered)
 	{
 		CHECK_CZSPAS_EQUAL(Cancelled, ec);
-		CHECK_EQUAL(0, transfered);
+		CHECK(0 == transfered);
 		done.notify();
 	});
 
@@ -457,7 +462,7 @@ TEST(Socket_asyncReceiveSome_cancel)
 	done.wait();
 }
 
-TEST(Socket_asyncReceiveSome_timeout)
+TEST_CASE("Socket_asyncReceiveSome_timeout")
 {
 	ServiceThread ioth(true, true, true);
 
@@ -473,21 +478,20 @@ TEST(Socket_asyncReceiveSome_timeout)
 	auto ec = clientSideSession->sock.connect("127.0.0.1", SERVER_PORT);
 	CHECK_CZSPAS(ec);
 	char rcvBuf[4];
-	auto start = gTimer.GetTimeInMs();
+	auto start = getTime();
 	clientSideSession->sock.asyncReceiveSome(rcvBuf, sizeof(rcvBuf), 50,
 		[&done, start, con = clientSideSession](const Error& ec, size_t transfered)
 	{
-		auto elapsed = gTimer.GetTimeInMs() - start;
-		CHECK_CLOSE(50.0, elapsed, 1000); // Giving a big tolerance, since the API doesn't guarantee any specific tolerance.
+		CHECK_DELTA_TIME(start, getTime(), 50ms, 1000ms); // Giving a big tolerance, since the API doesn't guarantee any specific tolerance.
 		CHECK_CZSPAS_EQUAL(Timeout, ec);
-		CHECK_EQUAL(0, transfered);
+		CHECK(0 == transfered);
 		done.notify();
 	});
 
 	done.wait();
 }
 
-TEST(Socket_asyncReceiveSome_peerDisconnect)
+TEST_CASE("Socket_asyncReceiveSome_peerDisconnect")
 {
 	ServiceThread ioth(true, true, true);
 
@@ -508,7 +512,7 @@ TEST(Socket_asyncReceiveSome_peerDisconnect)
 		[&done, con = clientSideSession](const Error& ec, size_t transfered)
 	{
 		CHECK_CZSPAS_EQUAL(ConnectionClosed, ec);
-		CHECK_EQUAL(0, transfered);
+		CHECK(0 == transfered);
 		done.notify();
 	});
 
@@ -520,7 +524,7 @@ TEST(Socket_asyncReceiveSome_peerDisconnect)
 // as ready to send by the OS.
 // The only feasible way to correctly test the cancel in this case is to do a cancel right after the send from the 
 // Service thread itself, so the Reactor doesn't have a chance to run.
-TEST(Socket_asyncSendSome_cancel)
+TEST_CASE("Socket_asyncSendSome_cancel")
 {
 	ServiceThread ioth(true, true, true);
 
@@ -536,7 +540,7 @@ TEST(Socket_asyncSendSome_cancel)
 		con->sock.asyncSendSome(sndBuf, sizeof(sndBuf), [&done, con](const Error& ec, size_t transfered)
 		{
 			CHECK_CZSPAS_EQUAL(Cancelled, ec);
-			CHECK_EQUAL(0, transfered);
+			CHECK(0 == transfered);
 			done.notify();
 		});
 
@@ -550,7 +554,7 @@ TEST(Socket_asyncSendSome_cancel)
 	done.wait();
 }
 
-TEST(Socket_asyncSendSome_timeout)
+TEST_CASE("Socket_asyncSendSome_timeout")
 {
 	// #TODO: I can't think of a feasible way to test a send timeout, since most of the time a socket will be ready
 	// to write.
@@ -558,7 +562,7 @@ TEST(Socket_asyncSendSome_timeout)
 	// to write, the send timeout is very hard to test.
 }
 
-TEST(Socket_asyncSendSome_peerDisconnect)
+TEST_CASE("Socket_asyncSendSome_peerDisconnect")
 {
 	ServiceThread ioth(true, true, true);
 
@@ -584,7 +588,7 @@ TEST(Socket_asyncSendSome_peerDisconnect)
 		// It might happen we detect the connection as closed right away, or the OS still considers some data was sent
 		if (ec.code == Error::Code::ConnectionClosed)
 		{
-			CHECK_EQUAL(0, transfered);
+			CHECK(0 == transfered);
 			done.notify();
 		}
 		else
@@ -596,7 +600,7 @@ TEST(Socket_asyncSendSome_peerDisconnect)
 				[&done, con](const Error& ec, size_t transfered)
 			{
 				CHECK_CZSPAS_EQUAL(ConnectionClosed, ec);
-				CHECK_EQUAL(0, transfered);
+				CHECK(0 == transfered);
 				done.notify();
 			});
 		}
@@ -618,7 +622,7 @@ void Socket_multiple_connections_acceptorHelper(std::shared_ptr<AcceptorSession<
 	});
 }
 
-TEST(Socket_multiple_connections)
+TEST_CASE("Socket_multiple_connections")
 {
 	std::vector<std::future<void>> fts;
 
@@ -655,13 +659,13 @@ TEST(Socket_multiple_connections)
 	for (auto&& ft : fts)
 		ft.wait();
 
-	CHECK_EQUAL(numThreads*itemsPerThread, numDone.load());
+	CHECK(numThreads*itemsPerThread == numDone.load());
 }
 
 //! Tests a big transfer, to make it can really handle size_t sizes.
 // This is because sockets sends/receives only allow a 32-bits size, but the API puts together multiple socket
 // calls to make it possible to send/receive data with a real size_t size.
-TEST(Socket_bigTransfer)
+TEST_CASE("Socket_bigTransfer", "[slow]")
 {
 	constexpr size_t bigbufsize = INTENSIVE_TEST ? (size_t(INT_MAX) + 1) : (size_t(INT_MAX) / 4);
 
@@ -678,11 +682,11 @@ TEST(Socket_bigTransfer)
 		asyncReceive(*sock, bigbuf.get(), bigbufsize, [&, sock, bigbuf](const Error& ec, size_t transfered)
 		{
 			CHECK_CZSPAS(ec);
-			CHECK_EQUAL(bigbufsize, transfered);
+			CHECK(bigbufsize == transfered);
 			auto ptr = bigbuf.get();
 			for (size_t i = 0; i < bigbufsize; i++)
 			{
-				CHECK_EQUAL(int(char(i)), int(ptr[i]));
+				CHECK(int(char(i)) == int(ptr[i]));
 			}
 			done.notify();
 		});
@@ -706,7 +710,7 @@ TEST(Socket_bigTransfer)
 		asyncSend(*sock, bigbuf.get(), bigbufsize, [&, sock, bigbuf](const Error& ec, size_t transfered)
 		{
 			CHECK_CZSPAS(ec);
-			CHECK_EQUAL(bigbufsize, transfered);
+			CHECK(bigbufsize == transfered);
 			done.notify();
 		});
 		ioth.run();
@@ -718,7 +722,7 @@ TEST(Socket_bigTransfer)
 	clientth.join();
 }
 
-TEST(Socket_sendSome_seceiveSome_ok)
+TEST_CASE("Socket_sendSome_receiveSome_ok")
 {
 	Service service;
 
@@ -736,18 +740,18 @@ TEST(Socket_sendSome_seceiveSome_ok)
 
 	const char* outBuf = "Hello World!";
 	auto done = sender.sendSome("Hello World!", strlen(outBuf), ec);
-	CHECK_EQUAL(strlen(outBuf), done);
+	CHECK(strlen(outBuf) == done);
 	CHECK_CZSPAS(ec);
 
 	char inBuf[64];
 	memset(inBuf, 0, sizeof(inBuf));
 	done = receiver.receiveSome(inBuf, sizeof(inBuf), ec);
-	CHECK_EQUAL(strlen(outBuf), done);
+	CHECK(strlen(outBuf) == done);
 	CHECK_CZSPAS(ec);
-	CHECK_EQUAL(outBuf, inBuf);
+	CHECK(std::string(outBuf) == inBuf);
 }
 
-TEST(Socket_receiveSome_timeout)
+TEST_CASE("Socket_receiveSome_timeout")
 {
 	Service service;
 
@@ -765,14 +769,14 @@ TEST(Socket_receiveSome_timeout)
 
 	// Test receive timeout, since there is no more data to read
 	char inBuf[1];
-	auto start = gTimer.GetTimeInMs();
+	auto start = getTime();
 	auto done = receiver.receiveSome(inBuf, sizeof(inBuf), 20, ec);
-	CHECK_CLOSE(20, gTimer.GetTimeInMs() - start, 200);
-	CHECK_EQUAL(0, done);
+	CHECK_DELTA_TIME(start, getTime(), 20ms, 200ms);
+	CHECK(0 == done);
 	CHECK_CZSPAS_EQUAL(Timeout, ec);
 }
 
-TEST(Socket_receiveSome_disconnect)
+TEST_CASE("Socket_receiveSome_disconnect")
 {
 	Service service;
 
@@ -791,11 +795,11 @@ TEST(Socket_receiveSome_disconnect)
 	sender._forceClose(false);
 	char inBuf[1];
 	auto done = receiver.receiveSome(inBuf, sizeof(inBuf), ec);
-	CHECK_EQUAL(0, done);
+	CHECK(0 == done);
 	CHECK_CZSPAS_EQUAL(ConnectionClosed, ec);
 }
 
-TEST(Socket_receiveSome_error)
+TEST_CASE("Socket_receiveSome_error")
 {
 	Service service;
 
@@ -816,16 +820,16 @@ TEST(Socket_receiveSome_error)
 	detail::utils::closeSocket(h);
 	char inBuf[1];
 	auto done = receiver.receiveSome(inBuf, sizeof(inBuf), ec);
-	CHECK_EQUAL(0, done);
+	CHECK(0 == done);
 	CHECK_CZSPAS_EQUAL(Other, ec);
 }
 
-TEST(Socket_sendSome_timeout)
+TEST_CASE("Socket_sendSome_timeout")
 {
 	// #TODO : No idea how to test this one :(
 }
 
-TEST(Socket_sendSome_disconnect)
+TEST_CASE("Socket_sendSome_disconnect")
 {
 	Service service;
 
@@ -850,13 +854,13 @@ TEST(Socket_sendSome_disconnect)
 		char outBuf[2];
 		done = sender.sendSome(outBuf, sizeof(outBuf), ec);
 		if (!ec)
-			CHECK_EQUAL(2, done);
+			CHECK(2 == done);
 	}
-	CHECK_EQUAL(0, done);
+	CHECK(0 == done);
 	CHECK_CZSPAS_EQUAL(Other, ec);
 }
 
-TEST(Socket_sendSome_error)
+TEST_CASE("Socket_sendSome_error")
 {
 	Service service;
 
@@ -877,11 +881,11 @@ TEST(Socket_sendSome_error)
 	detail::utils::closeSocket(h);
 	char outBuf[1];
 	auto done = sender.sendSome(outBuf, sizeof(outBuf), ec);
-	CHECK_EQUAL(0, done);
+	CHECK(0 == done);
 	CHECK_CZSPAS_EQUAL(Other, ec);
 }
 
-TEST(receive_ok)
+TEST_CASE("receive_ok")
 {
 	Service service;
 
@@ -906,22 +910,22 @@ TEST(receive_ok)
 		{
 			Error ec;
 			auto transfered = send(sender, s.c_str(), s.size(), ec);
-			CHECK_EQUAL(s.size(), transfered);
+			CHECK(s.size() == transfered);
 			// Make a small pause, so we can test the receiver receiving it in parts.
-			UnitTest::TimeHelpers::SleepMs(20);
+			std::this_thread::sleep_for(20ms);
 		}
 	});
 
 	char in[128];
 	auto expected = strlen("Hello World!") + 1;
 	auto transfered = receive(receiver, in, expected, ec);
-	CHECK_EQUAL(expected, transfered);
-	CHECK_EQUAL("Hello World!", in);
+	CHECK(expected == transfered);
+	CHECK(std::string("Hello World!") == in);
 	CHECK_CZSPAS(ec);
 	senderFt.get();
 }
 
-TEST(receive_timeout)
+TEST_CASE("receive_timeout")
 {
 	Service service;
 
@@ -946,9 +950,9 @@ TEST(receive_timeout)
 		{
 			Error ec;
 			auto transfered = send(sender, s.c_str(), s.size(), ec);
-			CHECK_EQUAL(s.size(), transfered);
+			CHECK(s.size() == transfered);
 			// Make a small pause, so we can test the receiver receiving it in parts.
-			UnitTest::TimeHelpers::SleepMs(20);
+			std::this_thread::sleep_for(20ms);
 		}
 	});
 
@@ -957,13 +961,13 @@ TEST(receive_timeout)
 	// By passing an expected size bigger than what the sender will send, we should get all the data sent,
 	// but get a Timeout error.
 	auto transfered = receive(receiver, in, sizeof(in), 500, ec);
-	CHECK_EQUAL(expected, transfered);
-	CHECK_EQUAL("Hello World!", in);
+	CHECK(expected == transfered);
+	CHECK(std::string("Hello World!") == in);
 	CHECK_CZSPAS_EQUAL(Timeout, ec);
 	senderFt.get();
 }
 
-TEST(receive_peerDisconnect)
+TEST_CASE("receive_peerDisconnect")
 {
 	Service service;
 
@@ -988,9 +992,9 @@ TEST(receive_peerDisconnect)
 		{
 			Error ec;
 			auto transfered = send(sender, s.c_str(), s.size(), ec);
-			CHECK_EQUAL(s.size(), transfered);
+			CHECK(s.size() == transfered);
 			// Make a small pause, so we can test the receiver receiving it in parts.
-			UnitTest::TimeHelpers::SleepMs(10);
+			std::this_thread::sleep_for(10ms);
 		}
 
 		sender._forceClose(true);
@@ -1001,8 +1005,8 @@ TEST(receive_peerDisconnect)
 	// By passing an expected size bigger than what the sender will send, we should get all the data sent,
 	// but also a Timeout error;
 	auto transfered = receive(receiver, in, sizeof(in), 500, ec);
-	CHECK_EQUAL(expected, transfered);
-	CHECK_EQUAL("Hello World!", in);
+	CHECK(expected == transfered);
+	CHECK(std::string("Hello World!") == in);
 	CHECK_CZSPAS_EQUAL(ConnectionClosed, ec);
 	senderFt.get();
 }
@@ -1036,7 +1040,8 @@ void exception_safety_setupAccept(cz::spas::Acceptor& ac, ZeroSemaphore& sem, bo
 		exception_safety_setupAccept(ac, sem, cancelled);
 	});
 }
-TEST(exception_safety)
+
+TEST_CASE("exception_safety")
 {
 	Service service;
 
@@ -1063,7 +1068,7 @@ TEST(exception_safety)
 			catch (std::exception& exc)
 			{
 				handledCount++;
-				CHECK_EQUAL("Testing exception", exc.what());
+				CHECK(std::string("Testing exception") == exc.what());
 			}
 		}
 	});
@@ -1089,8 +1094,7 @@ TEST(exception_safety)
 		acceptor.cancel(); // The acceptor is the only one chaining operations, so cancelling should cause the Service to run out of work
 	});
 	ioth.join();
-	CHECK_EQUAL(numClients, handledCount);
+	CHECK(numClients == handledCount);
 	CHECK(cancelled);
 }
 
-}

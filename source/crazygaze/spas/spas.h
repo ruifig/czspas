@@ -123,7 +123,7 @@ class Acceptor;
 class Socket;
 class Service;
 
-//#define CZSPAS_ENABLE_LOGGING 1
+#define CZSPAS_ENABLE_LOGGING 1
 
 #if CZSPAS_ENABLE_LOGGING
 	#ifndef CZSPAS_INFO
@@ -340,6 +340,7 @@ namespace detail
 			copyStrToFixedBuffer(buf, type);
 			va_list args;
 			va_start(args, fmt);
+			buf[512-1] = 0;
 			vsnprintf(buf + strlen(buf), sizeof(buf) - strlen(buf) - 1, fmt, args);
 			va_end(args);
 			printf("%s\n",buf);
@@ -385,20 +386,26 @@ namespace detail
 				0,
 				NULL);
 
+			CZSPAS_SCOPE_EXIT{ LocalFree(lpMsgBuf); };
+
 			int funcnameLength = funcname ? (int)strlen(funcname) : 0;
 			lpDisplayBuf =
 				(LPVOID)LocalAlloc(LMEM_ZEROINIT, (strlen((char*)lpMsgBuf) + funcnameLength + 50));
+			if (lpDisplayBuf == nullptr)
+			{
+				return "";
+			}
+			CZSPAS_SCOPE_EXIT{ LocalFree(lpDisplayBuf); };
+
 			StringCchPrintfA(
 				(char*)lpDisplayBuf,
 				LocalSize(lpDisplayBuf),
-				"%s failed with error %d: %s",
+				"%s failed with error %x: %s",
 				funcname ? funcname : "",
 				err,
-				lpMsgBuf);
+				(const char*)lpMsgBuf);
 
 			std::string ret = (char*)lpDisplayBuf;
-			LocalFree(lpMsgBuf);
-			LocalFree(lpDisplayBuf);
 
 			// Remove the \r\n at the end
 			while (ret.size() && ret.back() < ' ')
@@ -893,7 +900,7 @@ namespace detail
 		{
 		}
 		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override {}
-		virtual void callUserHandler()
+		virtual void callUserHandler() override
 		{
 			userHandler();
 		}
@@ -1601,7 +1608,7 @@ public:
 		}
 		m_base.s = res.second;
 		m_base.resolveAddrs();
-		CZSPAS_INFO("Socket %p: Connected to %s:%d", this, m_peerAddr.first.c_str(), m_peerAddr.second);
+		CZSPAS_INFO("Socket %p: Connected to %s:%d", this, m_base.peerAddr.first.c_str(), m_base.peerAddr.second);
 		return Error();
 	}
 
@@ -1609,7 +1616,7 @@ public:
 	{
 		CZSPAS_ASSERT(!m_base.isValid());
 		CZSPAS_ASSERT(m_base.pendingConnect.load()==0 && "There is already a pending connect operation");
-		CZSPAS_INFO("Socket %p: asyncConnect(%s,%d, H, %d)", this, ip, port, timeoutMs);
+		CZSPAS_INFO("Socket %p: asyncConnect(%s,%d, %d, H)", this, ip, port, timeoutMs);
 
 		auto op = std::make_unique<detail::ConnectOperation>(m_base, std::move(h));
 
@@ -1897,8 +1904,8 @@ public:
 		}
 		sock.m_base.s = res.second;
 		sock.m_base.resolveAddrs();
-		CZSPAS_INFO("Acceptor %p: Socket %p connected to %s:%d", this, &sock, sock.m_peerAddr.first.c_str(),
-		            sock.m_peerAddr.second);
+		CZSPAS_INFO("Acceptor %p: Socket %p connected to %s:%d", this, &sock, sock.m_base.peerAddr.first.c_str(),
+		            sock.m_base.peerAddr.second);
 
 		// No error
 		return Error();

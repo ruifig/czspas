@@ -6,6 +6,6 @@ x64/
 # vim-vs temporary files
 /.vimvs-tmp*
 
-# ignore dependencies needes when doing standalone development
-/unittest-cpp
+# ignore dependencies needed during library development
+/Deps/Catch2
 
