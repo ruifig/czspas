@@ -1091,7 +1091,7 @@ TEST_CASE("exception_safety")
 	acceptSem.wait();
 	service.post([&acceptor]
 	{
-		acceptor.cancel(); // The acceptor is the only one chaining operations, so cancelling should cause the Service to run out of work
+		acceptor.cancel(); // The acceptor is the only one chaining operations, so canceling should cause the Service to run out of work
 	});
 	ioth.join();
 	CHECK(numClients == handledCount);
