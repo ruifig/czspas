@@ -1,5 +1,5 @@
 <a id="top"></a>
-# Index
+# czspas documentation index
 
 **Examples**
 
@@ -9,14 +9,14 @@
 * [EchoAsynchronousClient](Examples.md#echoasynchronousclient)
 
 **API**
-* [Overall design](API.md#overall-design)
-* [Guarantees and expectations](API.md#guarantees-and-expectations)
-* [Type of callbacks](API.md#type-of-callbacks)
+* [Overall design](API.md#overall_design)
+* [Guarantees and expectations](API.md#guarantees_and_expectations)
+* [Type of callbacks](API.md#type_of_callbacks)
 * [Error](API.md#error)
 	* [Constructor](API.md#error-constructor)
 	* [msg](API.md#error-msg)
 	* [setMsg](API.md#error-setmsg)
-	* [operator bool()](API.md#error-operator-bool)
+	* [operator bool()](API.md#error-operator_bool)
 	* [code](API.md#error-code)
 * [Service](API.md#service)
 	* [run](API.md#service-run)
@@ -48,9 +48,9 @@
 	* [getLocalAddr](API.md#socket-getlocaladdr)
 	* [getPeerAddr](API.md#socket-getpeeraddr)
 	* [getHandle](API.md#socket-gethandle)
-* [Free functions](API.md#free-functions)
-	* [send](API.md#send)
-	* [asyncSend](API.md#asyncsend)
-	* [receive](API.md#receive)
-	* [asyncReceive](API.md#asyncreceive)
+* [Free functions](API.md#free_functions)
+	* [send](API.md#free_functions-send)
+	* [asyncSend](API.md#free_functions-asyncsend)
+	* [receive](API.md#free_functions-receive)
+	* [asyncReceive](API.md#free_functions-asyncreceive)
 

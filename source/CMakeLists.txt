@@ -4,7 +4,19 @@ set(SOURCE_FILES
 	"crazygaze/spas/spas.h"
 	)
 
+set(DOC_FILES
+	"../docs/API.md"
+	"../docs/Examples.md"
+	"../docs/Readme.md"
+)
+
+set(README_FILE
+	"../readme.md"
+)
+
 source_group("crazygaze\\spas" FILES ${SOURCE_FILES})
+source_group("docs" FILES ${DOC_FILES})
+source_group("" FILES ${README_FILE})
 
 add_library(czspas INTERFACE)
 add_library(cz::spas ALIAS czspas)
@@ -21,7 +33,7 @@ endif()
 target_compile_features(czspas INTERFACE cxx_std_17)
 
 # Dummy target so that header only libraries show up on the IDE
-add_custom_target(czspas_ SOURCES ${SOURCE_FILES})
+add_custom_target(czspas_ SOURCES ${SOURCE_FILES} ${README_FILE} ${DOC_FILES})
 set_target_properties(czspas_ PROPERTIES FOLDER "${CZ_IDE_FOLDER}${PROJECT_NAME}")
 
 

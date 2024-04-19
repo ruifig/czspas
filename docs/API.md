@@ -1,5 +1,4 @@
-<a id="overall-design"></a>
-# Overall design
+# <a id="overall_design">Overall design</a>
 
 Use of czspas revolves around using just a couple of classes:
 
@@ -25,9 +24,9 @@ The entire relevant API resides in the ```cz::spas``` namespace. The ```cz::spas
 
 Functions prefixed with "_" should not be used. Those are accessible to make coding the unit tests easier.
 
-# Guarantees and expectations
+# <a id="guarantees_and_expectations">Guarantees and expectations</a>
 
-Since czspas is inspired by Asio, and the API is somewhat similar, it provides a similar set of guarantees.
+Since czspas was inspired by Asio and the API is somewhat similar to what Asio provided back in 2017 (when czspas was created). It provides a similar set of guarantees.
 
 The API guarantees the following:
 
@@ -47,7 +46,7 @@ Also, similar to Asio, the API expects the following from the user code:
 	* For example, a given ```Socket``` instance must stay alive while there are pending asynchronous operations using it.
 	* A common solution to this lifetime problem is to put all the relevant objects and buffers in a class/struct and bind a shared_ptr to any completion handler that needs it. This effectively keeps the relevant objects alive for the duration of the asynchronous operation.
 
-## Type of callbacks
+# <a id="type_of_callbacks">Type of callbacks</a>
 
 All functions/methods that initiate asynchronous work take as a parameter a callback that is executed when the work in question is completed (successfully, in error, or cancelled).
 
@@ -63,7 +62,7 @@ In order to make it easier to deal with compile errors due wrong handler signatu
 	* **ec** : Tells if the operation completed successfully or not.
 	* **transfered** : How much data was sent (if it was a send operation), or received (if it was a receive operation).
 
-## <a id="error">Error</a>
+# <a id="error">Error</a>
 
 Instances of this class are used to indicate success or errors.
 
@@ -73,7 +72,7 @@ Instances of this class are used to indicate success or errors.
 
 *Shared objects*: Unsafe
 
-### <a name="error-constructor">Constructor</a>
+## <a id="error-constructor">Constructor</a>
 
 ```cpp
 Error(Code c = Code::Success); // (1)
@@ -90,7 +89,7 @@ Error(Code c, const std::string& msg) // (3)
 
 In most situations you will probably only need to use constructor (1).
 
-### <a name="error-msg">msg</a>
+## <a id="error-msg">msg</a>
 
 ```cpp
 const char* msg() const;
@@ -100,7 +99,7 @@ const char* msg() const;
 
 Message associated with the error. In some situations it might be as simple as e.g "ConnectionClosed". Availability of a detailed error message depends where in the implementation the error occurred.
 
-### <a name="error-setmsg">setMsg</a>
+## <a id="error-setmsg">setMsg</a>
 
 ```cpp
 void setMsg(const char* msg);
@@ -110,7 +109,7 @@ Sets a custom error message.
 
 This can be useful if czspas gives you an error and you want to set a more detailed error description before passing it to other parts of the code.
 
-### <a name="error-operator-bool">operator bool()</a>
+## <a id="error-operator_bool">operator bool()</a>
 
 ***Return value***
 
@@ -129,7 +128,7 @@ if (ec) // As-in  "if error then"
 }
 ```
 
-### <a name="error-code">code</a>
+## <a id="error-code">code</a>
 
 ```cpp
 Code code;
@@ -148,7 +147,7 @@ The following error codes are available:
 
 Note that the list of possible error codes is intentionally short, since in most situations you don't care what the error was. You just want to know if there was an error. This design choice might change in the future.
 
-## Service
+# <a id="service">Service</a>
 
 ***Thread safety***
 
@@ -156,7 +155,7 @@ Note that the list of possible error codes is intentionally short, since in most
 
 *Shared objects*: Safe, except *Service::run* like explained in [Guarantees and expectations](#guarantees-and-expectations).
 
-### <a name="service-run">Service::run</a>
+## <a id="service-run">Service::run</a>
 
 ```cpp
 void run();
@@ -173,7 +172,7 @@ Subsequent calls to this function will return immediately unless there is a prio
 * This function is not thread safe
 * Since your asynchronous handlers are executed from inside this function, be careful not to call it from your handlers, since it is not reentrant.
 
-### <a name="service-post">Service::post</a>
+## <a id="service-post">Service::post</a>
 
 ```cpp
 void post(PostHandler&& h);
@@ -182,7 +181,7 @@ void post(PostHandler&& h);
 Request the Service to execute the given handler, but not from inside this function.
 The handler is queued for execution from a thread calling *run()*, and this function returns immediately.
 
-### <a name="service-stop">Service::stop</a>
+## <a id="service-stop">Service::stop</a>
 
 ```cpp
 void stop();
@@ -192,7 +191,7 @@ Stop the Service processing loop.
 
 Subsequent calls to *run()* will return immediately until *reset()* is called
 
-### <a name="service-isstopped">Service::isStopped</a>
+## <a id="service-isstopped">Service::isStopped</a>
 
 ```cpp
 bool isStopped() const;
@@ -200,7 +199,7 @@ bool isStopped() const;
 
 Determine if the Service has been stopped through an explicit call to *stop()*.
 
-### <a name="service-reset">Service::reset</a>
+## <a id="service-reset">Service::reset</a>
 
 ```cpp
 bool reset() const;
@@ -208,7 +207,7 @@ bool reset() const;
 
 Reset the Service in preparation for a subsequent *run()* invocation.
 
-## Acceptor
+# <a id="acceptor">Acceptor</a>
 
 Accepts incoming connections
 
@@ -218,7 +217,7 @@ Accepts incoming connections
 
 *Shared objects*: Unsafe. See [Guarantees and expectations](#guarantees-and-expectations).
 
-### <a name="acceptor-constructor">Constructor</a>
+## <a id="acceptor-constructor">Constructor</a>
 
 ```cpp
 Acceptor(Service& service);
@@ -229,7 +228,7 @@ Acceptor(Service& service);
 * **service** : The Service object that will be managing all the work for this Acceptor.
 All asynchronous work handlers for this Acceptor will be executed through this Service's *run()* function.
 
-### <a name="acceptor-listen">Acceptor::listen</a>
+## <a id="acceptor-listen">Acceptor::listen</a>
 
 ```cpp
 Error listen(int port); // (1)
@@ -266,7 +265,7 @@ Use the returned *Error* object to check for errors
 
 (2) allows full control over all available parameters
 
-### <a name="acceptor-accept">Acceptor::accept</a>
+## <a id="acceptor-accept">Acceptor::accept</a>
 
 ```cpp
 Error accept(Socket& sock, int timeoutMs=-1);
@@ -285,7 +284,7 @@ Accepts a new connection. You need to call *listen* before calling this function
 
 Use the returned *Error* object to check for errors
 
-### <a name="acceptor-asyncaccept">Acceptor::asyncAccept</a>
+## <a id="acceptor-asyncaccept">Acceptor::asyncAccept</a>
 
 ```cpp
 void asyncAccept(Socket& sock, ConnectHandler&& h); // (1)
@@ -305,7 +304,7 @@ Starts an asynchronous accept. Once a new connection is accepted (or an error oc
 
 (1) Assumes a timeout of -1 (no timeout)
 
-### <a name="acceptor-cancel">Acceptor::cancel</a>
+## <a id="acceptor-cancel">Acceptor::cancel</a>
 
 ```cpp
 void cancel();
@@ -313,7 +312,7 @@ void cancel();
 
 Cancels all outstanding asynchronous operations. The handlers for the cancelled operations will be passed the *Error::Code::Cancelled* error.
 
-### <a name="acceptor-getservice">Acceptor::getService</a>
+## <a id="acceptor-getservice">Acceptor::getService</a>
 
 ```cpp
 Service& getService();
@@ -323,7 +322,7 @@ Service& getService();
 
 The Service associated with this object.
 
-### <a name="acceptor-setlinger">Acceptor::setLinger</a>
+## <a id="acceptor-setlinger">Acceptor::setLinger</a>
 
 ```cpp
 void setLinger(bool enabled, unsigned short timeoutSeconds);
@@ -335,7 +334,7 @@ Controls the SO_LINGER socket options.
 
 You should know what SO_LINGER does before trying to use this function.
 
-### <a name="acceptor-getlocaladdr">Acceptor::getLocalAddr</a>
+## <a id="acceptor-getlocaladdr">Acceptor::getLocalAddr</a>
 
 ```cpp
 const std::pair<std::string, int>& getLocalAddr() const;
@@ -345,7 +344,7 @@ const std::pair<std::string, int>& getLocalAddr() const;
 
 The address the Acceptor is listening on (ip and port).
 
-### <a name="acceptor-gethandle">Acceptor::getHandle</a>
+## <a id="acceptor-gethandle">Acceptor::getHandle</a>
 
 ```cpp
 SocketHandle getHandle();
@@ -359,7 +358,7 @@ The native socket handle.
 
 This function is provided just as convenience if you wish to do something czspas doesn't support. BE CAREFUL with what you do with the handle.
 
-## Socket
+# <a id="socket">Socket</a>
 
 ***Thread safety***
 
@@ -376,7 +375,7 @@ This function is provided just as convenience if you wish to do something czspas
 * Only one send operation and one receive operation can be active at one point.
 	* In other words, do not make a call to any send (synchronous or asynchronous) while there is another send operation in progress. Same for receive operations.
 
-### <a name="socket-constructor">Constructor</a>
+## <a id="socket-constructor">Constructor</a>
 
 ```cpp
 Socket(Service& service);
@@ -386,7 +385,7 @@ Socket(Service& service);
 * **service** : The Service object that will be managing all the work for this Socket.
 All asynchronous work handlers for this Socket will be executed through this Service's *run()* function.
 
-### <a name="socket-connect">Socket::connect</a>
+## <a id="socket-connect">Socket::connect</a>
 
 ```cpp
 Error connect(const char* ip, int port);
@@ -400,7 +399,7 @@ Error connect(const char* ip, int port);
 
 The operation result (success or an error)
 
-### <a name="socket-asyncconnect">Socket::asyncConnect</a>
+## <a id="socket-asyncconnect">Socket::asyncConnect</a>
 
 ```cpp
 void asyncConnect(const char* ip, int port, ConnectHandler&& h); // (1)
@@ -420,7 +419,7 @@ Starts an asynchronous connect operation
 
 (1) It uses a timeout of *-1* (no timeout)
 
-### <a name="socket-sendsome">Socket::sendSome</a>
+## <a id="socket-sendsome">Socket::sendSome</a>
 
 ```cpp
 size_t sendSome(const char* buf, size_t len, Error& ec); // (1)
@@ -446,7 +445,7 @@ Note that this doesn't necessarily means the peer received the data. Just means 
 * (1) It uses a timeout of *-1* (no timeout)
 * This operation might send less data than *len*. Use the free function *send* to send a buffer in is entirety.
 
-### <a name="socket-asyncsendsome">Socket::asyncSendSome</a>
+## <a id="socket-asyncsendsome">Socket::asyncSendSome</a>
 
 ```cpp
 void asyncSendSome(const char* buf, size_t len, TransferHandler&& h); // (1)
@@ -467,7 +466,7 @@ Starts an asynchronous send operation.
 * (1) It uses a timeout of *-1* (no timeout)
 * This operation might send less data than *len*. Use the free function *asyncSend* to send a buffer in is entirety.
 
-### <a name="socket-receivesome">Socket::receiveSome</a>
+## <a id="socket-receivesome">Socket::receiveSome</a>
 
 ```cpp
 size_t receiveSome(char* buf, size_t len, Error& ec); // (1)
@@ -494,7 +493,7 @@ Note that this doesn't necessarily means the peer received the data. Just means 
 * (1) It uses a timeout of *-1* (no timeout)
 * This operation might receive less data than *len*. Use the free function *receive* to receive a buffer in is entirety.
 
-### <a name="socket-asyncreceivesome">Socket::asyncReceiveSome</a>
+## <a id="socket-asyncreceivesome">Socket::asyncReceiveSome</a>
 
 ```cpp
 void asyncReceiveSome(char* buf, size_t len, TransferHandler&& h); // (1)
@@ -515,7 +514,7 @@ Starts an asynchronous receive operation.
 * (1) It uses a timeout of *-1* (no timeout)
 * This operation might receive less data than *len*. Use the free function *asyncReceive* to receive a buffer in is entirety.
 
-### <a name="socket-cancel">Socket::cancel</a>
+## <a id="socket-cancel">Socket::cancel</a>
 
 ```cpp
 void cancel();
@@ -523,7 +522,7 @@ void cancel();
 
 Cancels all outstanding asynchronous operations. The handlers for the cancelled operations will be passed the *Error::Code::Cancelled* error.
 
-### <a name="socket-getservice">Socket::getService</a>
+## <a id="socket-getservice">Socket::getService</a>
 
 ```cpp
 Service& getService();
@@ -533,7 +532,7 @@ Service& getService();
 
 The Service associated with this object.
 
-### <a name="socket-setlinger">Socket::setLinger</a>
+## <a id="socket-setlinger">Socket::setLinger</a>
 
 ```cpp
 void setLinger(bool enabled, unsigned short timeoutSeconds);
@@ -545,7 +544,7 @@ Controls the SO_LINGER socket options.
 
 You should know what SO_LINGER does before trying to use this function.
 
-### <a name="socket-getlocaladdr">Socket::getLocalAddr</a>
+## <a id="socket-getlocaladdr">Socket::getLocalAddr</a>
 
 ```cpp
 const std::pair<std::string, int>& getLocalAddr() const;
@@ -555,7 +554,7 @@ const std::pair<std::string, int>& getLocalAddr() const;
 
 Returns the local address of the socket (ip and port).
 
-### <a name="socket-getpeeraddr">Socket::getPeerAddr</a>
+## <a id="socket-getpeeraddr">Socket::getPeerAddr</a>
 
 ```cpp
 const std::pair<std::string, int>& getPeerAddr() const;
@@ -565,7 +564,7 @@ const std::pair<std::string, int>& getPeerAddr() const;
 
 Returns the peer address of the socket (ip and port).
 
-### <a name="socket-gethandle">Socket::getHandle</a>
+## <a id="socket-gethandle">Socket::getHandle</a>
 
 ```cpp
 SocketHandle getHandle();
@@ -579,11 +578,11 @@ The native socket handle.
 
 This function is provided just as convenience if you wish to do something czspas doesn't support. BE CAREFUL with what you do with the handle.
 
-## <a id="free-functions">Free functions</a>
+# <a id="free_functions">Free functions</a>
 
 Free functions are all the functions that are not methods of a class
 
-### send
+## <a id="free_functions-send">send</a>
 
 ```cpp
 size_t send(Socket& sock, const char* buf, size_t len, Error& ec); // (1)
@@ -616,7 +615,7 @@ This function is implemented as multiple calls to *Socket::sendSome*, so don't c
 
 (1) Assumes a timeout of -1 (no timeout)
 
-### asyncSend
+## <a id="free_functions-asyncsend">asyncSend</a>
 
 ```cpp
 void asyncSend(Socket& sock, const char* buf, size_t len, TransferHandler&& h); // (1)
@@ -641,7 +640,7 @@ This function is implemented as multiple calls to *Socket::asyncSendSome*, so do
 
 (1) Assumes a timeout of -1 (no timeout)
 
-## receive
+## <a id="free_functions-receive">receive</a>
 
 ```cpp
 size_t receive(Socket& sock, char* buf, size_t len, Error& ec); // (1)
@@ -672,7 +671,7 @@ This function is implemented as multiple calls to *Socket::receiveSome*, so don'
 
 (1) Assumes a timeout of -1 (no timeout)
 
-## asyncReceive
+## <a id="free_functions-asyncreceive">asyncReceive</a>
 
 ```cpp
 void asyncReceive(Socket& sock, char* buf, size_t len, TransferHandler&& h); // (1)
@@ -696,3 +695,4 @@ Note that contrary to *Socket::asyncReceiveSome*, this function will try to rece
 This function is implemented as multiple calls to *Socket::asyncReceiveSome*, so don't call any send operations on the same Socket while this one is running.
 
 (1) Assumes a timeout of -1 (no timeout)
+
