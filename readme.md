@@ -23,7 +23,9 @@ It requires a C++17 compiler.
 
 ## Documentation
 
-To get started, check the [Documentation](/docs/Readme.md#top2)
+To get started, check the [Documentation](./docs/Readme.md#top)
+
+
 
 ## Donations
 
