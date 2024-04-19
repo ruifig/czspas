@@ -1,5 +1,5 @@
 <a id="overall-design"></a>
-## Overall design
+# Overall design
 
 Use of czspas revolves around using just a couple of classes:
 
@@ -25,7 +25,7 @@ The entire relevant API resides in the ```cz::spas``` namespace. The ```cz::spas
 
 Functions prefixed with "_" should not be used. Those are accessible to make coding the unit tests easier.
 
-## Guarantees and expectations
+# Guarantees and expectations
 
 Since czspas is inspired by Asio, and the API is somewhat similar, it provides a similar set of guarantees.
 
@@ -579,7 +579,7 @@ The native socket handle.
 
 This function is provided just as convenience if you wish to do something czspas doesn't support. BE CAREFUL with what you do with the handle.
 
-## Free functions
+## <a id="free-functions">Free functions</a>
 
 Free functions are all the functions that are not methods of a class
 
