@@ -63,9 +63,7 @@ In order to make it easier to deal with compile errors due wrong handler signatu
 	* **ec** : Tells if the operation completed successfully or not.
 	* **transfered** : How much data was sent (if it was a send operation), or received (if it was a receive operation).
 
-
-<a id="error"></a>
-## Error
+## <a id="error">Error</a>
 
 Instances of this class are used to indicate success or errors.
 
