@@ -1,4 +1,4 @@
-<a name="overall-design"></a>
+<a id="overall-design"></a>
 ## Overall design
 
 Use of czspas revolves around using just a couple of classes:
@@ -64,7 +64,7 @@ In order to make it easier to deal with compile errors due wrong handler signatu
 	* **transfered** : How much data was sent (if it was a send operation), or received (if it was a receive operation).
 
 
-<a name="error"></a>
+<a id="error"></a>
 ## Error
 
 Instances of this class are used to indicate success or errors.
