@@ -11,10 +11,10 @@ function(setup_czspas_sample target_name)
 	set_property(TARGET ${target_name} PROPERTY FOLDER "${CZ_IDE_FOLDER}${PROJECT_NAME}/samples")
 endfunction()
 
-setup_czspas_sample(czrpc_sample_EchoServer
+setup_czspas_sample(czspas_sample_EchoServer
 	"Echo/EchoServer.cpp")
-setup_czspas_sample(czrpc_sample_EchoAsyncClient
+setup_czspas_sample(czspas_sample_EchoAsyncClient
 	"Echo/EchoAsynchronousClient.cpp")
-setup_czspas_sample(czrpc_sample_EchoSyncClient
+setup_czspas_sample(czspas_sample_EchoSyncClient
 	"Echo/EchoSynchronousClient.cpp")
 
