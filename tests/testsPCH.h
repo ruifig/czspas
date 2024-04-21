@@ -16,6 +16,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
+#include <thread>
 
 #include "Semaphore.h"
 
