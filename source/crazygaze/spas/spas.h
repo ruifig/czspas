@@ -149,11 +149,11 @@ class Service;
 
 // Fatal logging is always available
 #ifndef CZSPAS_FATAL
-	#define CZSPAS_FATAL(fmt, ...)                                        \
-		{                                                                 \
+	#define CZSPAS_FATAL(fmt, ...)                                                    \
+		{                                                                             \
 			::cz::spas::detail::DefaultLog::out(true, "Fatal: ", fmt, ##__VA_ARGS__); \
-			CZSPAS_DEBUG_BREAK();                                         \
-			exit(1);                                                      \
+			CZSPAS_DEBUG_BREAK();                                                     \
+			exit(1);                                                                  \
 		}
 #endif
 

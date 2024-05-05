@@ -13,3 +13,5 @@ target_precompile_headers(czspas_tests PUBLIC "testsPCH.h")
 target_link_libraries(czspas_tests cz::spas Catch2WithMain)
 set_property(TARGET czspas_tests PROPERTY FOLDER "${CZ_IDE_FOLDER}${PROJECT_NAME}/tests")
 
+add_test(NAME czspas_tests COMMAND czspas_tests)
+

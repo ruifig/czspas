@@ -7,5 +7,5 @@ x64/
 /.vimvs-tmp*
 
 # ignore dependencies needed during library development
-/Deps/Catch2
+/deps/Catch2
 
