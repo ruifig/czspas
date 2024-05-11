@@ -1098,3 +1098,42 @@ TEST_CASE("exception_safety")
 	CHECK(cancelled);
 }
 
+struct ResolverSession : std::enable_shared_from_this<ResolverSession>
+{
+	ResolverSession(Service& service)
+		: resolver(service)
+	{
+	}
+
+	Resolver resolver;
+};
+
+TEST_CASE("asyncConnect", "[Resolver]")
+{
+	TEST_LOG("");
+
+	ServiceThread ioth(false, false, false);
+	ioth.run();
+
+	SECTION("Success")
+	{
+		auto resolverSession = std::make_shared<ResolverSession>(ioth.service);
+		resolverSession->resolver.asyncResolve("example.com", [resolverSession](const Error& ec, std::string ip)
+		{
+			TEST_LOG("Test 1");
+			CHECK(ec.code == Error::Code::Success);
+		});
+	}
+
+	SECTION("Host not found")
+	{
+		auto resolverSession = std::make_shared<ResolverSession>(ioth.service);
+		resolverSession->resolver.asyncResolve("example.coom", [resolverSession](const Error& ec, std::string ip)
+		{
+			TEST_LOG("Test 2");
+			CHECK(ec.code == Error::Code::HostNotFound);
+		});
+	}
+
+}
+

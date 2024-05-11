@@ -1,5 +1,7 @@
 #pragma once
 
+#define TEST_LOG(fmt, ...) printf("Log: " fmt "\n", ##__VA_ARGS__)
+
 // The Data template type is just a dummy way to add state to a session if a unit test requires it
 template<typename Data=int>
 struct Session : std::enable_shared_from_this<Session<Data>>
@@ -50,13 +52,17 @@ struct ServiceThread
 		: doStop(doStop)
 		, keepAlive(keepAlive)
 	{
+		TEST_LOG("ServiceThread %p: Constructor", this);
+		
 		if (autoRun)
 			run();
 	}
 
 	~ServiceThread()
 	{
+		TEST_LOG("ServiceThread %p: Destructor start", this);
 		finish();
+		TEST_LOG("ServiceThread %p: Destructor end", this);
 	}
 
 	void run()
@@ -69,6 +75,7 @@ struct ServiceThread
 			if (keepAlive)
 				work = std::make_unique<Service::Work>(service);
 			service.run();
+			printf("");
 		});
 	}
 

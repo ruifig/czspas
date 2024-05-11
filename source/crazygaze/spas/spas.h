@@ -182,6 +182,7 @@ struct Error
 		Timeout,
 		ConnectionClosed,
 		InvalidSocket,
+		HostNotFound,
 		Other,
 		Max // Only used internally
 	};
@@ -207,6 +208,7 @@ struct Error
 			case Code::Timeout: return "Timeout";
 			case Code::ConnectionClosed: return "ConnectionClosed";
 			case Code::InvalidSocket: return "InvalidSocket";
+			case Code::HostNotFound: return "HostNotFound";
 			default: return "Unknown";
 		}
 	}
@@ -233,6 +235,7 @@ private:
 using PostHandler = std::function<void()>;
 using ConnectHandler = std::function<void(const Error& ec)>;
 using TransferHandler = std::function<void(const Error& ec, size_t transfered)>;
+using ResolveHandler = std::function<void(const Error& ec, std::string ip)>;
 
 namespace detail
 {
@@ -366,6 +369,8 @@ namespace detail
 	using IsConnectHandler = std::enable_if_t<detail::check_signature<H, void(const Error&)>::value>;
 	template<typename H>
 	using IsTransferHandler = std::enable_if_t<detail::check_signature<H, void(const Error&, size_t)>::value>;
+	template<typename H>
+	using IsResolveHandler = std::enable_if_t<detail::check_signature<H, void(const Error&, std::string ip)>::value>;
 
 	class ErrorWrapper
 	{
@@ -400,7 +405,7 @@ namespace detail
 			StringCchPrintfA(
 				(char*)lpDisplayBuf,
 				LocalSize(lpDisplayBuf),
-				"%s failed with error %x: %s",
+				"%s failed with error %d: %s",
 				funcname ? funcname : "",
 				err,
 				(const char*)lpMsgBuf);
@@ -414,23 +419,31 @@ namespace detail
 			return ret;
 		}
 
-		ErrorWrapper() { err = WSAGetLastError(); }
-		explicit ErrorWrapper(int err_) : err(err_) {}
-		std::string msg() const { return getWin32ErrorMsg(err); }
-		bool isBlockError() const { return err == WSAEWOULDBLOCK; }
-		int getCode() const { return err; };
+		ErrorWrapper() { m_err = WSAGetLastError(); }
+		explicit ErrorWrapper(int err) : m_err(err) {}
+		std::string msg() const { return getWin32ErrorMsg(m_err); }
+		bool isBlockError() const { return m_err == WSAEWOULDBLOCK; }
+		bool isHostNotFoundError() const { return m_err == WSAHOST_NOT_FOUND; }
+		bool isTryAgainError() const { return m_err == WSATRY_AGAIN; }
+		int getCode() const { return m_err; };
 #else
-		ErrorWrapper() { err = errno; }
-		explicit ErrorWrapper(int err_) : err(err_) {}
-		bool isBlockError() const { return err == EAGAIN || err == EWOULDBLOCK || err == EINPROGRESS; }
+		ErrorWrapper() { m_err = errno; }
+		explicit ErrorWrapper(int err) 
+		{
+			m_err = err == EAI_SYSTEM ? errno : err;
+		}
+
+		bool isBlockError() const { return m_err == EAGAIN || m_err == EWOULDBLOCK || m_err == EINPROGRESS; }
+		bool isHostNotFoundError() const { return m_err == EAI_NONAME; }
+		bool isTryAgainError() const { return m_err == EAI_AGAIN; ;}
 		// #TODO Build custom error depending on the error number
-		std::string msg() const { return strerror(err); }
+		std::string msg() const { return strerror(m_err); }
 		int getCode() const { return err; };
 #endif
 
 		Error getError() const { return Error(Error::Code::Other, msg()); }
 	private:
-		int err;
+		int m_err;
 	};
 
 	struct utils
@@ -748,6 +761,7 @@ namespace detail
 	{
 		WSAInstance()
 		{
+			CZSPAS_INFO("WSAInstance %p: Constructor", this);
 			WORD wVersionRequested = MAKEWORD(2, 2);
 			WSADATA wsaData;
 			int err = WSAStartup(wVersionRequested, &wsaData);
@@ -762,6 +776,7 @@ namespace detail
 		}
 		~WSAInstance()
 		{
+			CZSPAS_INFO("WSAInstance %p: Destructor", this);
 			WSACleanup();
 		}
 	};
@@ -806,7 +821,7 @@ namespace detail
 
 		Service& getService()
 		{
-			return *((Service*)&owner);
+			return *reinterpret_cast<Service*>(&owner);
 		}
 
 		void setLinger(bool enabled, unsigned short timeoutSeconds)
@@ -1424,9 +1439,12 @@ public:
 
 	Service()
 	{
+		CZSPAS_INFO("Service %p: Constructor", this);
 	}
 	~Service()
 	{
+		CZSPAS_INFO("Service %p: Destructor", this);
+
 		// Making sure all Operation objects are destroyed before Sockets, so we don't get the "pending" operations
 		// asserts while destroying sockets.
 		m_reactor.deleteOps();
@@ -1529,11 +1547,13 @@ private:
 
 	void workStarted()
 	{
+		CZSPAS_INFO("Service %p: workStarted");
 		++m_outstandingWork;
 	}
 
 	void workFinished()
 	{
+		CZSPAS_INFO("Service %p: workFinished");
 		auto n = --m_outstandingWork;
 		CZSPAS_ASSERT(n >= 0);
 		if (n==0)
@@ -1563,6 +1583,7 @@ private:
 	}
 
 	friend class Acceptor;
+	friend class Resolver;
 	friend class Socket;
 	friend class Work;
 	std::mutex m_mtx;
@@ -1969,6 +1990,190 @@ public:
 
 private:
 	detail::SocketHelper m_base;
+};
+
+
+namespace detail
+{
+
+	// Multiple producer, multiple consumer thread safe queue
+	template<typename T>
+	class SharedQueue
+	{
+	private:
+		std::queue<T> m_queue;
+		mutable std::mutex m_mtx;
+		std::condition_variable m_data_cond;
+
+		SharedQueue& operator=(const SharedQueue&) = delete;
+		SharedQueue(const SharedQueue& other) = delete;
+
+	public:
+		SharedQueue() {}
+
+		template<typename... Args>
+		void emplace(Args&&... args)
+		{
+			std::lock_guard<std::mutex> lock(m_mtx);
+			m_queue.emplace(std::forward<Args>(args)...);
+			m_data_cond.notify_one();
+		}
+
+		template<typename Arg>
+		void push(Arg&& item)
+		{
+			std::lock_guard<std::mutex> lock(m_mtx);
+			m_queue.push(std::forward<Arg>(item));
+			m_data_cond.notify_one();
+		}
+
+		// Retrieves an item, blocking if necessary to wait for items.
+		void wait_and_pop(T& popped_item)
+		{
+			std::unique_lock<std::mutex> lock(m_mtx);
+			m_data_cond.wait(lock, [this] { return !m_queue.empty();});
+			popped_item = std::move(m_queue.front());
+			m_queue.pop();
+		}
+
+	};
+
+
+} // namespace detail
+
+//////////////////////////////////////////////////////////////////////////
+//	Resolver interface
+//////////////////////////////////////////////////////////////////////////
+class Resolver
+{
+public:
+	Resolver(Service& service)
+		: m_service(service)
+		, m_th(&Resolver::runThread, this)
+	{
+		CZSPAS_INFO("Resolver %p: Constructor", this);
+	}
+
+	virtual ~Resolver()
+	{
+		CZSPAS_INFO("Resolver %p: Destructor", this);
+		// If we are trying to destroy the Resolver from the same thread it is using for the resolve work, then either we or the
+		// developer are doing something wrong
+		CZSPAS_ASSERT(m_th.get_id() != std::this_thread::get_id());
+		m_requests.push(nullptr);
+		if (m_th.joinable())
+			m_th.join();
+	}
+
+	Service& getService()
+	{
+		return *reinterpret_cast<Service*>(&m_service);
+	}
+
+	template< typename H, typename = detail::IsResolveHandler<H> >
+	void asyncResolve(const char* hostname, H&& h)
+	{
+		auto request = std::make_unique<Request>();
+		request->hostname = hostname;
+		request->handler = std::move(h);
+
+		// Mark the Service as having work left to do, so a call to its run() doesn't return until we finish this resolve
+		m_service.workStarted();
+
+		m_requests.push(std::move(request));
+	}
+
+private:
+
+	struct Request
+	{
+		std::string hostname;
+		ResolveHandler handler;
+	};
+
+	void doResolve(std::unique_ptr<Request> request)
+	{
+		CZSPAS_INFO("Resolver %p: Start resolve for '%s'", this, request->hostname.c_str());
+
+		std::string hostname = request->hostname;
+		CZSPAS_SCOPE_EXIT{ CZSPAS_INFO("Resolver %p: Finished resolving for '%s'", this, hostname.c_str()); };
+
+		addrinfo hints;
+		addrinfo* res = nullptr;
+		memset(&hints, 0, sizeof(hints));
+		hints.ai_family = AF_INET; // AF_INET for IPv4, AF_INET6 for IPv6, AF_UNSPEC for either
+		hints.ai_socktype = SOCK_STREAM;
+
+		int status = getaddrinfo(request->hostname.c_str(), nullptr, &hints, &res);
+		CZSPAS_SCOPE_EXIT { freeaddrinfo(res); };
+
+		if (status == 0) // Success
+		{
+			assert(res);
+
+			// Loop over all returned results and do a inverse lookup
+			addrinfo* iter; 
+			for (iter = res; iter != nullptr; iter = iter->ai_next)
+			{
+				// We return the first result
+				sockaddr_in* ipv4 = (sockaddr_in*)iter->ai_addr;
+				std::pair<std::string, int> addr = detail::utils::addrToPair(*ipv4);
+
+				Error ec(Error::Code::Success);
+
+				CZSPAS_INFO("Resolver %p: Resolved '%s' to '%s'", this, request->hostname.c_str(), addr.first.c_str());
+				m_service.post([request = request.release(), ec = std::move(ec), addr = std::move(addr)]()
+				{
+					std::unique_ptr<Request> ptr(request); // Put it back in a unique_ptr, so it gets deleted no matter what
+					request->handler(ec, addr.first);
+				});
+			}
+			
+		}
+		else
+		{
+			detail::ErrorWrapper e(status);
+			Error ec(e.isHostNotFoundError() ? Error::Code::HostNotFound : Error::Code::Other, e.msg());
+
+			CZSPAS_ERROR("Resolver %p: Failed to resolve '%s': '%s'", this, request->hostname.c_str(), e.msg().c_str());
+			m_service.post([request = request.release(), ec = std::move(ec)]()
+			{
+				std::unique_ptr<Request> ptr(request); // Put it back in a unique_ptr, so it gets deleted no matter what
+				request->handler(ec, "");
+			});
+		}
+
+		// This needs to be after the post() call. The post call does a workStarted() call, so doing this after the post() means
+		// that at no point the Service will be marked as having no work
+		m_service.workFinished();
+	}
+
+	void runThread()
+	{
+		CZSPAS_INFO("Resolver %p: Starting resolve thread.", this);
+
+		while(true)
+		{
+			std::unique_ptr<Request> request;
+			m_requests.wait_and_pop(request);
+			if (request)
+			{
+				doResolve(std::move(request));
+			}
+			else
+			{
+				// An empty request means we want to stop destroy the resolver, so lets get out of the loop
+				break;
+			}
+		}
+
+		CZSPAS_INFO("Resolver %p: Finished resolve thread.", this);
+	}
+
+	Service& m_service;
+	detail::SharedQueue<std::unique_ptr<Request>> m_requests;
+	std::thread m_th;
+	bool m_stop = false; 
 };
 
 namespace detail
