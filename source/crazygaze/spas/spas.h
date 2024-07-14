@@ -188,10 +188,12 @@ struct Error
 	};
 
 	Error(Code c = Code::Success) : code(c) {}
+
 	Error(Code c, const char* msg) : code(c)
 	{
 		setMsg(msg);
 	}
+
 	Error(Code c, const std::string& msg) : code(c)
 	{
 		setMsg(msg.c_str());
@@ -200,7 +202,10 @@ struct Error
 	const char* msg() const
 	{
 		if (optionalMsg)
+		{
 			return optionalMsg->c_str();
+		}
+
 		switch (code)
 		{
 			case Code::Success: return "Success";
@@ -255,7 +260,9 @@ namespace detail
 		~ScopeGuard()
 		{
 			if (m_active)
+			{
 				m_fun();
+			}
 		}
 
 		void dismiss()
@@ -320,6 +327,7 @@ namespace detail
 	#define CZSPAS_SCOPE_EXIT \
 		auto CZSPAS_ANONYMOUS_VARIABLE(SCOPE_EXIT_STATE) \
 		= cz::spas::detail::ScopeGuardOnExit() + [&]()
+
 	//////////////////////////////////////////////////////////////////////////
 
 
@@ -381,7 +389,9 @@ namespace detail
 			LPVOID lpMsgBuf;
 			LPVOID lpDisplayBuf;
 			if (err == ERROR_SUCCESS)
+			{
 				err = GetLastError();
+			}
 
 			FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
 				NULL,
@@ -394,8 +404,7 @@ namespace detail
 			CZSPAS_SCOPE_EXIT{ LocalFree(lpMsgBuf); };
 
 			int funcnameLength = funcname ? (int)strlen(funcname) : 0;
-			lpDisplayBuf =
-				(LPVOID)LocalAlloc(LMEM_ZEROINIT, (strlen((char*)lpMsgBuf) + funcnameLength + 50));
+			lpDisplayBuf = (LPVOID)LocalAlloc(LMEM_ZEROINIT, (strlen((char*)lpMsgBuf) + funcnameLength + 50));
 			if (lpDisplayBuf == nullptr)
 			{
 				return "";
@@ -414,7 +423,9 @@ namespace detail
 
 			// Remove the \r\n at the end
 			while (ret.size() && ret.back() < ' ')
+			{
 				ret.pop_back();
+			}
 
 			return ret;
 		}
@@ -473,8 +484,7 @@ namespace detail
 #if _WIN32
 			int optval = 1;
 			DWORD NumberOfBytesReturned = 0;
-			int status =
-				WSAIoctl(
+			int status = WSAIoctl(
 					s,
 					SIO_LOOPBACK_FAST_PATH,
 					&optval,
@@ -504,15 +514,24 @@ namespace detail
 		static void closeSocket(SocketHandle& s, bool doshutdown=true)
 		{
 			if (s == CZSPAS_INVALID_SOCKET)
+			{
 				return;
+			}
+
 			int res;
 #if _WIN32
 			if (doshutdown)
+			{
 				::shutdown(s, SD_BOTH);
+			}
+
 			res = ::closesocket(s);
 #else
 			if (doshutdown)
+			{
 				::shutdown(s, SHUT_RDWR);
+			}
+
 			res = ::close(s);
 #endif
 
@@ -548,8 +567,11 @@ namespace detail
 				TCP_NODELAY,     /* name of option */
 				(char *)&flag,   /* the cast is historical cruft */
 				sizeof(flag));   /* length of option value */
+
 			if (result != 0)
+			{
 				CZSPAS_FATAL(ErrorWrapper().msg().c_str());
+			}
 		}
 
 		static void setReuseAddress(SocketHandle s)
@@ -557,7 +579,9 @@ namespace detail
 			int optval = 1;
 			int res = setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char*)&optval, sizeof(optval));
 			if (res != 0)
+			{
 				CZSPAS_FATAL(ErrorWrapper().msg().c_str());
+			}
 		}
 
 		// Set the linger option, in seconds
@@ -568,7 +592,9 @@ namespace detail
 			l.l_linger = timeoutSeconds;
 			int res = setsockopt(s, SOL_SOCKET, SO_LINGER, (const char*)&l, sizeof(l));
 			if (res != 0)
+			{
 				CZSPAS_FATAL(ErrorWrapper().msg().c_str());
+			}
 		}
 
 		static Error getSocketError(SocketHandle s)
@@ -582,9 +608,13 @@ namespace detail
 			else
 			{
 				if (result)
+				{
 					return ErrorWrapper(result).getError();
+				}
 				else
+				{
 					return Error();
+				}
 			}
 		}
 
@@ -603,7 +633,9 @@ namespace detail
 			sockaddr_in addr;
 			socklen_t size = sizeof(addr);
 			if (getsockname(s, (sockaddr*)&addr, &size) != CZSPAS_SOCKET_ERROR && size == sizeof(addr))
+			{
 				return addrToPair(addr);
+			}
 			else
 			{
 				CZSPAS_ERROR(ErrorWrapper().msg().c_str());
@@ -616,9 +648,13 @@ namespace detail
 			sockaddr_in addr;
 			socklen_t size = sizeof(addr);
 			if (getpeername(s, (sockaddr*)&addr, &size) != CZSPAS_SOCKET_ERROR)
+			{
 				return addrToPair(addr);
+			}
 			else
+			{
 				return std::make_pair("0.0.0.0", 0);
+			}
 		}
 
 		//! Creates a socket and puts it into listen mode
@@ -637,18 +673,26 @@ namespace detail
 		{
 			SocketHandle s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 			if (s == CZSPAS_INVALID_SOCKET)
+			{
 				return std::make_pair(detail::ErrorWrapper().getError(), s);
+			}
 
 			if (reuseAddr)
+			{
 				detail::utils::setReuseAddress(s);
+			}
 
 			sockaddr_in addr;
 			addr.sin_family = AF_INET;
 			addr.sin_port = htons(static_cast<uint16_t>(port));
 			if (bindIP)
+			{
 				inet_pton(AF_INET, bindIP, &(addr.sin_addr));
+			}
 			else
+			{
 				addr.sin_addr.s_addr = htonl(INADDR_ANY);
+			}
 
 			if (
 				(::bind(s, (const sockaddr*)&addr, sizeof(addr)) == CZSPAS_SOCKET_ERROR) ||
@@ -676,7 +720,9 @@ namespace detail
 		{
 			SocketHandle s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 			if (s == CZSPAS_INVALID_SOCKET)
+			{
 				return std::make_pair(detail::ErrorWrapper().getError(), s);
+			}
 
 			// Enable any loopback optimizations (in case this socket is used in loopback)
 			detail::utils::optimizeLoopback(s);
@@ -726,7 +772,8 @@ namespace detail
 			{
 				return std::make_pair(true, Error());
 			}
-			else if (res == CZSPAS_SOCKET_ERROR) {
+			else if (res == CZSPAS_SOCKET_ERROR)
+			{
 				return std::make_pair(false, detail::ErrorWrapper().getError());
 			}
 			else
@@ -741,13 +788,17 @@ namespace detail
 			auto res = doSelect(acceptor, true, timeoutMs);
 
 			if (res.second) // Return any error
+			{
 				return std::make_pair(res.second, CZSPAS_INVALID_SOCKET);
+			}
 
 			sockaddr_in addr;
 			socklen_t size = sizeof(addr);
 			SocketHandle s = ::accept(acceptor, (struct sockaddr*)&addr, &size);
 			if (s == CZSPAS_INVALID_SOCKET)
+			{
 				return std::make_pair(detail::ErrorWrapper().getError(), s);
+			}
 
 			detail::utils::setBlocking(s, false);
 
@@ -766,7 +817,9 @@ namespace detail
 			WSADATA wsaData;
 			int err = WSAStartup(wVersionRequested, &wsaData);
 			if (err != 0)
+			{
 				CZSPAS_FATAL(ErrorWrapper().msg().c_str());
+			}
 
 			if (LOBYTE(wsaData.wVersion) != 2 || HIBYTE(wsaData.wVersion) != 2)
 			{
@@ -883,7 +936,9 @@ namespace detail
 			: dbgCounter(dbgCounter)
 		{
 			if (dbgCounter)
+			{
 				++(*dbgCounter);
+			}
 		}
 
 		virtual ~Operation()
@@ -955,7 +1010,9 @@ namespace detail
 			socklen_t size = sizeof(addr);
 			sock.s = ::accept(fd, (struct sockaddr*)&addr, &size);
 			if (sock.s == CZSPAS_INVALID_SOCKET)
+			{
 				ec = detail::ErrorWrapper().getError();
+			}
 			else
 			{
 				detail::utils::setBlocking(sock.s, false);
@@ -990,7 +1047,9 @@ namespace detail
 			CZSPAS_ASSERT(fd == owner.getHandle());
 			ec = detail::utils::getSocketError(fd);
 			if (!ec)
+			{
 				owner.resolveAddrs();
+			}
 		}
 
 		virtual void callUserHandler() override
@@ -1165,7 +1224,9 @@ private:
 		void cancel(Error::Code code, std::queue<std::unique_ptr<Operation>>& dst)
 		{
 			for (auto&& op : ops)
+			{
 				op.cancel(code, dst);
+			}
 		}
 
 		OperationData ops[EventType::Max];
@@ -1203,10 +1264,15 @@ private:
 	{
 		auto&& o = data.ops[type];
 		if (!o.op)
+		{
 			return;
+		}
+
 		fd.events |= (type == Reactor::EventType::Read) ? POLLRDNORM : POLLWRNORM;
 		if (o.timeout < timeout)
+		{
 			timeout = o.timeout;
+		}
 	}
 
 	// Return true if the operation was left empty (e.g: executed/timed out)
@@ -1214,7 +1280,9 @@ private:
 	                         std::queue<std::unique_ptr<Operation>>& dst)
 	{
 		if (!opdata.op)
+		{
 			return true;
+		}
 
 		if (ready)
 		{
@@ -1229,7 +1297,9 @@ private:
 			return true;
 		}
 		else
+		{
 			return false;
+		}
 	}
 
 	void processEvents(std::queue<std::unique_ptr<Operation>>& dst)
@@ -1240,7 +1310,9 @@ private:
 			auto&& fd = *fdit;
 			auto it = m_sockData.find(fd.fd);
 			if (it==m_sockData.end())
+			{
 				continue; // Socket data not present anymore (E.g: Operations were cancelled while in the poll function)
+			}
 
 			// We can have POLLHUP but still have POLLRDNORM (Which means it disconnected, but we can still read some more data).
 			// So to be safe, whenever POLLRDNORM or POLLWRNORM is set, we ignore the errors
@@ -1258,7 +1330,9 @@ private:
 				empty = processEventsHelper(it->first, it->second.ops[EventType::Write],
 					fd.revents & POLLWRNORM, hasPOLLHUP, now, dst) && empty;
 				if (empty)
+				{
 					m_sockData.erase(it);
+				}
 			}
 		}
 	}
@@ -1287,13 +1361,20 @@ public:
 		{
 			auto res = detail::utils::accept(acceptor.second);
 			if (res.first) // If some error occurred, just try and accept another.
+			{
 				continue;
+			}
+
 			// A simple check to make sure it's the connection we expect.
 			// From the acceptor perspective, the remote port of the incoming connection must be the local port of m_signalOut
 			if (detail::utils::getRemoteAddr(res.second).second == detail::utils::getLocalAddr(m_signalOut).second)
+			{
 				m_signalIn = res.second;
+			}
 			else
+			{
 				detail::utils::closeSocket(res.second, false);
+			}
 		}
 
 		detail::utils::closeSocket(acceptor.second);
@@ -1327,7 +1408,9 @@ public:
 		flags = MSG_NOSIGNAL;
 #endif
 		if (::send(m_signalOut, &buf, 1, flags) != 1)
+		{
 			CZSPAS_FATAL("Reactor %p", this, detail::ErrorWrapper().msg().c_str());
+		}
 	}
 
 	void addOperation(SocketHandle fd, EventType type, std::unique_ptr<Operation> op, int timeoutMs)
@@ -1345,7 +1428,9 @@ public:
 		std::unique_lock<std::mutex> lk(m_mtx);
 		auto it = m_sockData.find(fd);
 		if (it == m_sockData.end())
+		{
 			return; // No operations for this socket found
+		}
 		it->second.cancel(Error::Code::Cancelled, dst);
 		m_sockData.erase(it);
 		interrupt();
@@ -1372,7 +1457,9 @@ public:
 		{
 			timeoutMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(timeoutPoint - std::chrono::high_resolution_clock::now()).count());
 			if (timeoutMs < 0)
+			{
 				timeoutMs = 0;
+			}
 		}
 
 #if _WIN32
@@ -1431,7 +1518,9 @@ public:
 		~Work()
 		{
 			if (m_io)
+			{
 				m_io->workFinished();
+			}
 		}
 	private:
 		Service* m_io;
@@ -1474,7 +1563,9 @@ public:
 				// - If m_tmpready is empty, and we can do a swap since its faster
 				// - If m_tmpready is not empty, append the m_ready contents
 				if (m_tmpready.size() == 0)
+				{
 					std::swap(m_tmpready, m_ready);
+				}
 				else
 				{
 					while (m_ready.size())
@@ -1871,7 +1962,10 @@ public:
 		// run another server right after
 		// Not sure this is necessary for listening sockets. ;(
 		if (m_base.s != CZSPAS_INVALID_SOCKET)
+		{
 			detail::utils::setLinger(m_base.s, true, 0);
+		}
+
 		detail::utils::closeSocket(m_base.s, false);
 	}
 
@@ -1951,14 +2045,18 @@ public:
 	void cancel()
 	{
 		if (m_base.isValid())
+		{
 			m_base.getService().cancel(m_base.s);
+		}
 	}
 
 	void close()
 	{
 		cancel();
 		if (m_base.isValid())
+		{
 			detail::utils::closeSocket(m_base.s, false);
+		}
 	}
 
 	Service& getService()
@@ -2062,7 +2160,9 @@ public:
 		CZSPAS_ASSERT(m_th.get_id() != std::this_thread::get_id());
 		m_requests.push(nullptr);
 		if (m_th.joinable())
+		{
 			m_th.join();
+		}
 	}
 
 	Service& getService()
@@ -2251,7 +2351,9 @@ namespace detail
 		{
 			size_t transfered = 0;
 			while (!ec && transfered < len)
+			{
 				transfered += sock.sendSome(buf + transfered, len - transfered, timeoutMs, ec);
+			}
 			return transfered;
 		}
 
@@ -2259,7 +2361,9 @@ namespace detail
 		{
 			size_t transfered = 0;
 			while (!ec && transfered < len)
+			{
 				transfered += sock.receiveSome(buf + transfered, len - transfered, timeoutMs, ec);
+			}
 			return transfered;
 		}
 	};
@@ -2291,3 +2395,4 @@ inline size_t receive(Socket& sock, char* buf, size_t len, Error& ec)
 
 } // namespace spas
 } // namespace cz
+
