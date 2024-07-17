@@ -1,6 +1,6 @@
 #pragma once
 
-#define TEST_LOG(fmt, ...) printf("Log: " fmt "\n", ##__VA_ARGS__)
+#define TEST_LOG(fmt, ...) printf("TST: " fmt "\n", ##__VA_ARGS__)
 
 // The Data template type is just a dummy way to add state to a session if a unit test requires it
 template<typename Data=int>
@@ -55,7 +55,9 @@ struct ServiceThread
 		TEST_LOG("ServiceThread %p: Constructor", this);
 		
 		if (autoRun)
-			run();
+		{
+			start();
+		}
 	}
 
 	~ServiceThread()
@@ -65,26 +67,36 @@ struct ServiceThread
 		TEST_LOG("ServiceThread %p: Destructor end", this);
 	}
 
-	void run()
+	void start()
 	{
 		CHECK(th.joinable() == false);
 		th = std::thread([this]()
 		{
-			//UnitTest::TimeHelpers::SleepMs(500);
+			//std::this_thread::sleep_for(500ms);
 			std::unique_ptr<Service::Work> work;
 			if (keepAlive)
+			{
 				work = std::make_unique<Service::Work>(service);
+			}
+
 			service.run();
-			printf("");
+			TEST_LOG("ServiceThread %p: Finishing thread", this);
 		});
 	}
 
 	void finish()
 	{
 		if (doStop)
+		{
 			service.stop();
+		}
+
 		if (th.joinable())
+		{
+			TEST_LOG("ServiceThread %p: Joining start", this);
 			th.join();
+			TEST_LOG("ServiceThread %p: Joining end", this);
+		}
 	}
 
 };

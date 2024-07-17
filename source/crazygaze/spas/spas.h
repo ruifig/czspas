@@ -127,13 +127,13 @@ class Service;
 
 #if CZSPAS_ENABLE_LOGGING
 	#ifndef CZSPAS_INFO
-		#define CZSPAS_INFO(fmt, ...) ::cz::spas::detail::DefaultLog::out(false, "Info: ", fmt, ##__VA_ARGS__)
+		#define CZSPAS_INFO(fmt, ...) ::cz::spas::detail::DefaultLog::out(false, "LOG: ", fmt, ##__VA_ARGS__)
 	#endif
 	#ifndef CZSPAS_WARN
-		#define CZSPAS_WARN(fmt, ...) ::cz::spas::detail::DefaultLog::out(false, "Warning: ", fmt, ##__VA_ARGS__)
+		#define CZSPAS_WARN(fmt, ...) ::cz::spas::detail::DefaultLog::out(false, "WRN: ", fmt, ##__VA_ARGS__)
 	#endif
 	#ifndef CZSPAS_ERROR
-		#define CZSPAS_ERROR(fmt, ...) ::cz::spas::detail::DefaultLog::out(false, "Error: ", fmt, ##__VA_ARGS__)
+		#define CZSPAS_ERROR(fmt, ...) ::cz::spas::detail::DefaultLog::out(false, "ERR: ", fmt, ##__VA_ARGS__)
 	#endif
 #else
 	#ifndef CZSPAS_INFO
@@ -1409,7 +1409,7 @@ public:
 #endif
 		if (::send(m_signalOut, &buf, 1, flags) != 1)
 		{
-			CZSPAS_FATAL("Reactor %p", this, detail::ErrorWrapper().msg().c_str());
+			CZSPAS_FATAL("Reactor %p: %s", this, detail::ErrorWrapper().msg().c_str());
 		}
 	}
 
@@ -1638,14 +1638,16 @@ private:
 
 	void workStarted()
 	{
-		CZSPAS_INFO("Service %p: workStarted");
+		CZSPAS_INFO("Service %p: workStarted", this);
 		++m_outstandingWork;
+		CZSPAS_INFO("          : workStarted %d", m_outstandingWork.load());
 	}
 
 	void workFinished()
 	{
-		CZSPAS_INFO("Service %p: workFinished");
+		CZSPAS_INFO("Service %p: workFinished", this);
 		auto n = --m_outstandingWork;
+		CZSPAS_INFO("          : workFinished %d", n);
 		CZSPAS_ASSERT(n >= 0);
 		if (n==0)
 		{
@@ -1898,14 +1900,18 @@ public:
 	void cancel()
 	{
 		if (m_base.isValid())
+		{
 			getService().cancel(m_base.s);
+		}
 	}
 
 	void close()
 	{
 		cancel();
 		if (m_base.isValid())
+		{
 			detail::utils::closeSocket(m_base.s, false);
+		}
 	}
 
 	Service& getService()
@@ -2154,7 +2160,7 @@ public:
 
 	virtual ~Resolver()
 	{
-		CZSPAS_INFO("Resolver %p: Destructor", this);
+		CZSPAS_INFO("Resolver %p: Destructor start", this);
 		// If we are trying to destroy the Resolver from the same thread it is using for the resolve work, then either we or the
 		// developer are doing something wrong
 		CZSPAS_ASSERT(m_th.get_id() != std::this_thread::get_id());
@@ -2163,11 +2169,12 @@ public:
 		{
 			m_th.join();
 		}
+		CZSPAS_INFO("Resolver %p: Destructor end", this);
 	}
 
 	Service& getService()
 	{
-		return *reinterpret_cast<Service*>(&m_service);
+		return m_service;
 	}
 
 	template< typename H, typename = detail::IsResolveHandler<H> >
@@ -2193,6 +2200,9 @@ private:
 
 	void doResolve(std::unique_ptr<Request> request)
 	{
+		// #RVF : Remove this
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
 		CZSPAS_INFO("Resolver %p: Start resolve for '%s'", this, request->hostname.c_str());
 
 		std::string hostname = request->hostname;
@@ -2228,7 +2238,6 @@ private:
 					request->handler(ec, addr.first);
 				});
 			}
-			
 		}
 		else
 		{

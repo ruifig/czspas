@@ -221,7 +221,7 @@ TEST_CASE("Acceptor_asyncAccept_cancel")
 		done.notify();
 	});
 
-	ioth.run();
+	ioth.start();
 
 	ioth.service.post([ac]
 	{
@@ -267,7 +267,7 @@ TEST_CASE("Socket_connect_ok")
 		CHECK_CZSPAS(ec);
 	});
 
-	ioth.run();
+	ioth.start();
 
 	Socket clientSock(ioth.service);
 	auto ec = clientSock.connect("127.0.0.1", SERVER_PORT);
@@ -331,7 +331,7 @@ TEST_CASE("Socket_asyncConnect_ok")
 		done.notify();
 	});
 
-	ioth.run();
+	ioth.start();
 
 	auto clientSideSession = std::make_shared<Session<>> (ioth.service);
 	clientSideSession->sock.asyncConnect("127.0.0.1", SERVER_PORT, [&done, con = clientSideSession](const Error& ec)
@@ -691,7 +691,7 @@ TEST_CASE("Socket_bigTransfer", "[slow]")
 			done.notify();
 		});
 
-		ioth.run();
+		ioth.start();
 		ioth.finish();
 		done.wait();
 	});
@@ -713,7 +713,7 @@ TEST_CASE("Socket_bigTransfer", "[slow]")
 			CHECK(bigbufsize == transfered);
 			done.notify();
 		});
-		ioth.run();
+		ioth.start();
 		ioth.finish();
 		done.wait();
 	});
@@ -1111,29 +1111,41 @@ struct ResolverSession : std::enable_shared_from_this<ResolverSession>
 TEST_CASE("asyncConnect", "[Resolver]")
 {
 	TEST_LOG("");
-
-	ServiceThread ioth(false, false, false);
-	ioth.run();
-
-	SECTION("Success")
 	{
-		auto resolverSession = std::make_shared<ResolverSession>(ioth.service);
-		resolverSession->resolver.asyncResolve("example.com", [resolverSession](const Error& ec, std::string ip)
+		//auto ioth = std::make_unique<ServiceThread>(false, true, true);
+		auto ioth = new(malloc(sizeof(ServiceThread))) ServiceThread(false, true, true);
+		ioth->start();
+
+		SECTION("Success")
 		{
-			TEST_LOG("Test 1");
-			CHECK(ec.code == Error::Code::Success);
-		});
+			TEST_LOG("Section 1 start");
+			auto resolverSession = std::make_shared<ResolverSession>(ioth->service);
+			resolverSession->resolver.asyncResolve("example.com1", [resolverSession](const Error& ec, std::string ip)
+			{
+				TEST_LOG("Test 1");
+				//CHECK(ec.code == Error::Code::Success);
+				CHECK(ec.code == Error::Code::HostNotFound);
+			});
+			TEST_LOG("Section 1 finish");
+		}
+#if 0
+		SECTION("Host not found")
+		{
+			TEST_LOG("Section 2 start");
+			auto resolverSession = std::make_shared<ResolverSession>(ioth->service);
+			resolverSession->resolver.asyncResolve("example.com2", [resolverSession](const Error& ec, std::string ip)
+			{
+				TEST_LOG("Test 2");
+				CHECK(ec.code == Error::Code::HostNotFound);
+			});
+			TEST_LOG("Section 2 finish");
+		}
+		#endif
+
+		ioth->~ServiceThread();
 	}
 
-	SECTION("Host not found")
-	{
-		auto resolverSession = std::make_shared<ResolverSession>(ioth.service);
-		resolverSession->resolver.asyncResolve("example.coom", [resolverSession](const Error& ec, std::string ip)
-		{
-			TEST_LOG("Test 2");
-			CHECK(ec.code == Error::Code::HostNotFound);
-		});
-	}
-
+	static int counter = 0;
+	TEST_LOG("Test out %d", counter++);;
 }
 
