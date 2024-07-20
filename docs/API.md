@@ -48,7 +48,7 @@ Also, similar to Asio, the API expects the following from the user code:
 
 # <a id="type_of_callbacks">Type of callbacks</a>
 
-All functions/methods that initiate asynchronous work take as a parameter a callback that is executed when the work in question is completed (successfully, in error, or cancelled).
+All functions/methods that initiate asynchronous work take as a parameter a callback that is executed when the work in question is completed (successfully, in error, or aborted).
 
 In order to make it easier to deal with compile errors due wrong handler signature, the API classifies handlers in 3 types, instead of using template parameters in most situations.
 
@@ -139,7 +139,7 @@ Error code.
 The following error codes are available:
 
 * **Code::Success** : The operation completed successfully
-* **Code::Cancelled** : The operation cancelled by the user.
+* **Code::Aborted** : The operation aborted
 * **Code::Timeout** : The user specified a timeout for the operation, and operation failed to complete within that time frame.
 * **Code::ConnectionClosed** : The connection was closed, either explicitly or not (e.g: The peer closed the connection)
 * **Code::InvalidSocket** : An operation was attempted with an invalid socket.
@@ -310,7 +310,7 @@ Starts an asynchronous accept. Once a new connection is accepted (or an error oc
 void cancel();
 ```
 
-Cancels all outstanding asynchronous operations. The handlers for the cancelled operations will be passed the *Error::Code::Cancelled* error.
+Cancels all outstanding asynchronous operations. The handler for each cancelled operation will be invoked with the  *Error::Code::Aborted* error.
 
 ## <a id="acceptor-getservice">Acceptor::getService</a>
 
@@ -520,7 +520,7 @@ Starts an asynchronous receive operation.
 void cancel();
 ```
 
-Cancels all outstanding asynchronous operations. The handlers for the cancelled operations will be passed the *Error::Code::Cancelled* error.
+Cancels all outstanding asynchronous operations. The handler for each cancelled operation will be invoked with the  *Error::Code::Aborted* error.
 
 ## <a id="socket-getservice">Socket::getService</a>
 
