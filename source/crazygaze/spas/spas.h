@@ -956,7 +956,6 @@ namespace detail
 			}
 		}
 
-		virtual void exec(SocketHandle fd, bool hasPOLLHUP) = 0;
 		virtual void callUserHandler() = 0;
 	};
 
@@ -969,7 +968,7 @@ namespace detail
 			, userHandler(std::forward<H>(h))
 		{
 		}
-		virtual void exec(SocketHandle fd, bool hasPOLLHUP) override {}
+
 		virtual void callUserHandler() override
 		{
 			userHandler();
@@ -984,6 +983,8 @@ namespace detail
 			, owner(owner)
 		{
 		}
+
+		virtual void exec(SocketHandle fd, bool hasPOLLHUP) = 0;
 	};
 
 	struct AcceptOperation : public SocketOperation
@@ -1215,7 +1216,7 @@ private:
 			}
 		}
 
-		std::unique_ptr<Operation> op;
+		std::unique_ptr<SocketOperation> op;
 		Timepoint timeout = Timepoint::max();
 	};
 
@@ -1413,7 +1414,7 @@ public:
 		}
 	}
 
-	void addOperation(SocketHandle fd, EventType type, std::unique_ptr<Operation> op, int timeoutMs)
+	void addOperation(SocketHandle fd, EventType type, std::unique_ptr<SocketOperation> op, int timeoutMs)
 	{
 		std::unique_lock<std::mutex> lk(m_mtx);
 		auto&& o = m_sockData[fd].ops[type];
@@ -1669,7 +1670,7 @@ private:
 		m_reactor.interrupt();
 	}
 
-	void addOperation(SocketHandle fd, detail::Reactor::EventType type, std::unique_ptr<detail::Operation> op, int timeoutMs)
+	void addReactorOperation(SocketHandle fd, detail::Reactor::EventType type, std::unique_ptr<detail::SocketOperation> op, int timeoutMs)
 	{
 		workStarted();
 		m_reactor.addOperation(fd, type, std::move(op), timeoutMs);
@@ -1687,6 +1688,7 @@ private:
 	std::atomic<int> m_outstandingWork{ 0 };
 
 	// Thread used to resolve host names
+	//detail::SharedQueue<std::unique_ptr<Request>> m_resolverRequests;
 	std::thread m_resolverThread;
 };
 
@@ -1740,6 +1742,7 @@ public:
 		m_base.s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 		if (m_base.s == CZSPAS_INVALID_SOCKET)
 		{
+			// #RVF : Add test for entering this if block
 			op->ec = detail::ErrorWrapper().getError();
 			CZSPAS_ERROR("Socket %p: %s", this, op->ec.msg());
 			getService().post(std::move(op));
@@ -1764,7 +1767,7 @@ public:
 			{
 				// Normal behaviour.
 				// A asynchronous connect is done when we receive a write event on the socket
-				getService().addOperation(m_base.s, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
+				getService().addReactorOperation(m_base.s, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
 			}
 			else
 			{
@@ -1778,7 +1781,7 @@ public:
 		{
 			// It may happen that the connect succeeds right away ?
 			// If that happens, we can still wait for the reactor to detect the "ready to write" event.
-			getService().addOperation(m_base.s, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
+			getService().addReactorOperation(m_base.s, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
 		}
 	}
 
@@ -1831,7 +1834,7 @@ public:
 		CZSPAS_ASSERT(m_base.isValid());
 		CZSPAS_ASSERT(m_base.pendingSend.load()==0 && "There is already a pending send operation");
 		auto op = std::make_unique<detail::SendOperation>(m_base, buf, len, std::forward<H>(h));
-		getService().addOperation(m_base.s, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
+		getService().addReactorOperation(m_base.s, detail::Reactor::EventType::Write, std::move(op), timeoutMs);
 	}
 
 	template< typename H, typename = detail::IsTransferHandler<H> >
@@ -1891,7 +1894,7 @@ public:
 		CZSPAS_ASSERT(m_base.isValid());
 		CZSPAS_ASSERT(m_base.pendingReceive.load()==0 && "There is already a pending receive operation");
 		auto op = std::make_unique<detail::ReceiveOperation>(m_base, buf, len, std::forward<H>(h));
-		getService().addOperation(m_base.s, detail::Reactor::EventType::Read, std::move(op), timeoutMs);
+		getService().addReactorOperation(m_base.s, detail::Reactor::EventType::Read, std::move(op), timeoutMs);
 	}
 
 	template< typename H, typename = detail::IsTransferHandler<H> >
@@ -2042,7 +2045,7 @@ public:
 		CZSPAS_ASSERT(!sock.m_base.isValid());
 		CZSPAS_ASSERT(m_base.pendingAccept.load()==0 && "There is already a pending accept operation");
 		auto op = std::make_unique<detail::AcceptOperation>(m_base, sock.m_base, std::forward<H>(h));
-		getService().addOperation(m_base.s, detail::Reactor::EventType::Read, std::move(op), timeoutMs);
+		getService().addReactorOperation(m_base.s, detail::Reactor::EventType::Read, std::move(op), timeoutMs);
 	}
 
 	template< typename H, typename = detail::IsConnectHandler<H> >
