@@ -217,7 +217,7 @@ TEST_CASE("Acceptor_asyncAccept_cancel")
 	auto serverSideSession = std::make_shared<Session<>>(ioth.service);
 	ac->acceptor.asyncAccept(serverSideSession->sock, [&done, this_=ac, con = serverSideSession](const Error& ec)
 	{
-		CHECK_CZSPAS_EQUAL(Cancelled, ec);
+		CHECK_CZSPAS_EQUAL(Aborted, ec);
 		done.notify();
 	});
 
@@ -363,7 +363,7 @@ TEST_CASE("Socket_asyncConnect_cancel")
 	auto clientSideSession = std::make_shared<Session<>> (ioth.service);
 	clientSideSession->sock.asyncConnect("254.254.254.254", SERVER_PORT, [&done, con = clientSideSession](const Error& ec)
 	{
-		CHECK_CZSPAS_EQUAL(Cancelled, ec);
+		CHECK_CZSPAS_EQUAL(Aborted, ec);
 		done.notify();
 	});
 
@@ -449,7 +449,7 @@ TEST_CASE("Socket_asyncReceiveSome_cancel")
 	clientSideSession->sock.asyncReceiveSome(rcvBuf, sizeof(rcvBuf),
 		[&done, con = clientSideSession](const Error& ec, size_t transfered)
 	{
-		CHECK_CZSPAS_EQUAL(Cancelled, ec);
+		CHECK_CZSPAS_EQUAL(Aborted, ec);
 		CHECK(0 == transfered);
 		done.notify();
 	});
@@ -539,7 +539,7 @@ TEST_CASE("Socket_asyncSendSome_cancel")
 		// send
 		con->sock.asyncSendSome(sndBuf, sizeof(sndBuf), [&done, con](const Error& ec, size_t transfered)
 		{
-			CHECK_CZSPAS_EQUAL(Cancelled, ec);
+			CHECK_CZSPAS_EQUAL(Aborted, ec);
 			CHECK(0 == transfered);
 			done.notify();
 		});
@@ -1021,7 +1021,7 @@ void exception_safety_setupAccept(cz::spas::Acceptor& ac, ZeroSemaphore& sem, bo
 	{
 		if (ec)
 		{
-			if (ec.code == Error::Code::Cancelled)
+			if (ec.code == Error::Code::Aborted)
 			{
 				cancelled = true;
 				return;

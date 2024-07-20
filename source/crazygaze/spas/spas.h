@@ -178,7 +178,7 @@ struct Error
 	enum class Code
 	{
 		Success,
-		Cancelled,
+		Aborted,
 		Timeout,
 		ConnectionClosed,
 		InvalidSocket,
@@ -209,7 +209,7 @@ struct Error
 		switch (code)
 		{
 			case Code::Success: return "Success";
-			case Code::Cancelled: return "Cancelled";
+			case Code::Aborted: return "Aborted";
 			case Code::Timeout: return "Timeout";
 			case Code::ConnectionClosed: return "ConnectionClosed";
 			case Code::InvalidSocket: return "InvalidSocket";
@@ -917,7 +917,7 @@ namespace detail
 
 		// Only for debugging: #TODO : Add a define to have it available only on Debug build
 		// NOTE: In the Operation structs, these need to be set to false in both the destructor and BEFORE calling the user handler
-		//		1. Its needed in the destructor, because the operation might be destroyed without calling the user handler (e.g: Cancelled)
+		//		1. Its needed in the destructor, because the operation might be destroyed without calling the user handler (e.g: Aborted)
 		//		2. BEFORE calling the user handler, because from the handle the user might want to queue another operation of the same type
 		std::atomic<int> pendingAccept; 
 		std::atomic<int> pendingConnect;
@@ -1311,7 +1311,7 @@ private:
 			auto it = m_sockData.find(fd.fd);
 			if (it==m_sockData.end())
 			{
-				continue; // Socket data not present anymore (E.g: Operations were cancelled while in the poll function)
+				continue; // Socket data not present anymore (E.g: Operations were aborted while in the poll function)
 			}
 
 			// We can have POLLHUP but still have POLLRDNORM (Which means it disconnected, but we can still read some more data).
@@ -1431,7 +1431,7 @@ public:
 		{
 			return; // No operations for this socket found
 		}
-		it->second.cancel(Error::Code::Cancelled, dst);
+		it->second.cancel(Error::Code::Aborted, dst);
 		m_sockData.erase(it);
 		interrupt();
 	}
@@ -1582,7 +1582,7 @@ public:
 			// - Thread A calls Service::run, and blocks on the reactor, waiting for work
 			// - Thread B calls (e.g) Acceptor::asyncAccept
 			// - Thread B waits X seconds, so that thread A has time to process anything and get again blocked on the reactor
-			// - Thread B calls Acceptor::cancel . This adds the cancelled handler to m_ready
+			// - Thread B calls Acceptor::cancel . This adds the aborted handler to m_ready
 			// - Thread A will gets unblocked, and does
 			//		- runReadyHandlers(m_tmpready); // Nothing done, since the only m_ready has handlers
 			//		- loop and do std::swap(m_tmpread, m_ready) 
@@ -1685,6 +1685,9 @@ private:
 	std::queue<std::unique_ptr<detail::Operation>> m_tmpready;
 	std::atomic<bool> m_stopped{false};
 	std::atomic<int> m_outstandingWork{ 0 };
+
+	// Thread used to resolve host names
+	std::thread m_resolverThread;
 };
 
 //////////////////////////////////////////////////////////////////////////
