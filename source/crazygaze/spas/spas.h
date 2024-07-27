@@ -52,6 +52,11 @@ Notes on WSAPoll:
 		- Doesn't report failed connections. (E.g: A connect attempt to an address & port without listener and timeout -1 will block forever):
 			https://social.msdn.microsoft.com/Forums/windowsdesktop/en-US/18769abd-fca0-4d3c-9884-1a38ce27ae90/wsapoll-and-nonblocking-connects-to-nonexistent-ports?forum=wsk
 
+------------------------------------------------
+
+Some intentional design choices:
+	- Simplicity over performance
+	- Limited feature set. If a bigger feature set is required, use another networking library (e.g: https://think-async.com/Asio/).
 */
 
 #pragma once
@@ -346,108 +351,12 @@ namespace detail
 	template<typename H>
 	using IsResolveHandler = std::enable_if_t<detail::check_signature<H, void(const Error&, std::string ip)>::value>;
 
-	class ErrorWrapper
-	{
-	public:
-#if _WIN32
-		static std::string getWin32ErrorMsg(DWORD err = ERROR_SUCCESS, const char* funcname = nullptr)
-		{
-			LPVOID lpMsgBuf;
-			LPVOID lpDisplayBuf;
-			if (err == ERROR_SUCCESS)
-			{
-				err = GetLastError();
-			}
-
-			FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-				NULL,
-				err,
-				MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-				(char*)&lpMsgBuf,
-				0,
-				NULL);
-
-			CZSPAS_SCOPE_EXIT{ LocalFree(lpMsgBuf); };
-
-			int funcnameLength = funcname ? (int)strlen(funcname) : 0;
-			lpDisplayBuf = (LPVOID)LocalAlloc(LMEM_ZEROINIT, (strlen((char*)lpMsgBuf) + funcnameLength + 50));
-			if (lpDisplayBuf == nullptr)
-			{
-				return "";
-			}
-			CZSPAS_SCOPE_EXIT{ LocalFree(lpDisplayBuf); };
-
-			StringCchPrintfA(
-				(char*)lpDisplayBuf,
-				LocalSize(lpDisplayBuf),
-				"%s failed with error %d: %s",
-				funcname ? funcname : "",
-				err,
-				(const char*)lpMsgBuf);
-
-			std::string ret = (char*)lpDisplayBuf;
-
-			// Remove the \r\n at the end
-			while (ret.size() && ret.back() < ' ')
-			{
-				ret.pop_back();
-			}
-
-			return ret;
-		}
-
-		ErrorWrapper() { m_err = WSAGetLastError(); }
-		explicit ErrorWrapper(int err) : m_err(err) {}
-		std::string msg() const { return getWin32ErrorMsg(m_err); }
-		bool isBlockError() const { return m_err == WSAEWOULDBLOCK; }
-		bool isHostNotFoundError() const { return m_err == WSAHOST_NOT_FOUND; }
-		bool isTryAgainError() const { return m_err == WSATRY_AGAIN; }
-		int getCode() const { return m_err; };
-#else
-		ErrorWrapper() { m_err = errno; }
-		explicit ErrorWrapper(int err) 
-		{
-			m_err = err == EAI_SYSTEM ? errno : err;
-		}
-
-		bool isBlockError() const { return m_err == EAGAIN || m_err == EWOULDBLOCK || m_err == EINPROGRESS; }
-		bool isHostNotFoundError() const { return m_err == EAI_NONAME; }
-		bool isTryAgainError() const { return m_err == EAI_AGAIN; ;}
-		// #TODO Build custom error depending on the error number
-		std::string msg() const { return strerror(m_err); }
-		int getCode() const { return err; };
-#endif
-
-		Error getError() const { return Error(Error::Code::Other, msg()); }
-	private:
-		int m_err;
-	};
 
 #if _WIN32
 	struct WSAInstance
 	{
-		WSAInstance()
-		{
-			CZSPAS_INFO("WSAInstance %p: Constructor", this);
-			WORD wVersionRequested = MAKEWORD(2, 2);
-			WSADATA wsaData;
-			int err = WSAStartup(wVersionRequested, &wsaData);
-			if (err != 0)
-			{
-				CZSPAS_FATAL(ErrorWrapper().msg().c_str());
-			}
-
-			if (LOBYTE(wsaData.wVersion) != 2 || HIBYTE(wsaData.wVersion) != 2)
-			{
-				WSACleanup();
-				CZSPAS_FATAL("Could not find a usable version of Winsock.dll");
-			}
-		}
-		~WSAInstance()
-		{
-			CZSPAS_INFO("WSAInstance %p: Destructor", this);
-			WSACleanup();
-		}
+		WSAInstance();
+		~WSAInstance();
 	};
 #endif
 
@@ -463,6 +372,10 @@ namespace detail
 	public:
 
 		explicit SocketHelper(Service& owner);
+		SocketHelper(const SocketHelper&) = delete;
+		SocketHelper(SocketHelper&&) = delete;
+		SocketHelper& operator=(const SocketHelper&) = delete;
+		SocketHelper& operator=(SocketHelper&&) = delete;
 		~SocketHelper();
 
 		/** Only to be used with care, if the user wants to access the underlying socket handle */
@@ -474,9 +387,6 @@ namespace detail
 
 		const std::pair<std::string, int>& getLocalAddr() const;
 		const std::pair<std::string, int>& getPeerAddr() const;
-			
-		SocketHelper(const SocketHelper&) = delete;
-		void operator=(const SocketHelper&) = delete;
 		bool isValid() const;
 		void resolveAddrs();
 
@@ -498,10 +408,15 @@ namespace detail
 	/** Base operation */
 	struct Operation
 	{
+		explicit Operation(std::atomic<int>* dbgCounter);
+		Operation(const Operation&) = delete;
+		Operation(Operation&&) = delete;
+		Operation& operator=(const Operation&) = delete;
+		Operation& operator=(Operation&&) = delete;
+		virtual ~Operation();
+
 		Error ec;
 		std::atomic<int>* dbgCounter = nullptr;
-		explicit Operation(std::atomic<int>* dbgCounter);
-		virtual ~Operation();
 		void setFinished();
 		virtual void callUserHandler() = 0;
 	};
@@ -639,6 +554,10 @@ public:
 	};
 
 	Reactor();
+	Reactor(const Reactor&) = delete;
+	Reactor(Reactor&&) = delete;
+	Reactor& operator=(const Reactor&) = delete;
+	Reactor& operator=(Reactor&&) = delete;
 	~Reactor();
 
 	// Putting this in a method, so Service can call this.
@@ -663,29 +582,14 @@ private:
 
 	struct OperationData
 	{
-		void cancel(Error::Code code, std::queue<std::unique_ptr<Operation>>& dst)
-		{
-			if (op)
-			{
-				op->ec = Error(code);
-				dst.push(std::move(op));
-			}
-		}
-
+		void cancel(Error::Code code, std::queue<std::unique_ptr<Operation>>& dst);
 		std::unique_ptr<SocketOperation> op;
 		Timepoint timeout = Timepoint::max();
 	};
 
 	struct SocketData
 	{
-		void cancel(Error::Code code, std::queue<std::unique_ptr<Operation>>& dst)
-		{
-			for (auto&& op : ops)
-			{
-				op.cancel(code, dst);
-			}
-		}
-
+		void cancel(Error::Code code, std::queue<std::unique_ptr<Operation>>& dst);
 		OperationData ops[EventType::LAST+1];
 	};
 
@@ -757,6 +661,10 @@ public:
 class Service
 {
 public:
+	Service(const Service&) = delete;
+	Service(Service&&) = delete;
+	Service& operator=(const Service&) = delete;
+	Service& operator=(Service&&) = delete;
 
 	/**
 	 * Dummy work item that when constructed causes the Service::run to not return until Service::stop is called or the item

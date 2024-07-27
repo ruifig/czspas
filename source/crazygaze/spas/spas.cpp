@@ -28,6 +28,117 @@ SOFTWARE.
 
 namespace cz::spas::detail
 {
+	//////////////////////////////////////////////////////////////////////////
+	// ErrorWrapper
+	//////////////////////////////////////////////////////////////////////////
+	class ErrorWrapper
+	{
+	public:
+#if _WIN32
+		static std::string getWin32ErrorMsg(DWORD err = ERROR_SUCCESS, const char* funcname = nullptr)
+		{
+			LPVOID lpMsgBuf;
+			LPVOID lpDisplayBuf;
+			if (err == ERROR_SUCCESS)
+			{
+				err = GetLastError();
+			}
+
+			FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+				NULL,
+				err,
+				MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+				(char*)&lpMsgBuf,
+				0,
+				NULL);
+
+			CZSPAS_SCOPE_EXIT{ LocalFree(lpMsgBuf); };
+
+			int funcnameLength = funcname ? (int)strlen(funcname) : 0;
+			lpDisplayBuf = (LPVOID)LocalAlloc(LMEM_ZEROINIT, (strlen((char*)lpMsgBuf) + funcnameLength + 50));
+			if (lpDisplayBuf == nullptr)
+			{
+				return "";
+			}
+			CZSPAS_SCOPE_EXIT{ LocalFree(lpDisplayBuf); };
+
+			StringCchPrintfA(
+				(char*)lpDisplayBuf,
+				LocalSize(lpDisplayBuf),
+				"%s failed with error %d: %s",
+				funcname ? funcname : "",
+				err,
+				(const char*)lpMsgBuf);
+
+			std::string ret = (char*)lpDisplayBuf;
+
+			// Remove the \r\n at the end
+			while (ret.size() && ret.back() < ' ')
+			{
+				ret.pop_back();
+			}
+
+			return ret;
+		}
+
+		ErrorWrapper() { m_err = WSAGetLastError(); }
+		explicit ErrorWrapper(int err) : m_err(err) {}
+		std::string msg() const { return getWin32ErrorMsg(m_err); }
+		bool isBlockError() const { return m_err == WSAEWOULDBLOCK; }
+		bool isHostNotFoundError() const { return m_err == WSAHOST_NOT_FOUND; }
+		bool isTryAgainError() const { return m_err == WSATRY_AGAIN; }
+		int getCode() const { return m_err; };
+#else
+		ErrorWrapper() { m_err = errno; }
+		explicit ErrorWrapper(int err) 
+		{
+			m_err = err == EAI_SYSTEM ? errno : err;
+		}
+
+		bool isBlockError() const { return m_err == EAGAIN || m_err == EWOULDBLOCK || m_err == EINPROGRESS; }
+		bool isHostNotFoundError() const { return m_err == EAI_NONAME; }
+		bool isTryAgainError() const { return m_err == EAI_AGAIN; ;}
+		// #TODO Build custom error depending on the error number
+		std::string msg() const { return strerror(m_err); }
+		int getCode() const { return err; };
+#endif
+
+		Error getError() const { return Error(Error::Code::Other, msg()); }
+	private:
+		int m_err;
+	};
+
+
+	//////////////////////////////////////////////////////////////////////////
+	// WSAInstance
+	//////////////////////////////////////////////////////////////////////////
+
+	WSAInstance::WSAInstance()
+	{
+		CZSPAS_INFO("WSAInstance %p: Constructor", this);
+		WORD wVersionRequested = MAKEWORD(2, 2);
+		WSADATA wsaData;
+		int err = WSAStartup(wVersionRequested, &wsaData);
+		if (err != 0)
+		{
+			CZSPAS_FATAL(ErrorWrapper().msg().c_str());
+		}
+
+		if (LOBYTE(wsaData.wVersion) != 2 || HIBYTE(wsaData.wVersion) != 2)
+		{
+			WSACleanup();
+			CZSPAS_FATAL("Could not find a usable version of Winsock.dll");
+		}
+	}
+
+	WSAInstance::~WSAInstance()
+	{
+		CZSPAS_INFO("WSAInstance %p: Destructor", this);
+		WSACleanup();
+	}
+
+	//////////////////////////////////////////////////////////////////////////
+	//////////////////////////////////////////////////////////////////////////
 
 	// To work around the Windows vs Linux shenanigans with strncpy/strcpy/strlcpy, etc.
 	template<unsigned int N>
@@ -902,6 +1013,31 @@ namespace cz::spas::detail
 		{
 			CZSPAS_ASSERT(res >= 0);
 			processEvents(dst);
+		}
+	}
+
+	//////////////////////////////////////////////////////////////////////////
+	// Reactor::OperationData
+	//////////////////////////////////////////////////////////////////////////
+
+	void Reactor::OperationData::cancel(Error::Code code, std::queue<std::unique_ptr<Operation>>& dst)
+	{
+		if (op)
+		{
+			op->ec = Error(code);
+			dst.push(std::move(op));
+		}
+	}
+
+	//////////////////////////////////////////////////////////////////////////
+	// Reactor::SocketData
+	//////////////////////////////////////////////////////////////////////////
+
+	void Reactor::SocketData::cancel(Error::Code code, std::queue<std::unique_ptr<Operation>>& dst)
+	{
+		for (auto&& op : ops)
+		{
+			op.cancel(code, dst);
 		}
 	}
 
