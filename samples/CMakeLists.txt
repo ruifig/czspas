@@ -9,7 +9,9 @@ function(setup_czspas_sample target_name)
 			LINKER_LANGUAGE CXX
 			)
 	set_property(TARGET ${target_name} PROPERTY FOLDER "${CZ_IDE_FOLDER}${PROJECT_NAME}/samples")
+	set_target_properties(${target_name} PROPERTIES CXX_STANDARD 17)
 endfunction()
+
 
 setup_czspas_sample(czspas_sample_EchoServer
 	"Echo/EchoServer.cpp")

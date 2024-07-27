@@ -26,24 +26,28 @@ Functions prefixed with "_" should not be used. Those are accessible to make cod
 
 # <a id="guarantees_and_expectations">Guarantees and expectations</a>
 
-Since czspas was inspired by Asio and the API is somewhat similar to what Asio provided back in 2017 (when czspas was created). It provides a similar set of guarantees.
+czspas was inspired by Asio circa 2016-2017, and thus the API is similar and provides a similar set of guarantees.
 
-The API guarantees the following:
+It provides the following guarantees:
 
-* Completion handlers will only be called from the thread running ```Service::run()```
-	* This is the same as Asio
-* Calls to ```Service::post``` and ```Service::stop``` are thread safe, but ```Service::run``` is NOT.
-	* This it not the same as Asio. On Asio you can call ```io_service::run()``` from multiple threads.
-	* This is an intentional design decision to keep czspas as simple as possible. It might change in the future to make ```Service``` fully thread safe.
+* Asynchronous completion handlers will only be called from the thread currently calling `Service::run`.
+    * This is the same as Asio
+* All asynchronous completion handlers are called exactly **ONCE**, provided the owning `Service` is alive and its `run` method is called to execute those handlers.
+    * This is the same as Asio
+* When a I/O object is destroyed, any of its asynchronous operations that have not yet completed will complete with the error `Error::Code::Aborted`. 
+    * This is the same as Asio
+* Calls to `Service::post` and `Service::stop` are thread safe, but `Service::run` is NOT.
+	* This it **NOT** the same as Asio. On Asio you can call `Service::run()` from multiple threads.
+	* This is an intentional design decision to keep czspas as simple as possible. It might change in the future to make `Service` fully thread safe.
 
 Also, similar to Asio, the API expects the following from the user code:
 
-* ```Socket``` and ```Acceptor``` instances are NOT thread safe.
+* I/O objects (e.g: Socket, Acceptor and Resolver) instances are NOT thread safe.
 	* This is the same as Asio.
-	* Calls to any member functions should be posted with ```Service::post```.
-* Is the responsibility of the user code to manage the lifetime of objects used in the completion handlers (e.g: Sockets, Acceptor, buffers)
+	* If `Service::run` is ran from another thread, calls to any member functions should be posted with `Service::post`.
+* Is the responsibility of the user code to manage the lifetime of objects used in the completion handlers (e.g: Sockets, Acceptor, Resolvers, buffers)
 	* This is the same as Asio.
-	* For example, a given ```Socket``` instance must stay alive while there are pending asynchronous operations using it.
+	* For example, a given `Socket` instance must stay alive while there are pending asynchronous operations using it.
 	* A common solution to this lifetime problem is to put all the relevant objects and buffers in a class/struct and bind a shared_ptr to any completion handler that needs it. This effectively keeps the relevant objects alive for the duration of the asynchronous operation.
 
 # <a id="type_of_callbacks">Type of callbacks</a>

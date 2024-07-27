@@ -2,6 +2,9 @@
 
 #define TEST_LOG(fmt, ...) printf("TST: " fmt "\n", ##__VA_ARGS__)
 
+using namespace cz;
+using namespace cz::spas;
+
 // The Data template type is just a dummy way to add state to a session if a unit test requires it
 template<typename Data=int>
 struct Session : std::enable_shared_from_this<Session<Data>>

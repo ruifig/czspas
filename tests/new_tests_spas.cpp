@@ -1,7 +1,4 @@
 
-#if 0
-using namespace cz;
-using namespace spas;
 
 #define INTENSIVE_TEST 0
 // Default port to use for the tests
@@ -11,18 +8,83 @@ using namespace spas;
 // On windows we use epmap (port 135)
 #define SERVER_UNUSABLE_PORT 135
 
-// This is the ip of example.com
-// Using this to test some of the timeouts
-#define TIMEOUT_TEST_IP "93.184.216.34"
+#define CZ_SPAS_IMPLEMENTATION 1
+#include "crazygaze/spas/spas.h"
+
 
 using namespace cz::spas;
 
-#define CHECK_CZSPAS_EQUAL(expected, ec)    \
-	CHECK(ec.code == Error::Code::expected)
-
-#define CHECK_CZSPAS(ec) CHECK_CZSPAS_EQUAL(Success, ec)
-
+#include <optional>
 #include "tests_spas_helper.h"
+
+#define CHECK_HANDLER_EC(ec, expectedCode)      \
+	CHECKED_IF( ec.has_value() )        \
+	{                                   \
+		CHECK(ec.value().code == expectedCode); \
+	}
+	
+
+/**
+ * Catch2 helper to convert cz::spas::Error to a string
+ */
+namespace Catch
+{
+	template <>
+	struct StringMaker<cz::spas::Error::Code>
+	{
+		static std::string convert(cz::spas::Error::Code const& value)
+		{
+			return std::string("Error::Code::") + cz::spas::Error(value).msg();
+		}
+	};
+}
+
+/*
+TEST_CASE("Scratchpad", "[scratchpad]")
+{
+	Service service;
+
+	std::optional<Error> ec;
+	{
+		Socket socket(service);
+		socket.asyncConnect("127.0.0.1", SERVER_PORT, [&ec](const Error& ec_)
+		{
+			ec = ec_;
+		});
+	}
+
+	service.run();
+	CHECK_HANDLER_EC(ec, Error::Code::Success);
+}
+*/
+
+
+//////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////////////////////////////////////////
+// Error
+//////////////////////////////////////////////////////////////////////////
+
+TEST_CASE("Error", "[Error]")
+{
+	Error ec;
+	// Default is Success
+	CHECK( ec.code == Error::Code::Success);
+	CHECK( ec == false);
+
+	ec = Error(Error::Code::ConnectionClosed);
+	CHECK( ec.code == Error::Code::ConnectionClosed);
+	CHECK( ec == true);
+
+
+	CHECK(std::string(ec.msg()) == "ConnectionClosed");
+	ec.setMsg("Custom Error");
+	CHECK(std::string(ec.msg()) == "Custom Error");
+}
 
 
 //////////////////////////////////////////////////////////////////////////
@@ -32,13 +94,13 @@ using namespace cz::spas;
 // Try to exhaust OS resources by creating tons of Service objects.
 // Internally, czspas uses 2 sockets to allow interrupting a wsapoll/poll call.
 // This makes sure those sockets are not going into the TIME_WAIT state.
-TEST_CASE("Service_Reactor_internal_sockets")
+TEST_CASE("Tons of Service objects", "[Service]")
 {
 	std::atomic<int> done(0);
 
 	std::vector<std::future<void>> fts;
-	const int numThreads = INTENSIVE_TEST ? 8 : 4;
-	const int itemsPerThread = INTENSIVE_TEST ? 9000 : 1000;
+	const int numThreads = INTENSIVE_TEST ? 8*2 : 4;
+	const int itemsPerThread = INTENSIVE_TEST ? 9000*2 : 1000;
 
 	for (int i = 0; i < numThreads; i++)
 	{
@@ -55,10 +117,16 @@ TEST_CASE("Service_Reactor_internal_sockets")
 	}
 
 	for (auto&& ft : fts)
+	{
 		ft.wait();
+	}
 
 	CHECK(numThreads*itemsPerThread == done.load());
 }
+
+
+
+#if 0
 
 // Tests a call to Service::run when there is no work
 TEST_CASE("Service_run_nowork")
@@ -1154,7 +1222,7 @@ TEST_CASE("asyncConnect", "[Resolver]")
 
 #endif
 
-
-
 #endif
+
+
 
