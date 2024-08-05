@@ -1116,7 +1116,7 @@ size_t Service::run()
 
 	// NOTE: At first, I was resetting m_stopped to false here, but that is problematic:
 	// E.g:
-	// - One thread id created to call run
+	// - One thread is created to call run
 	// - Another thread calls stop() before the first thread has a chance to call run().
 	// - The stop would be ignored (since we would be setting m_stopped to true here.
 	size_t done = 0;
@@ -1153,7 +1153,7 @@ size_t Service::run()
 		// - Thread A will gets unblocked, and does
 		//		- runReadyHandlers(m_tmpready); // Nothing done, since the only m_ready has handlers
 		//		- loop and do std::swap(m_tmpread, m_ready) 
-		//		- next m_reactor.runOnce will block forever, even tho we have handlers in m_tmpready
+		//		- next m_reactor.runOnce will block forever, even though we have handlers in m_tmpready
 		//
 		done += runReadyHandlers(m_tmpready);
 		m_reactor.runOnce(m_tmpready);

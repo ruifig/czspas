@@ -731,6 +731,10 @@ public:
 
 	/**
 	 * Signals the `Service` to stop. If `run()` is currently executing, it will return as soon as possible.
+	 *
+	 * A call to `stop()` will put the `Service` into the stopped status regardless if there is an ongoing `run()` call or if
+	 * there is an existing `Service::Work` instance.
+	 *
 	 * Subsequent calls to `run()` will return immediately until `reset()` is called
 	 */
 	void stop();
@@ -740,6 +744,14 @@ public:
 	 * When a `Service` is stopped, calls to `run()` will return immediately without invoking any handlers.
 	 */
 	bool isStopped() const;
+
+	/**
+	 * Resets the `Service` in preparation for a subsequent `run()` invocation.
+	 *
+	 * This is necessary after a `run()` is explicitly stopped or it runs out of work.
+	 *
+	 * This function must not be called while there is an unfinished call to run().
+	 */
 	void reset();
 
 private:

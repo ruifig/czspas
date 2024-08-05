@@ -40,26 +40,6 @@ namespace Catch
 	};
 }
 
-/*
-TEST_CASE("Scratchpad", "[scratchpad]")
-{
-	Service service;
-
-	std::optional<Error> ec;
-	{
-		Socket socket(service);
-		socket.asyncConnect("127.0.0.1", SERVER_PORT, [&ec](const Error& ec_)
-		{
-			ec = ec_;
-		});
-	}
-
-	service.run();
-	CHECK_HANDLER_EC(ec, Error::Code::Success);
-}
-*/
-
-
 //////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////
@@ -204,7 +184,7 @@ TEST_CASE("Dummy work", "[Service]")
 		// Cause the `run()` call to exit
 		service.stop();
 
-		// Wait for te thread to finish, and check how much time `run()` blocked for (with some slack)
+		// Wait for the thread to finish, and check how much time `run()` blocked for (with some slack)
 		float deltaMs = ft.get();
 		CHECK_THAT(deltaMs,  Catch::Matchers::WithinAbs(100, 20));
 		CHECK(service.isStopped());
@@ -326,47 +306,95 @@ TEST_CASE("Service::post", "[Service]")
 
 }
 
+TEST_CASE("Service::stop", "[Service]")
+{
+	SECTION("Should switch to stopped status even if done before `run()`")
+	{
+		{
+			INFO("If no pending work, stop() should still set the status to stopped");
+			Service service;
+			service.stop();
+			CHECK(service.run() == 0);
+			CHECK(service.isStopped() == true);
+		}
 
+		{
+			INFO("Service::Work should not affect stop() behavior");
+			Service service;
+			Service::Work dummy(service);
+			service.stop();
+			CHECK(service.run() == 0);
+			CHECK(service.isStopped() == true);
+		}
+
+		{
+			INFO("post() after stop() should not change the status");
+			Service service;
+			Service::Work dummy(service);
+			service.stop();
+			int done = 0;
+			service.post([&done]
+			{
+				done++;
+			});
+			CHECK(service.run() == 0);
+			CHECK(service.isStopped() == true);
+		}
+	}
+}
+
+TEST_CASE("Service::reset", "[Service]")
+{
+
+	SECTION("Should reset after run() runs out of work")
+	{
+		Service service;
+		int done = 0;
+		service.post([&done]
+		{
+			done++;
+		});
+		CHECK(service.run() == 1);
+		CHECK(done == 1);
+		CHECK(service.isStopped() == true);
+
+		service.post([&done]
+		{
+			done++;
+		});
+		service.reset();
+		CHECK(service.isStopped() == false);
+
+		CHECK(service.run() == 1);
+		CHECK(done == 2);
+
+		CHECK(service.isStopped() == true);
+	}
+
+	SECTION("Should reset after explict stop")
+	{
+		Service service;
+		int done = 0;
+		service.post([&done]
+		{
+			done++;
+		});
+		service.stop();
+
+		CHECK(service.isStopped() == true);
+		service.reset();
+		CHECK(service.isStopped() == false);
+
+		CHECK(service.run() == 1);
+		CHECK(done == 1);
+
+		CHECK(service.isStopped() == true);
+	}
+
+}
 
 
 #if 0
-
-// Tests a call to Service::run when it has a dummy work to keep the run() call alive
-// After an interval, it destroys the work item, which should cause the call to run() to unblock
-TEST_CASE("Service_run_work_release")
-{
-	Service service;
-	auto work = std::make_unique<Service::Work>(service); // Dummy work item
-
-	auto ft = std::async(std::launch::async, [&work]
-	{
-		std::this_thread::sleep_for(100ms);
-		work.reset();
-	});
-
-	auto done = service.run();
-	CHECK(done == 0);
-	CHECK(service.isStopped());
-}
-
-// Tests a call to Service::run when it has a dummy work to keep the run() call alive
-// After an interval, it calls Service::stop . This should cause the call to run() to unblock even though the work item
-// still exists
-TEST_CASE("Service_run_work_stop")
-{
-	Service service;
-	auto work = std::make_unique<Service::Work>(service); // Dummy work item
-
-	auto ft = std::async(std::launch::async, [&service]
-	{
-		std::this_thread::sleep_for(100ms);
-		service.stop();
-	});
-
-	auto done = service.run();
-	CHECK(done == 0);
-	CHECK(service.isStopped());
-}
 
 //////////////////////////////////////////////////////////////////////////
 // Acceptor tests
