@@ -23,6 +23,7 @@ using namespace cz::spas;
 		CHECK(ec.value().code == expectedCode); \
 	}
 	
+using namespace std::chrono_literals;
 
 /**
  * Catch2 helper to convert cz::spas::Error to a string
@@ -125,17 +126,210 @@ TEST_CASE("Tons of Service objects", "[Service]")
 }
 
 
-
-#if 0
-
-// Tests a call to Service::run when there is no work
-TEST_CASE("Service_run_nowork")
+TEST_CASE("Service::run", "[Service]")
 {
 	Service service;
-	auto done = service.run();
-	CHECK(done == 0);
-	CHECK(service.isStopped());
+
+	{
+		INFO("run() should return straight away if there is no work");
+		CHECK(service.isStopped() == false);
+		int done = service.run();
+		CHECK(done == 0); // Nothing executed
+	}
+
+	{
+		INFO("isStopped() should return true after run() even if no work was done");
+		CHECK(service.isStopped() == true);
+	}
+
+	int c1 = 0;
+	service.post([&c1]()
+	{
+		c1++;
+	});
+
+	int c2 = 0;
+	service.post([&c2]()
+	{
+		c2++;
+	});
+
+	{
+		INFO("reset() is needed after run()");
+		service.reset();
+		CHECK(service.isStopped() == false);
+
+		size_t done = service.run();
+		CHECK(done == 2);
+		CHECK(c1 == 1);
+		CHECK(c2 == 1);
+
+		{
+			INFO("isStopped() should return true once run() exits after executing work");
+			CHECK(service.isStopped() == true);
+		}
+
+		{
+			INFO("reset() after a run with work should cause isStopped() to return false");
+			service.reset();
+			CHECK(service.isStopped() == false);
+		}
+	}
 }
+
+TEST_CASE("Dummy work", "[Service]")
+{
+	Service service;
+	Semaphore sem;
+
+	// Test using a dummy work item
+	{
+
+		// Create another thread, where we will be calling `run()`
+		std::future<float> ft = std::async([&]()
+		{
+			// Dummy work so run() doesn't return
+			Service::Work dummyWork(service);
+			// Add a delay before stopping the service, so we can measure if run() was indeed blocked.
+			sem.notify();
+			std::pair<float, size_t> res = measureTimeMs([&]{ return service.run(); });
+			CHECK(res.second == 0);
+			return res.first;
+		});
+
+		// Wait for the other thread to start
+		sem.wait();
+		// Sleep (so we can measure if run() did actually block
+		std::this_thread::sleep_for(100ms);
+		// Cause the `run()` call to exit
+		service.stop();
+
+		// Wait for te thread to finish, and check how much time `run()` blocked for (with some slack)
+		float deltaMs = ft.get();
+		CHECK_THAT(deltaMs,  Catch::Matchers::WithinAbs(100, 20));
+		CHECK(service.isStopped());
+	}
+
+	{
+		INFO("Dummy work should should not override the stop/reset logic");
+		Service::Work dummy(service);
+		CHECK(service.isStopped());
+		auto done = service.run();
+		CHECK(done == 0);
+		CHECK(service.isStopped());
+	}
+
+	{
+		INFO("Dummy work should not count towards run() return value.");
+		service.reset();
+		Service::Work dummy(service);
+		auto ft = std::async([&]()
+		{
+			std::this_thread::sleep_for(100ms);
+			service.stop();
+		});
+		CHECK(service.run() == 0);
+	}
+
+	{
+		INFO("An existing dummy work should apply to multiple run() calls");
+		Service::Work dummy(service);
+
+		for(int i=0; i<2; i++)
+		{
+			service.reset();
+			Semaphore sem;
+			auto ft = std::async([&]()
+			{
+				sem.notify();
+				std::this_thread::sleep_for(100ms);
+				service.stop();
+			});
+
+			sem.wait();
+			std::pair<float, size_t> res = measureTimeMs([&] { return service.run(); });
+			CHECK_THAT(res.first,  Catch::Matchers::WithinAbs(100, 20));
+			CHECK(res.second == 0);
+
+			// Calling run() again should return immediately because the Service is stopped, regardless if there is dummy work
+			res = measureTimeMs([&] { return service.run(); });
+			CHECK_THAT(res.first,  Catch::Matchers::WithinAbs(0, 1));
+			CHECK(res.second == 0);
+		}
+	}
+}
+
+TEST_CASE("Service::post", "[Service]")
+{
+	SECTION("Posting from the same thread")
+	{
+		Service service;
+
+		// Post something that will take some time to execute, so we can check if it blocked for approximately that time
+		bool done = false;
+		service.post([&done]()
+		{
+			done = true;
+		});
+
+		// Make sure the handler is not called from inside `post`
+		CHECK(done == false);
+
+		// Make sure the handler was called
+		CHECK(service.run() == 1);
+		CHECK(done == true);
+		CHECK(service.isStopped());
+
+		// Calling again should do nothing
+		float ms = measureTimeMs([&service]() { service.run(); });
+		CHECK_THAT(ms, Catch::Matchers::WithinAbs(0, 1)); //
+	}
+
+
+	SECTION("Posting from a separate thread should cause run() to execute the handler if it is blocked with Service::Work")
+	{
+		Service service;
+		Semaphore sem;
+		std::future<size_t> ft = std::async([&service, &sem]
+		{
+			Service::Work dummy(service);
+			sem.notify();
+			return service.run();
+		});
+
+		// Wait until the async work starts, then wait a bit.
+		// What we want to test is if when `service::run()` stays blocked with a `Service::Work`, it can be awaken to execute
+		// handlers
+		sem.wait();
+		std::this_thread::sleep_for(50ms);
+		int done1 = 0;
+		int done2 = 0;
+		service.post([&done1]
+		{
+			done1++;
+		});
+		service.post([&done2]
+		{
+			done2++;
+		});
+
+		// Instead of calling stop from this thread, we post the stop, so it stop is done AFTER the handlers execute
+		service.post([&service]
+		{
+			service.stop();
+		});
+
+		CHECK(ft.get() == 3);
+		CHECK(done1 == 1);
+		CHECK(done2 == 1);
+	}
+
+}
+
+
+
+
+#if 0
 
 // Tests a call to Service::run when it has a dummy work to keep the run() call alive
 // After an interval, it destroys the work item, which should cause the call to run() to unblock

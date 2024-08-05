@@ -667,8 +667,11 @@ public:
 	Service& operator=(Service&&) = delete;
 
 	/**
-	 * Dummy work item that when constructed causes the Service::run to not return until Service::stop is called or the item
-	 * is destroyed
+	 * Dummy work item that when constructed causes the `Service::run` to not return until `Service::stop` is called or the item
+	 * is destroyed.
+	 *
+	 * An instance of `Work` affects all `Service::run` calls for the `Service` it is attached to, until the instance goes out of
+	 * scope.
 	 */
 	class Work
 	{
@@ -685,6 +688,7 @@ public:
 		{
 			other.m_io = nullptr;
 		}
+
 		// No need to complicate further by allowing assignment. Constructors are enough.
 		Work& operator=(const Work& other) = delete;
 
@@ -702,15 +706,39 @@ public:
 	Service();
 	~Service();
 
+	/**
+	 * \brief Blocks until all work is finished and there are no more handlers to be dispatched, or until `stop()` is called.
+	 *
+	 * If there is work to be done, it returns immediately, unless there is a `Service::Work` object attached.
+	 * When `run` exits, `isStopped()` returns `true` regardless of the reason that caused the call to return. Subsequent calls
+	 * to `run` will return immediately unless there is a prior call to `reset`
+	 *
+	 * \returns The number of handlers that were executed.
+	 */
 	size_t run();
 
+	/**
+	 * \brief Asks the `Service` to execute the specified handler, but without calling it from inside this function.
+	 *
+	 * The `Service` guarantees the handler will only be called from inside a `run()` call.
+	 * The function signature of the handle must be `void handler()`
+	 */
 	template<typename H, typename = detail::IsPostHandler<H>>
 	void post(H&& h)
 	{
 		post(std::make_unique<detail::PostOperation>(*this, std::forward<H>(h)));
 	}
 
+	/**
+	 * Signals the `Service` to stop. If `run()` is currently executing, it will return as soon as possible.
+	 * Subsequent calls to `run()` will return immediately until `reset()` is called
+	 */
 	void stop();
+
+	/**
+	 * Checks if the service has been stopped, either through an explicit `stop()`, or due to running out of work.
+	 * When a `Service` is stopped, calls to `run()` will return immediately without invoking any handlers.
+	 */
 	bool isStopped() const;
 	void reset();
 

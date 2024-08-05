@@ -1225,6 +1225,7 @@ void Service::post(std::unique_ptr<detail::Operation> op)
 	std::lock_guard<std::mutex> lk(m_mtx);
 	workStarted();
 	m_ready.push(std::move(op));
+	// Awaken the reactor
 	m_reactor.interrupt();
 }
 
