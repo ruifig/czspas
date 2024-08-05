@@ -390,16 +390,50 @@ TEST_CASE("Service::reset", "[Service]")
 
 		CHECK(service.isStopped() == true);
 	}
-
 }
 
+
+//////////////////////////////////////////////////////////////////////////
+// Acceptor tests
+//////////////////////////////////////////////////////////////////////////
+
+TEST_CASE("Acceptor::listen", "[Acceptor]")
+{
+
+	SECTION("Simple listen")
+	{
+		Service io;
+		Acceptor ac(io);
+
+		SECTION("Explicit port")
+		{
+			Error ec = ac.listen(SERVER_PORT);
+			CHECK(ec.code == Error::Code::Success);
+			auto addr = ac.getLocalAddr();
+			CHECK(addr.first == "0.0.0.0"); // Listening on all interfaces
+			CHECK(addr.second == SERVER_PORT); // Listening on the port we asked
+		}
+
+		SECTION("Dynamic port")
+		{
+			Error ec = ac.listen(0);
+			CHECK(ec.code == Error::Code::Success);
+			auto addr = ac.getLocalAddr();
+			CHECK(addr.first == "0.0.0.0"); // Listening on all interfaces
+			CHECK(addr.second == SERVER_PORT); // Listening on the port we asked
+		}
+	}
+
+
+
+}
 
 #if 0
 
 //////////////////////////////////////////////////////////////////////////
 // Acceptor tests
 //////////////////////////////////////////////////////////////////////////
-// Checks behaviour for a simple listen
+// Checks behavior for a simple listen
 TEST_CASE("Acceptor_listen_ok")
 {
 	Service io;

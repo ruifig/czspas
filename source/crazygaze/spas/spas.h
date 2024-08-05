@@ -658,6 +658,16 @@ public:
 //	Service interface
 //////////////////////////////////////////////////////////////////////////
 
+
+/**
+ * Provides the core I/O functionality for the asynchronous operations
+ *
+ * Thread Safety:
+ *		*Distinct object:* Safe
+ *		*Shared object:* Safe, with the exception of the `run()` and `reset()` functions. `run()` should be called from one single
+ *		thread, and `reset()` should not be called when
+ * 
+ */
 class Service
 {
 public:
@@ -712,6 +722,9 @@ public:
 	 * If there is work to be done, it returns immediately, unless there is a `Service::Work` object attached.
 	 * When `run` exits, `isStopped()` returns `true` regardless of the reason that caused the call to return. Subsequent calls
 	 * to `run` will return immediately unless there is a prior call to `reset`
+	 *
+	 * `run()` should be called from only on thread. Typically the application will either execute `run()` as part of the
+	 * application loop, or have 1 single network thread where `run()` is called.
 	 *
 	 * \returns The number of handlers that were executed.
 	 */
@@ -889,6 +902,17 @@ private:
 //////////////////////////////////////////////////////////////////////////
 //	Acceptor interface
 //////////////////////////////////////////////////////////////////////////
+
+/**
+ * Accepts incoming socket connections
+ *
+ * A server application can use this to wait for client to connect
+ *
+ * **Thread safety**
+ * *Distinct object:* Safe
+ * *Shared objects:* Unsafe
+ *
+ */
 class Acceptor
 {
 public:
@@ -899,18 +923,20 @@ public:
 	Acceptor& operator= (Acceptor&&) = delete;
 	~Acceptor();
 
-	//! Starts listening for new connections at the specified port
-	/*
-	\param port
-		What port to listen on. If 0, the OS will pick a port from the dynamic range
-	\param ec
-		If an error occurs, this contains the error.
-	\param backlog
-		Size of the connection backlog.
-		This is only an hint to the OS. It's not guaranteed.
-	*/
+	//
+	/**
+	 * /brief Starts listening for new connections at the specified port
+	 * \param port
+	 *		What port to listen on. If 0, the OS will pick a port from the dynamic range
+	 *\param ec
+	 *		If an error occurs, this contains the error.
+	 * \param backlog
+	 *		Size of the connection backlog.
+	 *		This is only an hint to the OS. It's not guaranteed.
+	 */
 	Error listen(const char* bindIP, int port, int backlog, bool reuseAddr);
 	Error listen(int port);
+
 	Error accept(Socket& sock, int timeoutMs = -1);
 
 	template< typename H, typename = detail::IsConnectHandler<H> >

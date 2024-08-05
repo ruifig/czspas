@@ -20,7 +20,7 @@ In practical terms, you can think of the Service class as a work queue. Asynchro
 
 ***Structure***
 
-The entire relevant API resides in the ```cz::spas``` namespace. The ```cz::spas::detail``` namespace contains implementation details, and nothing in that namespace needs to be used directly.
+The entire relevant API resides in the `cz::spas` namespace. The `cz::spas::detail` namespace contains implementation details, and nothing in that namespace needs to be used directly.
 
 Functions prefixed with "_" should not be used. Those are accessible to make coding the unit tests easier.
 

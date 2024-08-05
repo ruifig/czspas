@@ -1464,8 +1464,8 @@ Error Acceptor::listen(const char* bindIP, int port, int backlog, bool reuseAddr
 {
 	CZSPAS_ASSERT(!m_base.isValid());
 	CZSPAS_INFO("Acceptor %p: listen(%d, %d)", this, port, backlog);
-
-	auto res = detail::createListenSocket(bindIP, port, backlog, reuseAddr);
+	
+	std::pair<Error, SocketHandle> res = detail::createListenSocket(bindIP, port, backlog, reuseAddr);
 	if (res.first)
 	{
 		CZSPAS_ERROR("Acceptor %p: %s", this, res.first.msg());
@@ -1492,7 +1492,7 @@ Error Acceptor::accept(Socket& sock, int timeoutMs /*= -1*/)
 	CZSPAS_ASSERT(m_base.isValid());
 	CZSPAS_ASSERT(!sock.m_base.isValid());
 
-	auto res = detail::accept(m_base.s, timeoutMs);
+	std::pair<Error, SocketHandle> res = detail::accept(m_base.s, timeoutMs);
 	if (res.first)
 	{
 		CZSPAS_ERROR("Acceptor %p: %s", this, res.first.msg());
