@@ -925,7 +925,12 @@ public:
 
 	//
 	/**
-	 * /brief Starts listening for new connections at the specified port
+	 * /brief Starts listening for new connections
+	 *
+	 * /param bindIP Address to bind to
+	 * A *nullptr* or *0.0.0.0* will listen for incoming connections on any available network interface.
+	 * An explicit value (e.g: *127.0.0.1*) will only listen for connections to that specific network interface (aka: localhost).
+	 *
 	 * \param port
 	 *		What port to listen on. If 0, the OS will pick a port from the dynamic range
 	 *\param ec
