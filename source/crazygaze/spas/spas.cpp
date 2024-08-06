@@ -100,7 +100,7 @@ namespace cz::spas::detail
 		bool isTryAgainError() const { return m_err == EAI_AGAIN; ;}
 		// #TODO Build custom error depending on the error number
 		std::string msg() const { return strerror(m_err); }
-		int getCode() const { return err; };
+		int getCode() const { return m_err; };
 #endif
 
 		Error getError() const { return Error(Error::Code::Other, msg()); }
@@ -113,6 +113,7 @@ namespace cz::spas::detail
 	// WSAInstance
 	//////////////////////////////////////////////////////////////////////////
 
+#if _WIN32
 	WSAInstance::WSAInstance()
 	{
 		CZSPAS_INFO("WSAInstance %p: Constructor", this);
@@ -136,6 +137,7 @@ namespace cz::spas::detail
 		CZSPAS_INFO("WSAInstance %p: Destructor", this);
 		WSACleanup();
 	}
+#endif
 
 	//////////////////////////////////////////////////////////////////////////
 	//////////////////////////////////////////////////////////////////////////

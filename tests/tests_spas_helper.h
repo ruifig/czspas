@@ -1,6 +1,7 @@
 #pragma once
 
 #define TEST_LOG(fmt, ...) printf("TST: " fmt "\n", ##__VA_ARGS__)
+#define CHECK_CZSPAS(ec) CHECK(ec.code == Error::Code::Success)
 
 using namespace cz;
 using namespace cz::spas;
