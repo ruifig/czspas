@@ -420,14 +420,12 @@ TEST_CASE("Acceptor::listen", "[Acceptor]")
 			CHECK(ec.code == Error::Code::Success);
 			auto addr = ac.getLocalAddr();
 			CHECK(addr.first == "0.0.0.0"); // Listening on all interfaces
-			// Listening on a dynamic port. The dynamic port range dependes on the OS, so no point in testing if within a specific
+			// Listening on a dynamic port. The dynamic port range depends on the OS, so no point in testing if within a specific
 			// range. See https://en.wikipedia.org/wiki/Ephemeral_port
 			CHECK(addr.second != SERVER_PORT);
 			CHECK(addr.second != 0);
 		}
 	}
-
-
 
 }
 
