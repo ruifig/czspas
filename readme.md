@@ -10,6 +10,7 @@ Features:
 * Small codebase
 * Asynchronous Asio-like API.
 * Only IPv4 at the moment.
+* **ONLY** little-endian systems are supported. 
 
 czspas was created with the intent of being used where a simple asynchronous TCP api is needed, but adding a dependency on something like Boost Asio (or Asio standalone) is overkill.
 

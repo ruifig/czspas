@@ -1453,7 +1453,7 @@ Acceptor::~Acceptor()
 {
 	// Close the socket without calling shutdown, and setting linger to 0, so it doesn't linger around and we can
 	// run another server right after
-	// Not sure this is necessary for listening sockets. ;(
+	// Not sure this is necessary for listening sockets.
 	if (m_base.s != CZSPAS_INVALID_SOCKET)
 	{
 		detail::setLinger(m_base.s, true, 0);
@@ -1604,6 +1604,315 @@ size_t receive(Socket& sock, char* buf, size_t len, Error& ec)
 	CZSPAS_ASSERT(len > 0);
 	return detail::syncImpl::receive(sock, buf, len, -1, ec);
 }
+
+
+//////////////////////////////////////////////////////////////////////////
+// isPrivateIP
+//////////////////////////////////////////////////////////////////////////
+
+namespace detail
+{
+	/**
+	 * Given a "xxx.xxx.xxx.xxx" string (an IP), it returns the uint32_t that represents that IP
+	 */
+	std::optional<uint32_t> ipToUint(std::string_view ip)
+	{
+		// Enough bytes to store 255.255.255.255 + null
+		constexpr int maxLen = 4*3 + 3 + 1;
+		if (ip.size() >= maxLen)
+		{
+			return std::nullopt;
+		}
+
+		char buf[maxLen];
+		memcpy(buf, ip.data(), ip.size());
+		buf[ip.size()] = 0;
+		
+		unsigned int a,b,c,d;
+		char extra;
+
+		// It's not sufficient to check if the numbers were parsed.
+		// E.g: 192.168.0.0.0 is an invalid ip (the extra 0). If we only checked if the numbers were parsed, we wouldn't detect
+		// the error.
+		// Therefore, we put an extra %c at the end. If that is parsed, it means there string has extra stuff at the end and
+		// should be considered invalid
+		if (sscanf(buf, "%u.%u.%u.%u%c", &a, &b, &c, &d, &extra) != 4)
+		{
+			return std::nullopt;
+		}
+
+		if ((a > 255) || (b > 255) || (c > 255) || (d > 255))
+		{
+			return std::nullopt;
+		}
+		else
+		{
+			return (a << 24) | (b << 16) | (c << 8) | d;
+		}
+	}
+
+	/**
+	 * Given a string with a CIDR (i.e 192.168.0.0/16), it will return two uint32_t with corresponding to the network and mask
+	 */
+	std::optional<std::pair<uint32_t, uint32_t>> cidrToUints(std::string_view cidr)
+	{
+		// Enough bytes to store 255.255.255.255/XX + null
+		constexpr int maxLen = 4*3 + 3 + 3 + 1;
+		if (cidr.size() >= maxLen)
+		{
+			return std::nullopt;
+		}
+
+		char buf[maxLen];
+		memcpy(buf, cidr.data(), cidr.size());
+		buf[cidr.size()] = 0;
+		
+		// It's not sufficient to check if the numbers were parsed.
+		// E.g: 192.168.0.0/24 is an invalid ip (the extra 0). If we only checked if the numbers were parsed, we wouldn't detect
+		// the error.
+		// Therefore, we put an extra %c at the end. If that is parsed, it means there string has extra stuff at the end and
+		// should be considered invalid
+		unsigned int a,b,c,d, bits;
+		char extra;
+		if (sscanf(buf, "%u.%u.%u.%u/%u%c", &a, &b, &c, &d, &bits, &extra) != 5)
+		{
+			return std::nullopt;
+		}
+
+		if ((a > 255) || (b > 255) || (c > 255) || (d > 255) || (bits > 32))
+		{
+			return std::nullopt;
+		}
+		else
+		{
+			uint32_t network = (a << 24) | (b << 16) | (c << 8) | d;
+			uint64_t mask = (((uint64_t)1 << bits) - 1) << (32 - bits);
+			return std::pair<uint32_t, uint32_t>(network, static_cast<uint32_t>(mask));
+		}
+	}
+
+
+	bool isIPInRange(uint32_t ip, uint32_t network, uint32_t mask)
+	{
+		uint32_t net_lower = network & mask;
+		uint32_t net_upper = net_lower | (~mask);
+		if (ip >= net_lower && ip <= net_upper)
+		{
+			return true;
+		}
+		else
+		{
+			return false;
+		}
+	}
+
+}
+
+bool isIPInRange(std::string_view ip, std::string_view network, std::string_view mask)
+{
+	std::optional<uint32_t> ip_addr = detail::ipToUint(ip);
+	std::optional<uint32_t> network_addr = detail::ipToUint(network);
+	std::optional<uint32_t> mask_addr = detail::ipToUint(mask);
+
+	// Check if all input parameters are valid ip addresses
+	if (!ip_addr.has_value() || !network_addr.has_value() || !mask_addr.has_value())
+	{
+		return false;
+	}
+
+	return detail::isIPInRange(*ip_addr, *network_addr, *mask_addr);
+}
+
+bool isIPInRange(std::string_view ip, std::string_view cidr)
+{
+	std::optional<uint32_t> ip_addr = detail::ipToUint(ip);
+	std::optional<std::pair<uint32_t, uint32_t>> networkAndMask = detail::cidrToUints(cidr);
+	if (!ip_addr.has_value() || !networkAndMask.has_value())
+	{
+		return false;
+	}
+
+	return detail::isIPInRange(*ip_addr, networkAndMask->first, networkAndMask->second);
+}
+
+// Implement based on https://softwareengineering.stackexchange.com/questions/384960/is-my-algorithm-for-determining-whether-a-ipv4-is-public-or-private-correct
+#error Implement isPrivateIP
+
+
+//////////////////////////////////////////////////////////////////////////
+// getAdaptersAddresses
+//////////////////////////////////////////////////////////////////////////
+#if _WIN32
+
+// Enable disable full logging for getAdaptersAddress
+#if 1
+	#define getAdaptersAddressesLog printf
+#else
+	#define getAdaptersAddressesLog(...) ((void)0)
+#endif
+
+namespace 
+{
+template<typename T>
+static std::vector<NetworkAdapterInfo::Address> walkAddresses(T pFirstAddr, const char* addrType, bool includeIPV6)
+{
+	// To silence the compiler warning about unused parameter when logging is disabled
+	addrType = addrType;
+
+	std::vector<NetworkAdapterInfo::Address> res;
+	char buff[100];
+	DWORD bufflen = 100;
+
+	std::string log;
+
+	auto pAddr = pFirstAddr;
+	if (pAddr != NULL)
+	{
+		for (int i = 0; pAddr != NULL; i++)
+		{
+			NetworkAdapterInfo::Address addr;
+			if (pAddr->Address.lpSockaddr->sa_family == AF_INET)
+			{
+				sockaddr_in* sa_in = (sockaddr_in*)pAddr->Address.lpSockaddr;
+				addr.isIPV6 = false;
+				addr.ipv4 = sa_in->sin_addr;
+				addr.str = inet_ntop(AF_INET, &(sa_in->sin_addr), buff, bufflen);
+				res.push_back(addr);
+				log += std::string("\t\tIPV4:") + addr.str + "\n";
+			}
+			else if (pAddr->Address.lpSockaddr->sa_family == AF_INET6)
+			{
+				sockaddr_in6* sa_in6 = (sockaddr_in6*)pAddr->Address.lpSockaddr;
+				if (includeIPV6)
+				{
+					addr.isIPV6 = true;
+					addr.ipv6 = sa_in6->sin6_addr;
+					addr.str = inet_ntop(AF_INET6, &(sa_in6->sin6_addr), buff, bufflen);
+					res.push_back(addr);
+				}
+				log += std::string("\t\tIPV6:") + addr.str + "\n";
+			}
+			else
+			{
+				log += "\t\tUNSPEC\n";
+			}
+			pAddr = pAddr->Next;
+		}
+	}
+
+	getAdaptersAddressesLog("\tNumber of %s Addresses: %d\n", addrType, (int)res.size());
+	if (log.size())
+		getAdaptersAddressesLog(log.c_str());
+
+	return res;
+}
+
+}
+
+std::vector<NetworkAdapterInfo> getAdaptersAddresses(bool onlyStatusUp, bool includeIPV6)
+{
+	std::vector<NetworkAdapterInfo> res;
+
+	// Declare and initialize variables
+	DWORD dwRetVal = 0;
+
+	unsigned int i = 0;
+
+	// Set the flags to pass to GetAdaptersAddresses
+	ULONG flags = GAA_FLAG_INCLUDE_PREFIX;
+	flags |= GAA_FLAG_INCLUDE_GATEWAYS;
+
+	// default to unspecified address family (both)
+	ULONG family = AF_UNSPEC;
+
+	PIP_ADAPTER_ADDRESSES pAddresses = NULL;
+	ULONG outBufLen = 0;
+
+	PIP_ADAPTER_ADDRESSES pCurrAddresses = NULL;
+	IP_ADAPTER_PREFIX* pPrefix = NULL;
+
+	getAdaptersAddressesLog("Calling GetAdaptersAddresses function with family = ");
+
+	// First, check how much memory we need to allocate
+	dwRetVal = GetAdaptersAddresses(family, flags, NULL, NULL, &outBufLen);
+	CZSPAS_ASSERT(dwRetVal == ERROR_BUFFER_OVERFLOW); // This error is expected when passing NULL insteadl of pAddresses.
+
+	pAddresses = (IP_ADAPTER_ADDRESSES*)HeapAlloc(GetProcessHeap(), 0, outBufLen);
+
+	if (pAddresses == NULL) {
+		CZSPAS_FATAL("Memory allocation failed for IP_ADAPTER_ADDRESSES struct");
+		return {};
+	}
+	CZSPAS_SCOPE_EXIT{ HeapFree(GetProcessHeap(), 0, pAddresses); };
+
+	dwRetVal = GetAdaptersAddresses(family, flags, NULL, pAddresses, &outBufLen);
+	if (dwRetVal != NO_ERROR)
+	{
+		CZSPAS_ERROR(detail::ErrorWrapper().msg().c_str());
+		return {};
+	}
+
+	pCurrAddresses = pAddresses;
+	while (pCurrAddresses)
+	{
+		NetworkAdapterInfo adapter;
+
+		getAdaptersAddressesLog("\tLength of the IP_ADAPTER_ADDRESS struct: %ld\n", pCurrAddresses->Length);
+		getAdaptersAddressesLog("\tIfIndex (IPv4 interface): %u\n", pCurrAddresses->IfIndex);
+		getAdaptersAddressesLog("\tAdapter name: %s\n", pCurrAddresses->AdapterName);
+
+		adapter.wname = pCurrAddresses->FriendlyName;
+		adapter.unicast = walkAddresses(pCurrAddresses->FirstUnicastAddress, "Unicast", includeIPV6);
+		adapter.anycast = walkAddresses(pCurrAddresses->FirstAnycastAddress, "Anycast", includeIPV6);
+		adapter.multicast = walkAddresses(pCurrAddresses->FirstMulticastAddress, "Multicast", includeIPV6);
+		adapter.gateways = walkAddresses(pCurrAddresses->FirstGatewayAddress, "Default Gateway", includeIPV6);
+
+		auto unused = walkAddresses(pCurrAddresses->FirstDnsServerAddress, "DNS Server", includeIPV6);
+
+		getAdaptersAddressesLog("\tDNS Suffix: %wS\n", pCurrAddresses->DnsSuffix);
+		getAdaptersAddressesLog("\tDescription: %wS\n", pCurrAddresses->Description);
+		getAdaptersAddressesLog("\tFriendly name: %wS\n", pCurrAddresses->FriendlyName);
+
+		if (pCurrAddresses->PhysicalAddressLength != 0)
+		{
+			getAdaptersAddressesLog("\tPhysical address: ");
+			for (i = 0; i < (int)pCurrAddresses->PhysicalAddressLength; i++)
+			{
+				if (i == (pCurrAddresses->PhysicalAddressLength - 1))
+					getAdaptersAddressesLog("%.2X\n", (int)pCurrAddresses->PhysicalAddress[i]);
+				else
+					getAdaptersAddressesLog("%.2X-", (int)pCurrAddresses->PhysicalAddress[i]);
+			}
+		}
+		getAdaptersAddressesLog("\tFlags: %ld\n", pCurrAddresses->Flags);
+		getAdaptersAddressesLog("\tMtu: %lu\n", pCurrAddresses->Mtu);
+		getAdaptersAddressesLog("\tIfType: %ld\n", pCurrAddresses->IfType);
+		getAdaptersAddressesLog("\tOperStatus: %ld\n", pCurrAddresses->OperStatus);
+		getAdaptersAddressesLog("\tIpv6IfIndex (IPv6 interface): %u\n", pCurrAddresses->Ipv6IfIndex);
+		getAdaptersAddressesLog("\tZoneIndices (hex): ");
+		for (i = 0; i < 16; i++) getAdaptersAddressesLog("%lx ", pCurrAddresses->ZoneIndices[i]);
+		getAdaptersAddressesLog("\n");
+
+		pPrefix = pCurrAddresses->FirstPrefix;
+		if (pPrefix)
+		{
+			for (i = 0; pPrefix != NULL; i++) pPrefix = pPrefix->Next;
+			getAdaptersAddressesLog("\tNumber of IP Adapter Prefix entries: %d\n", i);
+		}
+		else
+			getAdaptersAddressesLog("\tNumber of IP Adapter Prefix entries: 0\n");
+
+		getAdaptersAddressesLog("\n");
+
+		if (pCurrAddresses->OperStatus==IfOperStatusUp || onlyStatusUp==false)
+			res.push_back(adapter);
+
+		pCurrAddresses = pCurrAddresses->Next;
+	}
+
+	return res;
+}
+#endif
 
 
 } // namespace cz::spas

@@ -40,11 +40,89 @@ namespace Catch
 	};
 }
 
+TEST_CASE("scratchpad", "[scratchpad]")
+{
+	auto v1 = getAdaptersAddresses(false, false);
+	auto v2 = getAdaptersAddresses(true, false);
+	CHECK(true);
+}
+
 //////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////////////////////////////////////////
+// isIPInRange
+//////////////////////////////////////////////////////////////////////////
+
+TEST_CASE("details", "[details]")
+{
+	CHECK(detail::ipToUint("192.168.0.1").has_value() == true);
+	CHECK(detail::ipToUint("192.168.0").has_value() == false);
+	// Extra number at the end
+	CHECK(detail::ipToUint("192.168.0.1.0").has_value() == false);
+
+	CHECK(detail::cidrToUints("192.168.0.1/1").has_value() == true);
+	CHECK(detail::cidrToUints("192.168.0.1.0/1").has_value() == false);
+	CHECK(detail::cidrToUints("192.168.0.a/1").has_value() == false);
+	CHECK(detail::cidrToUints("192.168.0.1/1.").has_value() == false);
+	CHECK(detail::cidrToUints("192.168.0.1/33").has_value() == false);
+
+	{
+		std::pair<uint32_t, uint32_t> v = detail::cidrToUints("255.255.255.255/1").value();
+		CHECK(v.first  == 0xFFFFFFFF);
+		CHECK(v.second == 0x80000000);
+	}
+	{
+		std::pair<uint32_t, uint32_t> v = detail::cidrToUints("255.255.255.255/0").value();
+		CHECK(v.first  == 0xFFFFFFFF);
+		CHECK(v.second == 0x00000000);
+	}
+	{
+		std::pair<uint32_t, uint32_t> v = detail::cidrToUints("255.255.255.255/32").value();
+		CHECK(v.first  == 0xFFFFFFFF);
+		CHECK(v.second == 0xFFFFFFFF);
+	}
+
+	//
+	// Some examples from https://en.wikipedia.org/wiki/Classless_Inter-Domain_Routing
+	//
+	{
+		// 198.51.100.14/24 represents the IPv4 address 198.51.100.14 and its associated network prefix 198.51.100.0, or equivalently, its subnet mask 255.255.255.0, which has 24 leading 1-bits.
+		std::pair<uint32_t, uint32_t> v = detail::cidrToUints("198.51.100.14/24").value();
+		CHECK(v.first  == ((198 << 24) | ( 51 << 16) | (100 << 8) | 14));
+		CHECK(v.second == 0xFFFFFF00);
+
+		// Network prefix is 198.51.100.0
+		auto res = v.first & v.second;
+		CHECK(res  == ((198 << 24) | ( 51 << 16) | (100 << 8) | 0));
+	}
+}
+
+TEST_CASE("isIPInRange", "[isIPInRange]")
+{
+	// Invalid ip formats
+	CHECK(isIPInRange("192.168.1.g", "192.168.0.0", "255.255.0.0") == false);
+	CHECK(isIPInRange("192.168.1.0.0", "192.168.0.0", "255.255.0.0") == false);
+
+	CHECK(isIPInRange("192.168.1.0", "192.168.0.0", "255.255.0.0") == true);
+	CHECK(isIPInRange("192.168.1.0", "192.168.0.0", "255.255.255.0") == false);
+
+
+	//
+	// Some examples from https://en.wikipedia.org/wiki/Classless_Inter-Domain_Routing
+	//
+	{
+		// the IPv4 block 198.51.100.0/22 represents the 1024 IPv4 addresses from 198.51.100.0 to 198.51.103.255.
+		CHECK(isIPInRange("198.51.99.0" , "198.51.100.0/22") == false); // Just outside the range by -1
+		CHECK(isIPInRange("198.51.100.0", "198.51.100.0/22") == true); // First valid address
+		CHECK(isIPInRange("198.51.103.255", "198.51.100.0/22") == true); // Last address
+		CHECK(isIPInRange("198.51.104.0", "198.51.100.0/22") == false); // Just outside the range by +1
+	}
+
+}
 
 //////////////////////////////////////////////////////////////////////////
 // Error
@@ -426,6 +504,9 @@ TEST_CASE("Acceptor::listen", "[Acceptor]")
 			CHECK(addr.second != 0);
 		}
 	}
+
+
+	auto addrs = cz::spas::getAdaptersAddresses(false, true);
 
 }
 
@@ -1480,6 +1561,5 @@ TEST_CASE("asyncConnect", "[Resolver]")
 #endif
 
 #endif
-
 
 

@@ -104,6 +104,7 @@ Some intentional design choices:
 #include <string.h>
 #include <algorithm>
 #include <string_view>
+#include <optional>
 
 // Windows defines a min/max macro, interferes with STL
 #ifdef max
@@ -120,6 +121,33 @@ Some intentional design choices:
 #ifdef __GNUG__
 	#define __forceinline __attribute__((always_inline)) inline
 #endif
+
+#if _WIN32
+	#include <iphlpapi.h>
+
+	struct NetworkAdapterInfo
+	{
+		struct Address
+		{
+			std::string str;
+			bool isIPV6;
+			union
+			{
+				IN6_ADDR ipv6;
+				IN_ADDR ipv4;
+			};
+		};
+
+		std::string name;
+		std::wstring wname;
+		std::vector<Address> unicast;
+		std::vector<Address> anycast;
+		std::vector<Address> multicast;
+		std::vector<Address> gateways;
+	};
+
+#endif
+
 
 namespace cz
 {
@@ -929,13 +957,13 @@ public:
 	/**
 	 * /brief Starts listening for new connections
 	 *
-	 * /param bindIP Address to bind to
+	 * \param bindIP Address to bind to
 	 * A *nullptr* or *0.0.0.0* will listen for incoming connections on any available network interface.
 	 * An explicit value (e.g: *127.0.0.1*) will only listen for connections to that specific network interface (aka: localhost).
 	 *
 	 * \param port
 	 *		What port to listen on. If 0, the OS will pick a port from the dynamic range
-	 *\param ec
+	 * \param ec
 	 *		If an error occurs, this contains the error.
 	 * \param backlog
 	 *		Size of the connection backlog.
@@ -1174,6 +1202,50 @@ size_t send(Socket& sock, const char* buf, size_t len, int timeoutMs, Error& ec)
 size_t send(Socket& sock, const char* buf, size_t len, Error& ec);
 size_t receive(Socket& sock, char* buf, size_t len, int timeoutMs, Error& ec);
 size_t receive(Socket& sock, char* buf, size_t len, Error& ec);
+
+
+// Do not use these
+// They are in the header so they can be tested, but they should only be used internally
+namespace detail
+{
+	std::optional<uint32_t> ipToUint(std::string_view ip);
+	std::optional<std::pair<uint32_t, uint32_t>> cidrToUints(std::string_view cidr);
+}
+
+/**
+ * Checks if the specified ip is in a range
+ *
+ * \param ip IP to check
+ * \param network Network address
+ * \param mask subnet mask
+ *
+ * E.g:
+ * ` bool inRange = isIPInRange("192.168.0.5", "192.168.0.0", "255.255.0.0"); // Returns true`
+ */
+bool isIPInRange(std::string_view ip, std::string_view network, std::string_view mask);
+
+/**
+ * Checks if the specified ip is within a CIDR range (i.e "192.168.0.0/16")
+ * \param ip IP to check
+ * \param cidr CIDR range
+ *
+ * E.g:
+ * ` bool inRange = isIPInRange("192.168.0.5", "192.168.0.0/16"); // Returns true`
+ */
+bool isIPInRange(std::string_view ip, std::string_view cidr);
+
+/**
+ * Checks if the given IP is a private IP address, as specified in https://en.wikipedia.org/wiki/Private_network .
+ * Private IPV4 addresses fall in the following ranges:
+ *     10.0.0.0 to 10.255.255.255 , subnet mask 255.0.0.0
+ *     172.16.0.0 to 172.31.255.255, subnet mask 255.240.0.0
+ *     192.168.0.0 to 192.168.255.255, subnet mask 255.255.0.0
+ */
+bool isPrivateIP(std::string_view ip);
+
+#if _WIN32
+std::vector<NetworkAdapterInfo> getAdaptersAddresses(bool onlyStatusUp, bool includeIPV6);
+#endif
 
 } // namespace spas
 } // namespace cz
