@@ -54,74 +54,147 @@ TEST_CASE("scratchpad", "[scratchpad]")
 //////////////////////////////////////////////////////////////////////////
 
 //////////////////////////////////////////////////////////////////////////
-// isIPInRange
+// details
 //////////////////////////////////////////////////////////////////////////
 
 TEST_CASE("details", "[details]")
 {
-	CHECK(detail::ipToUint("192.168.0.1").has_value() == true);
-	CHECK(detail::ipToUint("192.168.0").has_value() == false);
-	// Extra number at the end
-	CHECK(detail::ipToUint("192.168.0.1.0").has_value() == false);
 
-	CHECK(detail::cidrToUints("192.168.0.1/1").has_value() == true);
-	CHECK(detail::cidrToUints("192.168.0.1.0/1").has_value() == false);
-	CHECK(detail::cidrToUints("192.168.0.a/1").has_value() == false);
-	CHECK(detail::cidrToUints("192.168.0.1/1.").has_value() == false);
-	CHECK(detail::cidrToUints("192.168.0.1/33").has_value() == false);
+	SECTION("byteSwap")
+	{
+		// NOTE: Intentionally NOT using the number 1, so we can detect bugs where operator && is used instead of & when manipulating bits
+		detail::IpAddress a;
+		a.o.o1 = 2;
+		a.o.o2 = 3;
+		a.o.o3 = 4;
+		a.o.o4 = 5;
 
-	{
-		std::pair<uint32_t, uint32_t> v = detail::cidrToUints("255.255.255.255/1").value();
-		CHECK(v.first  == 0xFFFFFFFF);
-		CHECK(v.second == 0x80000000);
-	}
-	{
-		std::pair<uint32_t, uint32_t> v = detail::cidrToUints("255.255.255.255/0").value();
-		CHECK(v.first  == 0xFFFFFFFF);
-		CHECK(v.second == 0x00000000);
-	}
-	{
-		std::pair<uint32_t, uint32_t> v = detail::cidrToUints("255.255.255.255/32").value();
-		CHECK(v.first  == 0xFFFFFFFF);
-		CHECK(v.second == 0xFFFFFFFF);
+		detail::IpAddress b;
+		b.o.o1 = 5;
+		b.o.o2 = 4;
+		b.o.o3 = 3;
+		b.o.o4 = 2;
+
+		// Swap
+		uint32_t tmp = detail::byteSwap(a.all);
+		CHECK(tmp == b.all);
+
+		// Swap back to the original
+		tmp = detail::byteSwap(tmp);
+		CHECK(tmp == a.all);
 	}
 
-	//
-	// Some examples from https://en.wikipedia.org/wiki/Classless_Inter-Domain_Routing
-	//
+	SECTION("strToAddr")
 	{
-		// 198.51.100.14/24 represents the IPv4 address 198.51.100.14 and its associated network prefix 198.51.100.0, or equivalently, its subnet mask 255.255.255.0, which has 24 leading 1-bits.
-		std::pair<uint32_t, uint32_t> v = detail::cidrToUints("198.51.100.14/24").value();
-		CHECK(v.first  == ((198 << 24) | ( 51 << 16) | (100 << 8) | 14));
-		CHECK(v.second == 0xFFFFFF00);
+		{
+			std::optional<detail::IpAddress> addr = detail::strToAddr("127.128.129.130");
+			REQUIRE(addr.has_value());
+			CHECK(addr->o.o1 == 127); 
+			CHECK(addr->o.o2 == 128); 
+			CHECK(addr->o.o3 == 129); 
+			CHECK(addr->o.o4 == 130); 
+		}
 
-		// Network prefix is 198.51.100.0
-		auto res = v.first & v.second;
-		CHECK(res  == ((198 << 24) | ( 51 << 16) | (100 << 8) | 0));
+		CHECK(detail::strToAddr("1922.168.0.0" ).has_value() == false);
+		CHECK(detail::strToAddr("192.168.0"    ).has_value() == false);
+		CHECK(detail::strToAddr("192.168.0.1.0").has_value() == false);
+	}
+
+	SECTION("addrToStr")
+	{
+		detail::IpAddress addr = detail::strToAddr("127.128.129.130").value();
+		CHECK(addrToStr(addr) == "127.128.129.130");
+		CHECK(to_string(addr) == "127.128.129.130");
+	}
+
+	SECTION("cidrStrToAddrs")
+	{
+		CHECK(detail::cidrStrToAddrs("2.3.4.5/1"  ).has_value() == true);
+		CHECK(detail::cidrStrToAddrs("2.3.4.5.0/1").has_value() == false);
+		CHECK(detail::cidrStrToAddrs("2.3.4.a/1"  ).has_value() == false);
+		CHECK(detail::cidrStrToAddrs("2.3.4.5/1." ).has_value() == false);
+
+		CHECK(to_string(detail::cidrStrToAddrs("2.3.4.5/1")->first) == "2.3.4.5");
+
+		CHECK(detail::cidrStrToAddrs("2.3.4.5/-1").has_value() == false);
+		CHECK(to_string(detail::cidrStrToAddrs("2.3.4.5/0")->second)  == "0.0.0.0");
+		CHECK(to_string(detail::cidrStrToAddrs("2.3.4.5/1")->second)  == "128.0.0.0");
+		CHECK(to_string(detail::cidrStrToAddrs("2.3.4.5/4")->second)  == "240.0.0.0");
+		CHECK(to_string(detail::cidrStrToAddrs("2.3.4.5/8")->second)  == "255.0.0.0");
+		CHECK(to_string(detail::cidrStrToAddrs("2.3.4.5/12")->second) == "255.240.0.0");
+		CHECK(to_string(detail::cidrStrToAddrs("2.3.4.5/16")->second) == "255.255.0.0");
+		CHECK(to_string(detail::cidrStrToAddrs("2.3.4.5/20")->second) == "255.255.240.0");
+		CHECK(to_string(detail::cidrStrToAddrs("2.3.4.5/24")->second) == "255.255.255.0");
+		CHECK(to_string(detail::cidrStrToAddrs("2.3.4.5/28")->second) == "255.255.255.240");
+		CHECK(to_string(detail::cidrStrToAddrs("2.3.4.5/31")->second) == "255.255.255.254");
+		CHECK(to_string(detail::cidrStrToAddrs("2.3.4.5/32")->second) == "255.255.255.255");
+		CHECK(detail::cidrStrToAddrs("2.3.4.5/33").has_value() == false);
 	}
 }
 
+//////////////////////////////////////////////////////////////////////////
+// isIPInRange
+//////////////////////////////////////////////////////////////////////////
+
 TEST_CASE("isIPInRange", "[isIPInRange]")
 {
-	// Invalid ip formats
-	CHECK(isIPInRange("192.168.1.g", "192.168.0.0", "255.255.0.0") == false);
-	CHECK(isIPInRange("192.168.1.0.0", "192.168.0.0", "255.255.0.0") == false);
 
-	CHECK(isIPInRange("192.168.1.0", "192.168.0.0", "255.255.0.0") == true);
-	CHECK(isIPInRange("192.168.1.0", "192.168.0.0", "255.255.255.0") == false);
-
-
-	//
-	// Some examples from https://en.wikipedia.org/wiki/Classless_Inter-Domain_Routing
-	//
+	SECTION("Test invalid ip addresses")
 	{
-		// the IPv4 block 198.51.100.0/22 represents the 1024 IPv4 addresses from 198.51.100.0 to 198.51.103.255.
-		CHECK(isIPInRange("198.51.99.0" , "198.51.100.0/22") == false); // Just outside the range by -1
-		CHECK(isIPInRange("198.51.100.0", "198.51.100.0/22") == true); // First valid address
-		CHECK(isIPInRange("198.51.103.255", "198.51.100.0/22") == true); // Last address
-		CHECK(isIPInRange("198.51.104.0", "198.51.100.0/22") == false); // Just outside the range by +1
+		// Sanity check, so we can then test if each individual one fails when invalid
+		CHECK(isIPInRange("192.168.1.0", "192.168.0.0", "255.255.0.0").value() == true);
+
+		// Test invalid addresses
+		CHECK(isIPInRange("192.168.1.x", "192.168.0.0", "255.255.0.0").has_value() == false);
+		CHECK(isIPInRange("192.168.1.0", "192.168.0.x", "255.255.0.0").has_value() == false);
+		CHECK(isIPInRange("192.168.1.0", "192.168.0.0", "255.255.0.x").has_value() == false);
+
+		// Trying to access the true/false should throw exception if the parsing failed
+		CHECK_THROWS_AS(isIPInRange("192.168.1.x", "192.168.0.0", "255.255.0.0").value(), std::bad_optional_access);
 	}
 
+	SECTION("Valid addresses")
+	{
+		CHECK(isIPInRange("192.168.1.0", "192.168.0.0", "255.255.0.0").value() == true);
+		CHECK(isIPInRange("192.168.1.0", "192.168.0.0", "255.255.255.0").value() == false);
+
+		//
+		// Some examples from https://en.wikipedia.org/wiki/Classless_Inter-Domain_Routing
+		// the IPv4 block 198.51.100.0/22 represents the 1024 IPv4 addresses from 198.51.100.0 to 198.51.103.255.
+		CHECK(isIPInRange("198.51.99.0"   , "198.51.100.0/22").value() == false); // Just outside the range by -1
+		CHECK(isIPInRange("198.51.100.0"  , "198.51.100.0/22").value() == true ); // First valid address
+		CHECK(isIPInRange("198.51.103.255", "198.51.100.0/22").value() == true ); // Last address
+		CHECK(isIPInRange("198.51.104.0"  , "198.51.100.0/22").value() == false); // Just outside the range by +1
+	}
+
+}
+
+//////////////////////////////////////////////////////////////////////////
+// isPrivateIP
+//////////////////////////////////////////////////////////////////////////
+
+TEST_CASE("isPrivateIP", "[isPrivateIP]")
+{
+	// Check if it detects invalid address
+	CHECK(isPrivateIP("10.0.0.x").has_value() == false);
+
+	// Class A
+	CHECK(isPrivateIP("9.255.255.255").value()  == false); // Just outside class
+	CHECK(isPrivateIP("10.0.0.0").value()       == true);  // first value
+	CHECK(isPrivateIP("10.255.255.255").value() == true);  // last value
+	CHECK(isPrivateIP("11.0.0.0").value()       == false); // Just outside class
+
+	// Class B
+	CHECK(isPrivateIP("172.15.255.255").value() == false); // Just outside class
+	CHECK(isPrivateIP("172.16.0.0").value()     == true);  // first value
+	CHECK(isPrivateIP("172.31.255.255").value() == true);  // last value
+	CHECK(isPrivateIP("172.32.0.0").value()     == false); // Just outside class
+
+	// Class C
+	CHECK(isPrivateIP("192.167.255.255").value() == false); // Just outside class
+	CHECK(isPrivateIP("192.168.0.0").value()     == true);  // first value
+	CHECK(isPrivateIP("192.168.255.255").value() == true);  // last value
+	CHECK(isPrivateIP("192.169.0.0").value()     == false); // Just outside class
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -449,7 +522,7 @@ TEST_CASE("Service::reset", "[Service]")
 		CHECK(service.isStopped() == true);
 	}
 
-	SECTION("Should reset after explict stop")
+	SECTION("Should reset after explicit stop")
 	{
 		Service service;
 		int done = 0;

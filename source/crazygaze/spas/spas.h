@@ -1208,8 +1208,38 @@ size_t receive(Socket& sock, char* buf, size_t len, Error& ec);
 // They are in the header so they can be tested, but they should only be used internally
 namespace detail
 {
-	std::optional<uint32_t> ipToUint(std::string_view ip);
-	std::optional<std::pair<uint32_t, uint32_t>> cidrToUints(std::string_view cidr);
+	/**
+	 * Given a uint32_t, it swaps the byte order.
+	 * This is used internally to switch between big-endian and little-endian
+	 */
+	uint32_t byteSwap(uint32_t v);
+
+	/**
+	 * Represent an ipv4 address
+	 */
+	union IpAddress
+	{
+		struct
+		{
+			uint8_t o1;
+			uint8_t o2;
+			uint8_t o3;
+			uint8_t o4;
+		} o;
+
+		// All the octects. Note that this is big-endian
+		uint32_t all;
+	};
+	static_assert(sizeof(IpAddress) == sizeof(uint32_t));
+
+	std::optional<IpAddress> strToAddr(std::string_view str);
+	std::string addrToStr(const IpAddress& addr);
+	inline std::string to_string(const IpAddress& addr)
+	{
+		return addrToStr(addr);
+	}
+
+	std::optional<std::pair<IpAddress, IpAddress>> cidrStrToAddrs(std::string_view cidr);
 }
 
 /**
@@ -1218,30 +1248,40 @@ namespace detail
  * \param ip IP to check
  * \param network Network address
  * \param mask subnet mask
+ * \return
+ * If parsing of specified strings succeeded, it returns true/false indicating if the IP is in the range. If parsing fails it
+ * returns std::nullopt
  *
  * E.g:
  * ` bool inRange = isIPInRange("192.168.0.5", "192.168.0.0", "255.255.0.0"); // Returns true`
  */
-bool isIPInRange(std::string_view ip, std::string_view network, std::string_view mask);
+std::optional<bool> isIPInRange(std::string_view ip, std::string_view network, std::string_view mask);
 
 /**
  * Checks if the specified ip is within a CIDR range (i.e "192.168.0.0/16")
  * \param ip IP to check
  * \param cidr CIDR range
+ * \return
+ * If parsing of specified strings succeeded, it returns true/false indicating if the IP is in the range. If parsing fails it
+ * returns std::nullopt
  *
  * E.g:
  * ` bool inRange = isIPInRange("192.168.0.5", "192.168.0.0/16"); // Returns true`
  */
-bool isIPInRange(std::string_view ip, std::string_view cidr);
+std::optional<bool> isIPInRange(std::string_view ip, std::string_view cidr);
 
 /**
  * Checks if the given IP is a private IP address, as specified in https://en.wikipedia.org/wiki/Private_network .
  * Private IPV4 addresses fall in the following ranges:
- *     10.0.0.0 to 10.255.255.255 , subnet mask 255.0.0.0
- *     172.16.0.0 to 172.31.255.255, subnet mask 255.240.0.0
- *     192.168.0.0 to 192.168.255.255, subnet mask 255.255.0.0
+ *     Class A : 10.0.0.0 to 10.255.255.255 , subnet mask 255.0.0.0
+ *     Class B : 172.16.0.0 to 172.31.255.255, subnet mask 255.240.0.0
+ *     Class C : 192.168.0.0 to 192.168.255.255, subnet mask 255.255.0.0
+ *
+ * /return
+ * If the ip parsing succeeds, it returns true/false indicating if it is a private ip or not. If the parsing fails, it returns
+ * std::nullopt
  */
-bool isPrivateIP(std::string_view ip);
+std::optional<bool> isPrivateIP(std::string_view ip);
 
 #if _WIN32
 std::vector<NetworkAdapterInfo> getAdaptersAddresses(bool onlyStatusUp, bool includeIPV6);
