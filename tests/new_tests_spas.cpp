@@ -42,8 +42,8 @@ namespace Catch
 
 TEST_CASE("scratchpad", "[scratchpad]")
 {
-	auto v1 = getAdaptersAddresses(false, false);
-	auto v2 = getAdaptersAddresses(true, false);
+	//auto v1 = getAdaptersAddresses(false, false);
+	//auto v2 = getAdaptersAddresses(true, false);
 	CHECK(true);
 }
 
@@ -86,6 +86,7 @@ TEST_CASE("details", "[details]")
 
 	SECTION("strToAddr")
 	{
+
 		{
 			std::optional<detail::IpAddress> addr = detail::strToAddr("127.128.129.130");
 			REQUIRE(addr.has_value());
@@ -264,7 +265,7 @@ TEST_CASE("Service::run", "[Service]")
 	{
 		INFO("run() should return straight away if there is no work");
 		CHECK(service.isStopped() == false);
-		int done = service.run();
+		size_t done = service.run();
 		CHECK(done == 0); // Nothing executed
 	}
 
@@ -311,10 +312,10 @@ TEST_CASE("Service::run", "[Service]")
 TEST_CASE("Dummy work", "[Service]")
 {
 	Service service;
-	Semaphore sem;
 
 	// Test using a dummy work item
 	{
+		Semaphore sem;
 
 		// Create another thread, where we will be calling `run()`
 		std::future<float> ft = std::async([&]()
@@ -577,9 +578,6 @@ TEST_CASE("Acceptor::listen", "[Acceptor]")
 			CHECK(addr.second != 0);
 		}
 	}
-
-
-	auto addrs = cz::spas::getAdaptersAddresses(false, true);
 
 }
 

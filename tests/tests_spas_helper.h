@@ -3,6 +3,13 @@
 #define TEST_LOG(fmt, ...) printf("TST: " fmt "\n", ##__VA_ARGS__)
 #define CHECK_CZSPAS(ec) CHECK(ec.code == Error::Code::Success)
 
+
+#define CZSPAS_DELETE_COPY_AND_MOVE(Class)     \
+	Class(Class&&) = delete;                   \
+	Class(const Class&) = delete;              \
+	Class& operator=(Class&&) = delete;        \
+	Class& operator=(const Class&&) = delete; 
+
 using namespace cz;
 using namespace cz::spas;
 
@@ -48,10 +55,13 @@ struct AcceptorSession : std::enable_shared_from_this<AcceptorSession<Data>>
 //! Helper class to run a Service in a separate thread.
 struct ServiceThread
 {
+	CZSPAS_DELETE_COPY_AND_MOVE(ServiceThread);
+
 	Service service;
-	std::thread th;
 	bool doStop = false;
 	bool keepAlive = false;
+	std::thread th;
+
 	explicit ServiceThread(bool autoRun, bool keepAlive, bool doStop)
 		: doStop(doStop)
 		, keepAlive(keepAlive)

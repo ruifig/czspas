@@ -31,3 +31,11 @@ INTERNALS
 
 * Remove Socket::_forceClose ???
 
+
+OTHER
+-----
+
+* Fix all warnings, at least for MSVC
+* Change API to use std::string_view everywhere
+    * Need to consider this one, because it means logging needs to change due to std::string_view not being necessarily null terminated, and std::format is not something I want to use (czspas sticks to C++17)
+

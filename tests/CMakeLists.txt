@@ -15,5 +15,9 @@ target_link_libraries(czspas_tests cz::spas Catch2WithMain)
 set_property(TARGET czspas_tests PROPERTY FOLDER "${CZ_IDE_FOLDER}${PROJECT_NAME}/tests")
 set_target_properties(czspas_tests PROPERTIES CXX_STANDARD 17)
 
+if(MSVC)
+	#target_compile_options(czspas_tests PRIVATE /Wall)
+endif()
+
 add_test(NAME czspas_tests COMMAND czspas_tests)
 
