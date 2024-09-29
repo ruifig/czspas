@@ -40,10 +40,25 @@ namespace Catch
 	};
 }
 
+std::string getLocalIPAddress()
+{
+	auto all = getAdaptersAddresses(true, false);
+
+	for(const NetworkAdapterInfo& info : all)
+	{
+		if (info.gateways.size() && info.unicast.size())
+		{
+			//TEST_LOG("%s: %s. Gateway=%s", info.name.c_str(), info.unicast[0].str.c_str(), info.gateways[0].str.c_str());
+			return info.unicast[0].str;
+		}
+	}
+
+	REQUIRE(false);
+	return "";
+}
+
 TEST_CASE("scratchpad", "[scratchpad]")
 {
-	//auto v1 = getAdaptersAddresses(false, false);
-	//auto v2 = getAdaptersAddresses(true, false);
 	CHECK(true);
 }
 
@@ -130,6 +145,31 @@ TEST_CASE("details", "[details]")
 		CHECK(to_string(detail::cidrStrToAddrs("2.3.4.5/31")->second) == "255.255.255.254");
 		CHECK(to_string(detail::cidrStrToAddrs("2.3.4.5/32")->second) == "255.255.255.255");
 		CHECK(detail::cidrStrToAddrs("2.3.4.5/33").has_value() == false);
+	}
+
+}
+
+//////////////////////////////////////////////////////////////////////////
+// zstring_view
+//////////////////////////////////////////////////////////////////////////
+
+TEST_CASE("zstring_view", "[zstring_view]")
+{
+	{
+		zstring_view v;
+		CHECK(v.size() == 0);
+		CHECK(v.length() == 0);
+		CHECK(std::string(v) == "");
+		CHECK(v.data()[0] == 0);
+	}
+
+	{
+		zstring_view v = "Hello";
+		CHECK(v.size() == 5);
+		CHECK(v.length() == 5);
+		CHECK(std::string(v) == "Hello");
+		CHECK(v[0] == 'H');
+		CHECK(v.data()[5] == 0); // 5 is technically out of bounds, but for `zstring_view` it needs to be a 0
 	}
 }
 
@@ -564,6 +604,17 @@ TEST_CASE("Acceptor::listen", "[Acceptor]")
 			auto addr = ac.getLocalAddr();
 			CHECK(addr.first == "0.0.0.0"); // Listening on all interfaces
 			CHECK(addr.second == SERVER_PORT); // Listening on the port we asked
+
+			{
+				Socket s(io);
+				Error err = s.connect("127.0.0.1", SERVER_PORT);
+				CHECK(!err);
+			}
+			{
+				Socket s(io);
+				Error err = s.connect(getLocalIPAddress().c_str(), SERVER_PORT);
+				CHECK(!err);
+			}
 		}
 
 		SECTION("Dynamic port")
@@ -578,7 +629,6 @@ TEST_CASE("Acceptor::listen", "[Acceptor]")
 			CHECK(addr.second != 0);
 		}
 	}
-
 }
 
 #if 0

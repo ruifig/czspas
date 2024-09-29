@@ -376,7 +376,7 @@ namespace cz::spas::detail
 	//		Size of the connection backlog.
 	//		Also, this is only an hint to the OS. It's not guaranteed.
 	//
-	static std::pair<Error, SocketHandle> createListenSocket(const char* bindIP, int port, int backlog, bool reuseAddr)
+	static std::pair<Error, SocketHandle> createListenSocket(zstring_view bindIP, int port, int backlog, bool reuseAddr)
 	{
 		SocketHandle s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 		if (s == CZSPAS_INVALID_SOCKET)
@@ -392,13 +392,13 @@ namespace cz::spas::detail
 		sockaddr_in addr;
 		addr.sin_family = AF_INET;
 		addr.sin_port = htons(static_cast<uint16_t>(port));
-		if (bindIP)
+		if (bindIP == "" || bindIP=="0.0.0.0")
 		{
-			inet_pton(AF_INET, bindIP, &(addr.sin_addr));
+			addr.sin_addr.s_addr = htonl(INADDR_ANY);
 		}
 		else
 		{
-			addr.sin_addr.s_addr = htonl(INADDR_ANY);
+			inet_pton(AF_INET, bindIP, &(addr.sin_addr));
 		}
 
 		if (
@@ -419,11 +419,11 @@ namespace cz::spas::detail
 
 	static std::pair<Error, SocketHandle> createListenSocket(int port)
 	{
-		return createListenSocket(nullptr, port, SOMAXCONN, false);
+		return createListenSocket("", port, SOMAXCONN, false);
 	}
 
 	//! Synchronous connect
-	static std::pair<Error, SocketHandle> createConnectSocket(const char* ip, int port)
+	static std::pair<Error, SocketHandle> createConnectSocket(zstring_view ip, int port)
 	{
 		SocketHandle s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 		if (s == CZSPAS_INVALID_SOCKET)
@@ -708,7 +708,7 @@ namespace cz::spas::detail
 #if __linux__
 		flags = MSG_NOSIGNAL;
 #endif
-		int done = ::send(fd, buf, todo, flags);
+		int done = ::send(fd, reinterpret_cast<const char*>(buf), todo, flags);
 		if (done == CZSPAS_SOCKET_ERROR)
 		{
 			if (hasPOLLHUP)
@@ -745,7 +745,7 @@ namespace cz::spas::detail
 #if __linux__
 		flags = MSG_NOSIGNAL;
 #endif
-		int done = ::recv(fd, buf, todo, flags);
+		int done = ::recv(fd, reinterpret_cast<char*>(buf), todo, flags);
 		if (done == CZSPAS_SOCKET_ERROR)
 		{
 			if (hasPOLLHUP)
@@ -1251,11 +1251,11 @@ Socket::~Socket()
 	detail::closeSocket(m_base.s);
 }
 
-Error Socket::connect(const char* ip, int port)
+Error Socket::connect(zstring_view ip, int port)
 {
 	CZSPAS_ASSERT(!m_base.isValid());
 
-	CZSPAS_INFO("Socket %p: Connect(%s,%d)", this, ip, port);
+	CZSPAS_INFO("Socket %p: Connect(%s,%d)", this, ip.c_str(), port);
 	auto res = detail::createConnectSocket(ip, port);
 	if (res.first)
 	{
@@ -1268,11 +1268,11 @@ Error Socket::connect(const char* ip, int port)
 	return Error();
 }
 
-void Socket::asyncConnect(const char* ip, int port, int timeoutMs, ConnectHandler h)
+void Socket::asyncConnect(zstring_view ip, int port, int timeoutMs, ConnectHandler h)
 {
 	CZSPAS_ASSERT(!m_base.isValid());
 	CZSPAS_ASSERT(m_base.pendingConnect.load()==0 && "There is already a pending connect operation");
-	CZSPAS_INFO("Socket %p: asyncConnect(%s,%d, %d, H)", this, ip, port, timeoutMs);
+	CZSPAS_INFO("Socket %p: asyncConnect(%s,%d, %d, H)", this, ip.c_str(), port, timeoutMs);
 
 	auto op = std::make_unique<detail::ConnectOperation>(m_base, std::move(h));
 
@@ -1322,7 +1322,7 @@ void Socket::asyncConnect(const char* ip, int port, int timeoutMs, ConnectHandle
 	}
 }
 
-size_t Socket::sendSome(const char* buf, size_t len, int timeoutMs, Error& ec)
+size_t Socket::sendSome(const uint8_t* buf, size_t len, int timeoutMs, Error& ec)
 {
 	CZSPAS_ASSERT(len > 0);
 	auto res = detail::doSelect(m_base.s, false, timeoutMs);
@@ -1338,7 +1338,7 @@ size_t Socket::sendSome(const char* buf, size_t len, int timeoutMs, Error& ec)
 #if __linux__
 	flags = MSG_NOSIGNAL;
 #endif
-	int done = ::send(m_base.s, buf, todo, flags);
+	int done = ::send(m_base.s, reinterpret_cast<const char*>(buf), todo, flags);
 	// I believe no errors should occur at this point, since the select told us the socket was ready, but doesn't
 	// hurt to handle it.
 	if (done == CZSPAS_SOCKET_ERROR)
@@ -1353,7 +1353,7 @@ size_t Socket::sendSome(const char* buf, size_t len, int timeoutMs, Error& ec)
 	}
 }
 
-size_t Socket::receiveSome(char* buf, size_t len, int timeoutMs, Error& ec)
+size_t Socket::receiveSome(uint8_t* buf, size_t len, int timeoutMs, Error& ec)
 {
 	CZSPAS_ASSERT(len > 0);
 	auto res = detail::doSelect(m_base.s, true, timeoutMs);
@@ -1369,7 +1369,7 @@ size_t Socket::receiveSome(char* buf, size_t len, int timeoutMs, Error& ec)
 #if __linux__
 	flags = MSG_NOSIGNAL;
 #endif
-	int done = ::recv(m_base.s, buf, todo, flags);
+	int done = ::recv(m_base.s, reinterpret_cast<char*>(buf), todo, flags);
 	// I believe no errors should occur at this point, since the select told us the socket was ready, but doesn't
 	// hurt to handle it.
 	if (done == CZSPAS_SOCKET_ERROR)
@@ -1462,10 +1462,10 @@ Acceptor::~Acceptor()
 	detail::closeSocket(m_base.s, false);
 }
 
-Error Acceptor::listen(const char* bindIP, int port, int backlog, bool reuseAddr)
+Error Acceptor::listen(zstring_view bindIP, int port, int backlog, bool reuseAddr)
 {
 	CZSPAS_ASSERT(!m_base.isValid());
-	CZSPAS_INFO("Acceptor %p: listen(%d, %d)", this, port, backlog);
+	CZSPAS_INFO("Acceptor %p: listen(%s, %d, %d)", this, bindIP.c_str(), port, backlog);
 	
 	std::pair<Error, SocketHandle> res = detail::createListenSocket(bindIP, port, backlog, reuseAddr);
 	if (res.first)
@@ -1476,6 +1476,7 @@ Error Acceptor::listen(const char* bindIP, int port, int backlog, bool reuseAddr
 	m_base.s = res.second;
 
 	m_base.resolveAddrs();
+
 	// No error
 	return Error();
 }
@@ -1486,7 +1487,7 @@ Error Acceptor::listen(int port)
 #if __linux__
 	reuseAddr = true;
 #endif
-	return listen(nullptr, port, SOMAXCONN, reuseAddr);
+	return listen("", port, SOMAXCONN, reuseAddr);
 }
 
 Error Acceptor::accept(Socket& sock, int timeoutMs /*= -1*/)
@@ -1559,7 +1560,7 @@ namespace detail
 {
 	struct syncImpl
 	{
-		static size_t send(Socket& sock, const char* buf, size_t len, int timeoutMs, Error& ec)
+		static size_t send(Socket& sock, const uint8_t* buf, size_t len, int timeoutMs, Error& ec)
 		{
 			size_t transfered = 0;
 			while (!ec && transfered < len)
@@ -1569,7 +1570,7 @@ namespace detail
 			return transfered;
 		}
 
-		static size_t receive(Socket& sock, char* buf, size_t len, int timeoutMs, Error& ec)
+		static size_t receive(Socket& sock, uint8_t* buf, size_t len, int timeoutMs, Error& ec)
 		{
 			size_t transfered = 0;
 			while (!ec && transfered < len)
@@ -1581,25 +1582,25 @@ namespace detail
 	};
 }
  
-size_t send(Socket& sock, const char* buf, size_t len, int timeoutMs, Error& ec)
+size_t send(Socket& sock, const uint8_t* buf, size_t len, int timeoutMs, Error& ec)
 {
 	CZSPAS_ASSERT(len > 0);
 	return detail::syncImpl::send(sock, buf, len, timeoutMs, ec);
 }
 
-size_t send(Socket& sock, const char* buf, size_t len, Error& ec)
+size_t send(Socket& sock, const uint8_t* buf, size_t len, Error& ec)
 {
 	CZSPAS_ASSERT(len > 0);
 	return detail::syncImpl::send(sock, buf, len, -1, ec);
 }
 
-size_t receive(Socket& sock, char* buf, size_t len, int timeoutMs, Error& ec)
+size_t receive(Socket& sock, uint8_t* buf, size_t len, int timeoutMs, Error& ec)
 {
 	CZSPAS_ASSERT(len > 0);
 	return detail::syncImpl::receive(sock, buf, len, timeoutMs, ec);
 }
 
-size_t receive(Socket& sock, char* buf, size_t len, Error& ec)
+size_t receive(Socket& sock, uint8_t* buf, size_t len, Error& ec)
 {
 	CZSPAS_ASSERT(len > 0);
 	return detail::syncImpl::receive(sock, buf, len, -1, ec);
@@ -1626,7 +1627,7 @@ namespace detail
 	/**
 	 * Given a "xxx.xxx.xxx.xxx" string (an IP), it returns the numeric representation
 	 */
-	std::optional<IPAddress> strToAddr(std::string_view str)
+	std::optional<IPAddress> strToAddr(zstring_view str)
 	{
 		// Enough bytes to store 255.255.255.255 + null
 		constexpr int maxLen = 4*3 + 3 + 1;
@@ -1677,7 +1678,7 @@ namespace detail
 	/**
 	 * Given a string with a CIDR (i.e 192.168.0.0/16), it will return two uint32_t with corresponding to the network and mask
 	 */
-	std::optional<std::pair<IPAddress, IPAddress>> cidrStrToAddrs(std::string_view cidr)
+	std::optional<std::pair<IPAddress, IPAddress>> cidrStrToAddrs(zstring_view cidr)
 	{
 		// Enough bytes to store 255.255.255.255/XX + null
 		constexpr int maxLen = 4*3 + 3 + 3 + 1;
@@ -1753,9 +1754,9 @@ namespace detail
 		}
 	}
 
-}
+} // namespace details
 
-std::optional<bool> isIPInRange(std::string_view ip, std::string_view network, std::string_view mask)
+std::optional<bool> isIPInRange(zstring_view ip, zstring_view network, zstring_view mask)
 {
 	std::optional<detail::IPAddress> ip_addr = detail::strToAddr(ip);
 	std::optional<detail::IPAddress> network_addr = detail::strToAddr(network);
@@ -1770,7 +1771,7 @@ std::optional<bool> isIPInRange(std::string_view ip, std::string_view network, s
 	return detail::isIPInRange(*ip_addr, *network_addr, *mask_addr);
 }
 
-std::optional<bool> isIPInRange(std::string_view ip, std::string_view cidr)
+std::optional<bool> isIPInRange(zstring_view ip, zstring_view cidr)
 {
 	std::optional<detail::IPAddress> ip_addr = detail::strToAddr(ip);
 	std::optional<std::pair<detail::IPAddress, detail::IPAddress>> networkAndMask = detail::cidrStrToAddrs(cidr);
@@ -1784,7 +1785,7 @@ std::optional<bool> isIPInRange(std::string_view ip, std::string_view cidr)
 
 // Implement based on https://softwareengineering.stackexchange.com/questions/384960/is-my-algorithm-for-determining-whether-a-ipv4-is-public-or-private-correct
 //#error Implement isPrivateIP
-std::optional<bool> isPrivateIP(std::string_view ip)
+std::optional<bool> isPrivateIP(zstring_view ip)
 {
 	std::optional<detail::IPAddress> addr = detail::strToAddr(ip);
 	if (!addr.has_value())

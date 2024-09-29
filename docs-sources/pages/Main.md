@@ -7,6 +7,8 @@ The purpose is to be a small and portable asynchronous TCP sockets library that 
 
 If it doesn't provide the features you need, you should use Asio instead.
 
+The source code is composed of two files (`.h` and `.cpp`), and requires a C++17 compiler.
+
 ## Overview
 
 The entire relevant API resides inside the `cz::spas` namespace. The `cz::spas::detail` namespace contains implementation details that don't need to be used directly.
@@ -14,12 +16,19 @@ Any functions prefixed with `_` should not be used. They might be public to solv
 
 The API revolves around using just a few classes:
 
+* [zstring_view](@ref cz::spas::zstring_view)
 * [Error](@ref cz::spas::Error)
 * [Service](@ref cz::spas::Service)
 * I/O objects: 
     * [Acceptor](@ref cz::spas::Acceptor)
     * [Socket](@ref cz::spas::Socket)
     * [Resolver](@ref cz::spas::Resolver)
+
+**zstring_view** is used throughout the API to represent a null-terminated string. The API uses this instead of `const char*` or `std::string_view` because:
+	* It self-documents when a parameter can't be null
+	* It self-documents that it needs to be null-terminated. This is because internally some end up being passed to logging functions or OS functions that expect null-terminated strings.
+	* It automatically converts from `const char*` or `std::string`, so it is transparent for those cases.
+	* If an application tries to use `std::string_view`, those cases will not compile because `std::string_view` is not guaranteed to be null-terminated.
 
 **Error** is used error reporting throughout the API.
 
