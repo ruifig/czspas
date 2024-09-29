@@ -1,0 +1,16 @@
+<doxygenlayout>
+	<navindex>
+		<tab type="mainpage" visible="yes" title="Main Page"/>
+		<tab type="topics" visible="yes" title="Topics"/>
+		<tab type="classes" visible="yes" title="API Reference">
+			<tab type="classlist" visible="yes" title="Class List"/>
+			<tab type="classindex" visible="no" title="Class Index"/>
+			<tab type="classmembers" visible="yes" title="Class Members"/>
+		</tab>
+		<tab type="pages" visible="yes" title="Related Pages"/>
+        <tab type="files" visible="yes" title="">
+          <tab type="filelist" visible="yes" title="" intro=""/>
+          <tab type="globals" visible="yes" title="" intro=""/>
+        </tab>
+	</navindex>
+</doxygenlayout>

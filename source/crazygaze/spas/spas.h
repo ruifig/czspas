@@ -264,10 +264,50 @@ private:
 	std::shared_ptr<std::string> optionalMsg;
 };
 
+
+/**
+ * \defgroup Callbacks Completion Handlers
+ * @{
+ */
+
+/**
+ * The handler signature for #Service::post.
+ */
 using PostHandler = std::function<void()>;
+
+/**
+ * The handler signature for #Socket::asyncConnect and #Acceptor::asyncAccept.
+ *
+ * @param ec
+ *		The error code. It tells if the operation succeed or not.
+ */
 using ConnectHandler = std::function<void(const Error& ec)>;
+
+/**
+ * The handler signature for sending and receiving data, such as #Socket::asyncSendSome and #asyncSend
+ *
+ * @param ec
+ *		The error code. It tells if the operation succeed or not.
+ *
+ * @param transfered
+ *		How many bytes were sent or received.
+ */
 using TransferHandler = std::function<void(const Error& ec, size_t transfered)>;
+
+/**
+ * The handler signature for #Resolver::asyncResolve.
+ *
+ * @param ec
+ *		The error code. It tells if the operation succeed or not.
+ *
+ * @param ip
+ *		The host's ip address.
+ */
 using ResolveHandler = std::function<void(const Error& ec, std::string ip)>;
+
+/**
+ * @}
+ */
 
 namespace detail
 {
@@ -380,7 +420,6 @@ namespace detail
 	using IsTransferHandler = std::enable_if_t<detail::check_signature<H, void(const Error&, size_t)>::value>;
 	template<typename H>
 	using IsResolveHandler = std::enable_if_t<detail::check_signature<H, void(const Error&, std::string ip)>::value>;
-
 
 #if _WIN32
 	struct WSAInstance

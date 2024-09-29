@@ -1,5 +1,7 @@
-.vs/
-build/
+/.vs
+/build
+/out
+
 x64/
 # CLion IDE files
 .idea/
@@ -10,3 +12,6 @@ x64/
 # ignore dependencies needed during library development
 /deps/Catch2
 
+
+# Generated docs
+/docs

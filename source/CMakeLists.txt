@@ -5,12 +5,6 @@ set(SOURCE_FILES
 	"crazygaze/spas/spas.h"
 	)
 
-set(DOC_FILES
-	"../docs/API.md"
-	"../docs/Examples.md"
-	"../docs/Readme.md"
-)
-
 set(README_FILE
 	"../readme.md"
 )

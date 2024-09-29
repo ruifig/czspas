@@ -1,5 +1,5 @@
 {
     "cmake.configureSettings": {
-        "CZSPAS_Tests": "ON"
+        "CZSPAS_TESTS": "ON"
     }
 }

@@ -1,8 +1,10 @@
+# Examples
+
 Not many samples provided, but since the API design is somewhat similar to Asio, I guess you can manage. :)
 
 ## <a name="unittests">Unit tests</a>
 
-The unit tests are not documentation per se, but might provide some tips when in doubt. Just take in to account that they are a bit verbose by nature.
+The unit tests are not documentation per se, but might provide some tips when in doubt. Just take into account that they are a bit verbose by nature.
 
 ## <a name="echoserver">EchoServer</a>
 
