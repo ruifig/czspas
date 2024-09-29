@@ -3,6 +3,16 @@
 #define TEST_LOG(fmt, ...) printf("TST: " fmt "\n", ##__VA_ARGS__)
 #define CHECK_CZSPAS(ec) CHECK(ec.code == Error::Code::Success)
 
+// Catch2 technically doesn't support using assertion macros from several thread, therefore for the thread that is not running
+// the thing being tested, we a fatal error.
+// This means the tests will stop when it detects something wrong, better than using Catch2's macros across several thread.
+#define TEST_ASSERT(expr)                                                      \
+	if (!(expr))                                                               \
+	{                                                                          \
+		CZSPAS_FATAL("ASSERT FAILED: (%s), %d:%s", #expr, __LINE__, __FILE__); \
+	}
+
+
 
 #define CZSPAS_DELETE_COPY_AND_MOVE(Class)     \
 	Class(Class&&) = delete;                   \
@@ -57,7 +67,7 @@ struct ServiceThread
 {
 	CZSPAS_DELETE_COPY_AND_MOVE(ServiceThread);
 
-	Service service;
+	Service io;
 	bool doStop = false;
 	bool keepAlive = false;
 	std::thread th;
@@ -90,10 +100,10 @@ struct ServiceThread
 			std::unique_ptr<Service::Work> work;
 			if (keepAlive)
 			{
-				work = std::make_unique<Service::Work>(service);
+				work = std::make_unique<Service::Work>(io);
 			}
 
-			service.run();
+			io.run();
 			TEST_LOG("ServiceThread %p: Finishing thread", this);
 		});
 	}
@@ -102,7 +112,7 @@ struct ServiceThread
 	{
 		if (doStop)
 		{
-			service.stop();
+			io.stop();
 		}
 
 		if (th.joinable())

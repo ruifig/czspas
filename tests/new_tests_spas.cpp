@@ -6,11 +6,15 @@
 
 // A port we know its not available, so we can test listen failure
 // On windows we use epmap (port 135)
-#define SERVER_UNUSABLE_PORT 135
+// On linux/mac we use ssh (port 22)
+#ifdef _WIN32
+	#define SERVER_UNUSABLE_PORT 135
+#else
+	#define SERVER_UNUSABLE_PORT 22
+#endif
 
 #define CZ_SPAS_IMPLEMENTATION 1
 #include "crazygaze/spas/spas.h"
-
 
 using namespace cz::spas;
 
@@ -589,8 +593,15 @@ TEST_CASE("Service::reset", "[Service]")
 // Acceptor tests
 //////////////////////////////////////////////////////////////////////////
 
-TEST_CASE("Acceptor::listen", "[Acceptor]")
+TEST_CASE("Acceptor::listen", "[Acceptor][Acceptor::getLocalAddr]")
 {
+	SECTION("Listening on a used port should fail")
+	{
+		Service io;
+		Acceptor ac(io);
+		Error ec = ac.listen(SERVER_UNUSABLE_PORT);
+		CHECK(ec.code == Error::Code::Other);
+	}
 
 	SECTION("Simple listen")
 	{
@@ -612,7 +623,7 @@ TEST_CASE("Acceptor::listen", "[Acceptor]")
 			}
 			{
 				Socket s(io);
-				Error err = s.connect(getLocalIPAddress().c_str(), SERVER_PORT);
+				Error err = s.connect(getLocalIPAddress(), SERVER_PORT);
 				CHECK(!err);
 			}
 		}
@@ -627,8 +638,178 @@ TEST_CASE("Acceptor::listen", "[Acceptor]")
 			// range. See https://en.wikipedia.org/wiki/Ephemeral_port
 			CHECK(addr.second != SERVER_PORT);
 			CHECK(addr.second != 0);
+
+			{
+				Socket s(io);
+				Error err = s.connect("127.0.0.1", addr.second);
+				CHECK(!err);
+			}
+			{
+				Socket s(io);
+				Error err = s.connect(getLocalIPAddress(), addr.second);
+				CHECK(!err);
+			}
 		}
 	}
+
+	SECTION("Listen on a single network interface")
+	{
+		Service io;
+		Acceptor ac(io);
+		std::string localIP = getLocalIPAddress();
+
+		Error ec = ac.listen(localIP, SERVER_PORT, 2, false);
+		CHECK(ec.code == Error::Code::Success);
+		auto addr = ac.getLocalAddr();
+		CHECK(addr.first == localIP); // Listening on all interfaces
+		CHECK(addr.second == SERVER_PORT); // Listening on the port we asked
+
+		{
+			Socket s(io);
+			// Should fail, because the acceptor is listening on the internet connected interface
+			Error err = s.connect("127.0.0.1", SERVER_PORT);
+			CHECK(err);
+		}
+		{
+			Socket s(io);
+			// Should succeed
+			Error err = s.connect(getLocalIPAddress(), SERVER_PORT);
+			CHECK(!err);
+		}
+	}
+
+	SECTION("listen backlog")
+	{
+		Service io;
+		Acceptor ac(io);
+
+		Error ec = ac.listen("", SERVER_PORT, 1, false);
+		CHECK(ec.code == Error::Code::Success);
+
+		// First connect should succeed
+		{
+			Socket s(io);
+			Error err = s.connect("127.0.0.1", SERVER_PORT);
+			CHECK(err.code == Error::Code::Success);
+		}
+
+		// Second should fail because backlog was 1
+		{
+			Socket s(io);
+			// Should succeed
+			Error err = s.connect("127.0.0.1", SERVER_PORT);
+			CHECK(err.code == Error::Code::Other);
+		}
+	}
+}
+
+TEST_CASE("Acceptor::accept", "[Acceptor]")
+{
+	SECTION("Synchronous")
+	{
+		Service io;
+		Acceptor ac(io);
+
+		// Run another Service in a different thread, so we can get some clients connecting to the acceptor we are testing
+		ServiceThread harness(true, true, true);
+
+		ac.listen(SERVER_PORT);
+
+		// Do two client connections on another thread using another Service
+		// - First client connects right away
+		// - Second client does a delay first, then connect, so we can test if the accept waits the required time.
+		harness.io.post([&harness]()
+		{
+			Socket s(harness.io);
+			Error err = s.connect("127.0.0.1", SERVER_PORT);
+			TEST_ASSERT(!err);
+		});
+		harness.io.post([&harness]()
+		{
+			Socket s(harness.io);
+			std::this_thread::sleep_for(200ms);
+			Error err = s.connect("127.0.0.1", SERVER_PORT);
+			TEST_ASSERT(!err);
+		});
+
+		auto testAccept = [&io, &ac](int timeoutMs, Error::Code expectedCode, int expectedWait)
+		{
+			std::pair<float, Error> res = measureTimeMs([&]()
+			{
+				Socket client(io);
+				return ac.accept(client, timeoutMs);
+			});
+
+			CHECK_THAT(res.first,  Catch::Matchers::WithinAbs(expectedWait, 20));
+			CHECK(res.second.code == expectedCode);
+		};
+
+		// First accept should happen quick, because the connect above doesn't have a delay.
+		testAccept(-1, Error::Code::Success, 0);
+		// Second accept should wait a bit, because the connect above has a delay
+		testAccept(500, Error::Code::Success, 200);
+		// Next ones should fail with a timeout, because there isn't a client connecting
+		testAccept(0, Error::Code::Timeout, 0);
+		testAccept(100, Error::Code::Timeout, 100);
+	}
+}
+
+TEST_CASE("Acceptor::asyncAccept", "[Acceptor]")
+{
+	Service io;
+	Acceptor ac(io);
+	ac.listen(SERVER_PORT);
+
+	auto testAccept = [&io, &ac](int timeoutMs, Error::Code expectedCode, int expectedWait)
+	{
+		io.reset(); // Since the test is reusing the Service, we need to reset, otherwise run() returns straight away
+
+		int count = 0;
+		Socket client(io);
+		ac.asyncAccept(client, timeoutMs, [&](Error ec)
+		{
+			count++;
+			CHECK(ec.code == expectedCode);
+		});
+
+		float ms = measureTimeMs([&]
+		{
+			io.run();
+		});
+
+		CHECK_THAT(ms,  Catch::Matchers::WithinAbs(expectedWait, 20));
+		CHECK(count == 1);
+	};
+
+	SECTION("timeout")
+	{
+		testAccept(100, Error::Code::Timeout, 100); // A timeout should happen
+		testAccept(0, Error::Code::Timeout, 0); // It should fail straight away
+	}
+
+	SECTION("Ok")
+	{
+		Socket s(io);
+		Error ec = s.connect("127.0.0.1", SERVER_PORT);
+		CHECK(!ec);
+		// The client is already in the connect queue, so it should succeed straight away
+		testAccept(0, Error::Code::Success, 0);
+	}
+
+	SECTION("Ok, but with client delay")
+	{
+		std::future<Error> ft = std::async(std::launch::async, [&io]()
+		{
+			Socket s(io);
+			std::this_thread::sleep_for(100ms);
+			return s.connect("127.0.0.1", SERVER_PORT);
+		});
+
+		// The client is already in the connect queue, so it should succeed straight away
+		testAccept(500, Error::Code::Success, 100);
+		CHECK(ft.get().code == Error::Code::Success);
+	}
+
 }
 
 #if 0
@@ -637,49 +818,6 @@ TEST_CASE("Acceptor::listen", "[Acceptor]")
 // Acceptor tests
 //////////////////////////////////////////////////////////////////////////
 // Checks behavior for a simple listen
-TEST_CASE("Acceptor_listen_ok")
-{
-	Service io;
-	Acceptor ac(io);
-	auto ec = ac.listen(SERVER_PORT);
-	CHECK_CZSPAS(ec);
-}
-
-TEST_CASE("Acceptor_getLocalAddr")
-{
-	Service io;
-	// Listening on all interfaces
-	{
-		Acceptor ac(io);
-		auto ec = ac.listen(SERVER_PORT);
-		CHECK_CZSPAS(ec);
-		auto addr = ac.getLocalAddr();
-		CHECK(addr.first == "0.0.0.0");
-		CHECK(addr.second == SERVER_PORT);
-	}
-	// Listening on a specific interface
-	{
-		Acceptor ac(io);
-		bool reuseAddr = false;
-#if __linux__
-		reuseAddr = true;
-#endif
-		auto ec = ac.listen("127.0.0.1", SERVER_PORT, SOMAXCONN, reuseAddr);
-		CHECK_CZSPAS(ec);
-		auto addr = ac.getLocalAddr();
-		CHECK(addr.first == "127.0.0.1");
-		CHECK(addr.second == SERVER_PORT);
-	}
-}
-
-// Checks behaviour when trying to listen on an invalid port
-TEST_CASE("Acceptor_listen_failure")
-{
-	Service io;
-	Acceptor ac(io);
-	auto ec = ac.listen(SERVER_UNUSABLE_PORT);
-	CHECK_CZSPAS_EQUAL(Other, ec);
-}
 
 TEST_CASE("Acceptor_asyncAccept_ok")
 {

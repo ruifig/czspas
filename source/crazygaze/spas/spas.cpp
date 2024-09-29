@@ -587,7 +587,7 @@ namespace cz::spas::detail
 	Operation::~Operation()
 	{
 		// Derived classed must call setFinished where required
-		assert(dbgCounter == nullptr);
+		CZSPAS_ASSERT(dbgCounter == nullptr);
 	}
 
 	void Operation::setFinished()
@@ -1820,7 +1820,7 @@ std::optional<bool> isPrivateIP(zstring_view ip)
 #if _WIN32
 
 // Enable disable full logging for getAdaptersAddress
-#if 1
+#if 0
 	#define getAdaptersAddressesLog printf
 #else
 	#define getAdaptersAddressesLog(...) ((void)0)

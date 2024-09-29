@@ -2,7 +2,7 @@
 
 czspas was inspired by the [Asio C++ Library](https://think-async.com/Asio/) circa 2016-2017, and thus a big part of the API is similar and provides a similar set of guarantees to what Asio provided back then.
 
-The purpose of czspas is **NOT** to be a replacement for Asio. It offers a limited set of features compared to Asio, and that will always be the case.
+czspas is **NOT** replacement for Asio. It offers a limited set of features compared to Asio, and that will always be the case.
 The purpose is to be a small and portable asynchronous TCP sockets library that is easy to use.
 
 If it doesn't provide the features you need, you should use Asio instead.
@@ -25,8 +25,8 @@ The API revolves around using just a few classes:
     * [Resolver](@ref cz::spas::Resolver)
 
 **zstring_view** is used throughout the API to represent a null-terminated string. The API uses this instead of `const char*` or `std::string_view` because:
-	* It self-documents when a parameter can't be null
-	* It self-documents that it needs to be null-terminated. This is because internally some end up being passed to logging functions or OS functions that expect null-terminated strings.
+	* It self-documents when a parameter can't be null.
+	* It self-documents that it needs to be null-terminated. This is because internally some strings end up being passed to logging functions or OS functions that expect null-terminated strings.
 	* It automatically converts from `const char*` or `std::string`, so it is transparent for those cases.
 	* If an application tries to use `std::string_view`, those cases will not compile because `std::string_view` is not guaranteed to be null-terminated.
 

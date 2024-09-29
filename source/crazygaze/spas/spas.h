@@ -861,10 +861,12 @@ public:
 	size_t run();
 
 	/**
-	 * \brief Asks the `Service` to execute the specified handler, but without calling it from inside this function.
+	 * Asks the Service to execute the specified handler, but without calling it from inside this function.
 	 *
-	 * The `Service` guarantees the handler will only be called from inside a `run()` call.
+	 * It guarantees the handler will only be called from inside a `run()` call.
 	 * The function signature of the handle must be `void handler()`
+	 *
+	 * @note This is thread safe.
 	 */
 	template<typename H, typename = detail::IsPostHandler<H>>
 	void post(H&& h)
@@ -893,7 +895,7 @@ public:
 	 *
 	 * This is necessary after a `run()` is explicitly stopped or it runs out of work.
 	 *
-	 * This function must not be called while there is an unfinished call to run().
+	 * @warning This function must not be called while there is an unfinished call to run().
 	 */
 	void reset();
 
@@ -1071,19 +1073,55 @@ public:
 	 *	Size of the connection backlog.
 	 *	This is only an hint to the OS. It's not guaranteed.
 	 *
+	 * @param reuseAddr
+	 *	If true it will set the SO_REUSEADDR option on the socket.
+	 *	To understand the implications of this on a specific OS, read https://stackoverflow.com/questions/14388706/socket-options-so-reuseaddr-and-so-reuseport-how-do-they-differ-do-they-mean-t
+	 *
+	 * @return
+	 *	If the call succeeds, you can then call #Acceptor::accept or #Acceptor::asyncAccept to accept client connections.
+	 *
 	 */
 	Error listen(zstring_view bindIP, int port, int backlog, bool reuseAddr);
 
 	/**
-	 * Starts listening for new connections on all available network interfaces
+	 * Starts listening for new connections on all available network interfaces.
 	 *
 	 * @param port
-	 *	What port to listen on. If 0, the OS will pick a port from the dynamic range
+	 *	What port to listen on. If 0, the OS will pick a port from the dynamic range.
 	 */
 	Error listen(int port);
 
+	/**
+	 * Synchronously waits for a client to connect.
+	 *
+	 * You need to call #Acceptor::listen before calling this.
+	 *
+	 * @param sock
+	 *	Socket to initialize with the new connection, if a connection is accepted.
+	 *
+	 * @param timeoutMs
+	 *	Timeout for the operation, in milliseconds.
+	 *	The default value (`-1`) means no timeout will be used, and therefore the function will block forever
+	 *	waiting for a client to connect.
+	 */
 	Error accept(Socket& sock, int timeoutMs = -1);
 
+	/**
+	 * Asynchronously waits for a client to connect.
+	 *
+	 * @param sock
+	 *	Socket to initialize with the new connection, if a connection is accepted.
+	 *
+	 * @param timeoutMs
+	 *	Timeout for the operation, in milliseconds.
+	 *	The default value (`-1`) means no timeout will be used, and therefore the function will block forever
+	 *	waiting for a client to connect.
+	 *
+	 * @param h
+	 *	Operation handler. This will be called from inside a #Service::run call when the operation completes (successfully or not)
+	 * 
+	 * @warning There can be only 1 asyncAccept per Acceptor instance.
+	 */
 	template< typename H, typename = detail::IsConnectHandler<H> >
 	void asyncAccept(Socket& sock, int timeoutMs, H&& h)
 	{
@@ -1184,7 +1222,7 @@ private:
 
 		if (status == 0) // Success
 		{
-			assert(res);
+			CZSPAS_ASSERT(res);
 
 			// Loop over all returned results and do a inverse lookup
 			addrinfo* iter; 
