@@ -63,13 +63,13 @@ TEST_CASE("details", "[details]")
 	SECTION("byteSwap")
 	{
 		// NOTE: Intentionally NOT using the number 1, so we can detect bugs where operator && is used instead of & when manipulating bits
-		detail::IpAddress a;
+		detail::IPAddress a;
 		a.o.o1 = 2;
 		a.o.o2 = 3;
 		a.o.o3 = 4;
 		a.o.o4 = 5;
 
-		detail::IpAddress b;
+		detail::IPAddress b;
 		b.o.o1 = 5;
 		b.o.o2 = 4;
 		b.o.o3 = 3;
@@ -88,7 +88,7 @@ TEST_CASE("details", "[details]")
 	{
 
 		{
-			std::optional<detail::IpAddress> addr = detail::strToAddr("127.128.129.130");
+			std::optional<detail::IPAddress> addr = detail::strToAddr("127.128.129.130");
 			REQUIRE(addr.has_value());
 			CHECK(addr->o.o1 == 127); 
 			CHECK(addr->o.o2 == 128); 
@@ -103,7 +103,7 @@ TEST_CASE("details", "[details]")
 
 	SECTION("addrToStr")
 	{
-		detail::IpAddress addr = detail::strToAddr("127.128.129.130").value();
+		detail::IPAddress addr = detail::strToAddr("127.128.129.130").value();
 		CHECK(addrToStr(addr) == "127.128.129.130");
 		CHECK(to_string(addr) == "127.128.129.130");
 	}

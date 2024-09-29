@@ -1626,7 +1626,7 @@ namespace detail
 	/**
 	 * Given a "xxx.xxx.xxx.xxx" string (an IP), it returns the numeric representation
 	 */
-	std::optional<IpAddress> strToAddr(std::string_view str)
+	std::optional<IPAddress> strToAddr(std::string_view str)
 	{
 		// Enough bytes to store 255.255.255.255 + null
 		constexpr int maxLen = 4*3 + 3 + 1;
@@ -1657,7 +1657,7 @@ namespace detail
 			return std::nullopt;
 		}
 
-		IpAddress addr;
+		IPAddress addr;
 		addr.o.o1 = static_cast<uint8_t>(a);
 		addr.o.o2 = static_cast<uint8_t>(b);
 		addr.o.o3 = static_cast<uint8_t>(c);
@@ -1665,7 +1665,7 @@ namespace detail
 		return addr;
 	}
 
-	std::string addrToStr(const IpAddress& addr)
+	std::string addrToStr(const IPAddress& addr)
 	{
 		return
 			std::to_string(addr.o.o1) + "." +
@@ -1677,7 +1677,7 @@ namespace detail
 	/**
 	 * Given a string with a CIDR (i.e 192.168.0.0/16), it will return two uint32_t with corresponding to the network and mask
 	 */
-	std::optional<std::pair<IpAddress, IpAddress>> cidrStrToAddrs(std::string_view cidr)
+	std::optional<std::pair<IPAddress, IPAddress>> cidrStrToAddrs(std::string_view cidr)
 	{
 		// Enough bytes to store 255.255.255.255/XX + null
 		constexpr int maxLen = 4*3 + 3 + 3 + 1;
@@ -1708,20 +1708,20 @@ namespace detail
 		}
 		else
 		{
-			IpAddress network;
+			IPAddress network;
 			network.o.o1 = a;
 			network.o.o2 = b;
 			network.o.o3 = c;
 			network.o.o4 = d;
 
 			uint64_t maskVal = (((uint64_t)1 << bits) - 1) << (32 - bits);
-			IpAddress mask;
+			IPAddress mask;
 			mask.all = byteSwap(static_cast<uint32_t>(maskVal));
-			return std::pair<IpAddress, IpAddress>(network, mask);
+			return std::pair<IPAddress, IPAddress>(network, mask);
 		}
 	}
 
-	bool isIPInRange(IpAddress ip_, IpAddress network_, IpAddress mask_)
+	bool isIPInRange(IPAddress ip_, IPAddress network_, IPAddress mask_)
 	{
 		uint32_t ip = byteSwap(ip_.all);
 		uint32_t network = byteSwap(network_.all);
@@ -1757,9 +1757,9 @@ namespace detail
 
 std::optional<bool> isIPInRange(std::string_view ip, std::string_view network, std::string_view mask)
 {
-	std::optional<detail::IpAddress> ip_addr = detail::strToAddr(ip);
-	std::optional<detail::IpAddress> network_addr = detail::strToAddr(network);
-	std::optional<detail::IpAddress> mask_addr = detail::strToAddr(mask);
+	std::optional<detail::IPAddress> ip_addr = detail::strToAddr(ip);
+	std::optional<detail::IPAddress> network_addr = detail::strToAddr(network);
+	std::optional<detail::IPAddress> mask_addr = detail::strToAddr(mask);
 
 	// Check if all input parameters are valid ip addresses
 	if (!ip_addr.has_value() || !network_addr.has_value() || !mask_addr.has_value())
@@ -1772,8 +1772,8 @@ std::optional<bool> isIPInRange(std::string_view ip, std::string_view network, s
 
 std::optional<bool> isIPInRange(std::string_view ip, std::string_view cidr)
 {
-	std::optional<detail::IpAddress> ip_addr = detail::strToAddr(ip);
-	std::optional<std::pair<detail::IpAddress, detail::IpAddress>> networkAndMask = detail::cidrStrToAddrs(cidr);
+	std::optional<detail::IPAddress> ip_addr = detail::strToAddr(ip);
+	std::optional<std::pair<detail::IPAddress, detail::IPAddress>> networkAndMask = detail::cidrStrToAddrs(cidr);
 	if (!ip_addr.has_value() || !networkAndMask.has_value())
 	{
 		return std::nullopt;
@@ -1786,7 +1786,7 @@ std::optional<bool> isIPInRange(std::string_view ip, std::string_view cidr)
 //#error Implement isPrivateIP
 std::optional<bool> isPrivateIP(std::string_view ip)
 {
-	std::optional<detail::IpAddress> addr = detail::strToAddr(ip);
+	std::optional<detail::IPAddress> addr = detail::strToAddr(ip);
 	if (!addr.has_value())
 	{
 		return std::nullopt;

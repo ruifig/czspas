@@ -125,6 +125,7 @@ Some intentional design choices:
 #if _WIN32
 	#include <iphlpapi.h>
 
+	// #RVF : Revise this and the API that retrieves these. I don't want to have something that works only for Windows
 	struct NetworkAdapterInfo
 	{
 		struct Address
@@ -232,17 +233,17 @@ struct Error
 
 	/**
 	 * Returns a string representing the error.
-	 * If there is a custom message (e.g, from the OS), it will return that, if not, it will return the error code stringified.
+	 * If there is a custom message (e.g, from the OS), it will return that. If not, it will return the error code as a string.
 	 */
 	const char* msg() const;
 
 	/**
-	 * Sets a custom error message
+	 * Sets a custom error message.
 	 */
 	void setMsg(std::string_view msg);
 
 	/**
-	 * Checks if there is an error
+	 * Checks if there is an error.
 	 * Note that it returns true IF THERE IS AN ERROR, not the other way around.
 	 * This makes for shorter code, such as:
 	 *
@@ -259,6 +260,7 @@ struct Error
 		return code != Code::Success;
 	}
 
+	/** Error code */
 	Code code;
 private:
 	std::shared_ptr<std::string> optionalMsg;
@@ -284,7 +286,7 @@ using PostHandler = std::function<void()>;
 using ConnectHandler = std::function<void(const Error& ec)>;
 
 /**
- * The handler signature for sending and receiving data, such as #Socket::asyncSendSome and #asyncSend
+ * The handler signature for sending and receiving data, such as #Socket::asyncSendSome and #asyncSend.
  *
  * @param ec
  *		The error code. It tells if the operation succeed or not.
@@ -311,8 +313,9 @@ using ResolveHandler = std::function<void(const Error& ec, std::string ip)>;
 
 namespace detail
 {
-	//////////////////////////////////////////////////////////////////////////
-	//! Utility class to make sure a give chunk of code is executed no matter what when unwinding the callstack
+	/**
+	 * Utility class to make sure a given chunk of code is executed no matter what when unwinding the callstack.
+	 */
 	template<class Func>
 	class ScopeGuard
 	{
@@ -352,25 +355,32 @@ namespace detail
 	};
 
 	/**
-		Using a template function to create guards, since template functions can do type deduction,
-		meaning shorter code.
-
-		auto g1 = scopeGuard( [&] { cleanup(); } );
-	*/
+	 * Creates a scoped guard, which executes a lambda when going out of scope.
+	 *
+	 * e.g:
+	 * ```
+	 * auto g1 = scopeGuard( [&] { cleanup(); } );
+	 * ```
+	 *
+	 */
 	template< class Func>
 	ScopeGuard<Func> scopeGuard(Func f)
 	{
 		return ScopeGuard<Func>(std::move(f));
 	}
 
-	/**
-		Some macro magic so it's easy to set anonymous scope guards. e.g:
 
-		// some code ...
-		SCOPE_EXIT { some cleanup code };
-		// more code ...
-		SCOPE_EXIT { more cleanup code };
-		// more code ...
+	/**
+	 * Some macro magic so it's easy to set anonymous scope guards. e.g:
+	 *
+	 * ```
+	 * // some code ...
+	 * SCOPE_EXIT { some cleanup code };
+	 * // more code ...
+	 * SCOPE_EXIT { more cleanup code };
+	 * // more code ...
+	 * ```
+	 *
 	 */
 	enum class ScopeGuardOnExit {};
 	template <typename Func>
@@ -390,11 +400,17 @@ namespace detail
 			CZSPAS_CONCATENATE(str,__LINE__)
 	#endif
 
+	/**
+	 * Creates an unnamed scope guard that, whose's lambda gets executed when going out of scope.
+	 * E.g:
+	 * ```
+	 * SCOPE_EXIT { doCleanup(); };
+	 * ```
+	 * 
+	 */
 	#define CZSPAS_SCOPE_EXIT \
 		auto CZSPAS_ANONYMOUS_VARIABLE(SCOPE_EXIT_STATE) \
 		= cz::spas::detail::ScopeGuardOnExit() + [&]()
-
-	//////////////////////////////////////////////////////////////////////////
 
 
 	void defaultLogOutput(bool fatal, const char* type, const char* fmt, ...);
@@ -611,6 +627,11 @@ namespace detail
 // Reactor interface
 //////////////////////////////////////////////////////////////////////////
 
+/**
+ * This is used internally as the basis on how async sockets are implemented with BSD sockets.
+ * Some details :
+ * - It uses poll/WSAPoll to wait for any of the sockets to have something to do.
+ */
 class Reactor
 {
 public:
@@ -680,7 +701,9 @@ private:
 	void processEvents(std::queue<std::unique_ptr<Operation>>& dst);
 };
 
-// Multiple producer, multiple consumer thread safe queue
+/**
+ * Multiple producer, multiple consumer thread safe queue.
+ */
 template<typename T>
 class SharedQueue
 {
@@ -723,19 +746,20 @@ public:
 
 } // namespace detail
 
+
 //////////////////////////////////////////////////////////////////////////
 //	Service interface
 //////////////////////////////////////////////////////////////////////////
 
 
 /**
- * Provides the core I/O functionality for the asynchronous operations
+ * Provides the core I/O functionality for the asynchronous operations.
+ *
+ * An application will typically have 1 instance.
  *
  * Thread Safety:
- *		*Distinct object:* Safe
- *		*Shared object:* Safe, with the exception of the `run()` and `reset()` functions. `run()` should be called from one single
- *		thread, and `reset()` should not be called when
- * 
+ *	* *Distinct object*: Safe
+ *	* *Shared object*: Safe, with the exception of the #Service::run and #Service::reset functions.
  */
 class Service
 {
@@ -768,7 +792,7 @@ public:
 			other.m_io = nullptr;
 		}
 
-		// No need to complicate further by allowing assignment. Constructors are enough.
+		// No need to complicate further by allowing assignment. Constructors are enough until proven otherwise.
 		Work& operator=(const Work& other) = delete;
 
 		~Work()
@@ -786,16 +810,17 @@ public:
 	~Service();
 
 	/**
-	 * \brief Blocks until all work is finished and there are no more handlers to be dispatched, or until `stop()` is called.
+	 * Blocks until all work is finished and there are no more handlers to be dispatched, or until #Service::stop is called.
 	 *
-	 * If there is work to be done, it returns immediately, unless there is a `Service::Work` object attached.
-	 * When `run` exits, `isStopped()` returns `true` regardless of the reason that caused the call to return. Subsequent calls
-	 * to `run` will return immediately unless there is a prior call to `reset`
+	 * If there is work to be done, it returns immediately, unless there is a #Service::Work instance attached to this Service.
+	 * After Service::run exits, #Service::isStopped calls will return `true` regardless of the reason that caused #Service::run
+	 * to return.
+	 * Subsequent calls to will return immediately unless there is a prior call to #Service::reset.
 	 *
-	 * `run()` should be called from only on thread. Typically the application will either execute `run()` as part of the
-	 * application loop, or have 1 single network thread where `run()` is called.
+	 * #Service::run should be called from only on thread. Typically the application will either execute it as part of the
+	 * application loop, or have 1 single network thread where it is called.
 	 *
-	 * \returns The number of handlers that were executed.
+	 * @returns The number of handlers that were executed.
 	 */
 	size_t run();
 
@@ -973,7 +998,7 @@ private:
 //////////////////////////////////////////////////////////////////////////
 
 /**
- * Accepts incoming socket connections
+ * Accepts incoming socket connections.
  *
  * A server application can use this to wait for client to connect
  *
@@ -1256,7 +1281,7 @@ namespace detail
 	/**
 	 * Represent an ipv4 address
 	 */
-	union IpAddress
+	union IPAddress
 	{
 		struct
 		{
@@ -1269,16 +1294,16 @@ namespace detail
 		// All the octects. Note that this is big-endian
 		uint32_t all;
 	};
-	static_assert(sizeof(IpAddress) == sizeof(uint32_t));
+	static_assert(sizeof(IPAddress) == sizeof(uint32_t));
 
-	std::optional<IpAddress> strToAddr(std::string_view str);
-	std::string addrToStr(const IpAddress& addr);
-	inline std::string to_string(const IpAddress& addr)
+	std::optional<IPAddress> strToAddr(std::string_view str);
+	std::string addrToStr(const IPAddress& addr);
+	inline std::string to_string(const IPAddress& addr)
 	{
 		return addrToStr(addr);
 	}
 
-	std::optional<std::pair<IpAddress, IpAddress>> cidrStrToAddrs(std::string_view cidr);
+	std::optional<std::pair<IPAddress, IPAddress>> cidrStrToAddrs(std::string_view cidr);
 }
 
 /**
