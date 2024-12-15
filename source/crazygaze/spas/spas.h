@@ -1070,9 +1070,6 @@ public:
 	 * @param port
 	 *	What port to listen on. If 0, the OS will pick a port from the dynamic range
 	 *
-	 * @param ec
-	 *	If an error occurs, this contains the error.
-	 *
 	 * @param backlog
 	 *	Size of the connection backlog.
 	 *	This is only an hint to the OS. It's not guaranteed.
@@ -1082,7 +1079,7 @@ public:
 	 *	To understand the implications of this on a specific OS, read https://stackoverflow.com/questions/14388706/socket-options-so-reuseaddr-and-so-reuseport-how-do-they-differ-do-they-mean-t
 	 *
 	 * @return
-	 *	If the call succeeds, you can then call #Acceptor::accept or #Acceptor::asyncAccept to accept client connections.
+	 *	If the call succeeds, you can then call #accept or #asyncAccept to accept client connections.
 	 *
 	 */
 	Error listen(zstring_view bindIP, int port, int backlog, bool reuseAddr);
@@ -1443,6 +1440,7 @@ std::optional<bool> isIPInRange(zstring_view ip, zstring_view cidr);
  */
 std::optional<bool> isPrivateIP(zstring_view ip);
 
+// #TODO : Document this
 #if _WIN32
 std::vector<NetworkAdapterInfo> getAdaptersAddresses(bool onlyStatusUp, bool includeIPV6);
 #endif
