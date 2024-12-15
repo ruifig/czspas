@@ -640,15 +640,15 @@ namespace cz::spas::detail
 	{
 		sockaddr_in addr;
 		socklen_t size = sizeof(addr);
-		sock.s = ::accept(fd, (struct sockaddr*)&addr, &size);
-		if (sock.s == CZSPAS_INVALID_SOCKET)
+		clientSock.s = ::accept(fd, (struct sockaddr*)&addr, &size);
+		if (clientSock.s == CZSPAS_INVALID_SOCKET)
 		{
 			ec = detail::ErrorWrapper().getError();
 		}
 		else
 		{
-			detail::setBlocking(sock.s, false);
-			sock.resolveAddrs();
+			detail::setBlocking(clientSock.s, false);
+			clientSock.resolveAddrs();
 		}
 	}
 
@@ -1451,6 +1451,8 @@ Acceptor::Acceptor(Service& service)
 
 Acceptor::~Acceptor()
 {
+	cancel();
+
 	// Close the socket without calling shutdown, and setting linger to 0, so it doesn't linger around and we can
 	// run another server right after
 	// Not sure this is necessary for listening sockets.
@@ -1676,7 +1678,7 @@ namespace detail
 	}
 
 	/**
-	 * Given a string with a CIDR (i.e 192.168.0.0/16), it will return two uint32_t with corresponding to the network and mask
+	 * Given a string with a CIDR (i.e 192.168.0.0/16), it will return two uint32_t which corresponding to the network and mask
 	 */
 	std::optional<std::pair<IPAddress, IPAddress>> cidrStrToAddrs(zstring_view cidr)
 	{
@@ -1692,9 +1694,9 @@ namespace detail
 		buf[cidr.size()] = 0;
 		
 		// It's not sufficient to check if the numbers were parsed.
-		// E.g: 192.168.0.0/24 is an invalid ip (the extra 0). If we only checked if the numbers were parsed, we wouldn't detect
+		// E.g: "192.168.0.0/24/" is an invalid ip (the extra / at the end). If we only checked if the numbers were parsed, we wouldn't detect
 		// the error.
-		// Therefore, we put an extra %c at the end. If that is parsed, it means there string has extra stuff at the end and
+		// Therefore, we put an extra %c at the end. If that is parsed, it means that the string has extras characters at the end and
 		// should be considered invalid
 		unsigned int a,b,c,d, bits;
 		char extra;
@@ -1783,7 +1785,7 @@ std::optional<bool> isIPInRange(zstring_view ip, zstring_view cidr)
 	return detail::isIPInRange(*ip_addr, networkAndMask->first, networkAndMask->second);
 }
 
-// Implement based on https://softwareengineering.stackexchange.com/questions/384960/is-my-algorithm-for-determining-whether-a-ipv4-is-public-or-private-correct
+// Implemented based on https://softwareengineering.stackexchange.com/questions/384960/is-my-algorithm-for-determining-whether-a-ipv4-is-public-or-private-correct
 //#error Implement isPrivateIP
 std::optional<bool> isPrivateIP(zstring_view ip)
 {

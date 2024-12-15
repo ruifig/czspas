@@ -11,6 +11,8 @@ The source code is composed of two files (`.h` and `.cpp`), and requires a C++17
 
 ## Overview
 
+#cz::spas::Service::run
+
 The entire relevant API resides inside the `cz::spas` namespace. The `cz::spas::detail` namespace contains implementation details that don't need to be used directly.
 Any functions prefixed with `_` should not be used. They might be public to solve some design problem(s) or to be used by the tests, and should not be consider part of the API.
 
@@ -30,7 +32,7 @@ The API revolves around using just a few classes:
 	* It automatically converts from `const char*` or `std::string`, so it is transparent for those cases.
 	* If an application tries to use `std::string_view`, those cases will not compile because `std::string_view` is not guaranteed to be null-terminated.
 
-**Error** is used error reporting throughout the API.
+**Error** is used for error reporting throughout the API.
 
 **Service** is the hub that manages all asynchronous work.
 You need at least 1 Service instance in your application.
@@ -50,7 +52,7 @@ It provides the following guarantees:
 
 * Asynchronous completion handlers will only be called from the thread currently calling [Service::run](@ref cz::spas::Service::run)
     * This is the same as Asio
-* All asynchronous completion handlers are called exactly **ONCE**, provided the owning Service` is alive and its `run` method is called to execute those handlers.
+* All asynchronous completion handlers are called exactly **ONCE**, provided the owning `Service` is alive and its `run` method is called to execute those handlers.
     * This is the same as Asio
 * When a I/O object is destroyed, any of its asynchronous operations that have not yet completed will complete with the error `Error::Code::Aborted`. 
     * This is the same as Asio

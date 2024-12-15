@@ -27,6 +27,10 @@ if (NOT DOXYGEN_FOUND)
 endif()
 
 
+# Setting this to FAIL_ON_WARNINGS makes the doxygen fail if there are any warnings.
+# This is to force us to fix regression in the documentation.
+# set(DOXYGEN_WARN_AS_ERROR FAIL_ON_WARNINGS)
+
 # Where are the headers to process
 #set (PUBLIC_HEADERS_PATH "${CMAKE_SOURCE_DIR}/SDK/Include")
 set (PUBLIC_HEADERS_PATH "${CMAKE_SOURCE_DIR}/source")
@@ -126,5 +130,4 @@ doxygen_add_docs(czspas_docs
 	ALL
 	)
 set_target_properties(czspas_docs PROPERTIES FOLDER "czspas")
-
 

@@ -28,6 +28,9 @@ SOFTWARE.
 Random notes/links I use/used during development
 ------------------------------------------------
 
+Version of Asion czspas was based on
+	https://think-async.com/Asio/asio-1.10.6/doc/index.html
+
 Excellent BSD socket tutorial:
 	http://beej.us/guide/bgnet/
 
@@ -216,26 +219,27 @@ class Service;
  * The main purpose is to be used in the API, but where NULL terminated strings are required.
  * The problems this tries to solve are:
  *	- Using this in the API (vs `const char*`) self documents that it can't be null.
- *	- Internally it can then be used directly as a NULL terminated string (passed to the OS functions), and used in logging.
- *		- *NOTE*: `std::format` can log std::string_view, BUT that requires a C++20 compiler, and thus it's not used in czspas.
+ *	- It can then be used directly as a NULL terminated string (passed to the OS functions), and used in logging.
+ *		- **NOTE**: `std::format` can log std::string_view, but that requires a C++20 compiler, and thus 
  *	- The user can pass `const char*` and `const std::string&` and it will be converted to `zstring_view`, so it is mostly transparent.
- *	- If the user tries to use an std::string_view, it will fail to compile. That's intentionally, so the that the user needs to make sure it is NULL-terminated.
+ *	- If the user tries to use an std::string_view, it will fail to compile. That's intentionally, so that the user needs to make sure it is NULL-terminated.
  */
  class zstring_view : private std::string_view
  {
   public:
 	zstring_view() : std::string_view("") {};
-	zstring_view(std::string_view s) = delete;
-	// Catch cases where the user tries to pass a nullptr as a string to the API
-	zstring_view(std::nullptr_t) = delete;
 	zstring_view(const char* s) : std::string_view(s) {}
 	zstring_view(const std::string& s) : std::string_view(s) {}
 
+	// No conversion from std::string_view allowed.
+	zstring_view(std::string_view s) = delete;
+	// Catch cases where the user tries to pass a nullptr as a string to the API.
+	zstring_view(std::nullptr_t) = delete;
 
 	// By design, zstring_view holds NULL terminated strings, so automatic conversions to const char* are ok
 	operator const char* () const { return data(); }
 	const char* c_str() const { return data(); }
-	// zstring_view IS a string_view, so we can convert automatically. The reserve is not.
+	// zstring_view IS a string_view, so we can convert automatically. The reverse is not allowed.
 	operator std::string_view() const { return std::string_view{data(), size()}; }
 
 	using std::string_view::size;
@@ -407,21 +411,10 @@ namespace detail
 	}
 
 
-	/**
-	 * Some macro magic so it's easy to set anonymous scope guards. e.g:
-	 *
-	 * ```
-	 * // some code ...
-	 * SCOPE_EXIT { some cleanup code };
-	 * // more code ...
-	 * SCOPE_EXIT { more cleanup code };
-	 * // more code ...
-	 * ```
-	 *
-	 */
 	enum class ScopeGuardOnExit {};
 	template <typename Func>
-	inline cz::spas::detail::ScopeGuard<Func> operator+(ScopeGuardOnExit, Func&& fn) {
+	inline cz::spas::detail::ScopeGuard<Func> operator+(ScopeGuardOnExit, Func&& fn)
+	{
 		return cz::spas::detail::ScopeGuard<Func>(std::forward<Func>(fn));
 	}
 
@@ -578,12 +571,12 @@ namespace detail
 	struct AcceptOperation : public SocketOperation
 	{
 		ConnectHandler userHandler;
-		SocketHelper& sock;
+		SocketHelper& clientSock;
 
 		template<typename H>
 		AcceptOperation(SocketHelper& owner, SocketHelper& dst, H&& h)
 			: SocketOperation(owner, &owner.pendingAccept)
-			, sock(dst)
+			, clientSock(dst)
 			, userHandler(std::forward<H>(h))
 		{
 		}
@@ -795,7 +788,7 @@ public:
  *
  * Thread Safety:
  *	* *Distinct object*: Safe
- *	* *Shared object*: Safe, with the exception of the #Service::run and #Service::reset functions.
+ *	* *Shared object*: Safe, with the exception of the #run and #reset functions.
  */
 class Service
 {
@@ -806,11 +799,12 @@ public:
 	Service& operator=(Service&&) = delete;
 
 	/**
-	 * Dummy work item that when constructed causes the `Service::run` to not return until `Service::stop` is called or the item
+	 * Dummy work item that when constructed causes #Service::run to not return until #Service::stop is called or the item
 	 * is destroyed.
 	 *
-	 * An instance of `Work` affects all `Service::run` calls for the `Service` it is attached to, until the instance goes out of
+	 * An instance of this class affects all #Service::run calls for the Service it is attached to, until the instance goes out of
 	 * scope.
+	 * 
 	 */
 	class Work
 	{
@@ -838,6 +832,7 @@ public:
 				m_io->workFinished();
 			}
 		}
+
 	private:
 		Service* m_io;
 	};
@@ -846,25 +841,29 @@ public:
 	~Service();
 
 	/**
-	 * Blocks until all work is finished and there are no more handlers to be dispatched, or until #Service::stop is called.
+	 * Blocks until all work is finished and there are no more handlers to be dispatched, or until #stop is called.
 	 *
-	 * If there is work to be done, it returns immediately, unless there is a #Service::Work instance attached to this Service.
-	 * After Service::run exits, #Service::isStopped calls will return `true` regardless of the reason that caused #Service::run
+	 * If there is work to be done, it returns immediately, unless there is a #Service::Work instance attached to this Service.<br>
+	 * After #run exits, #isStopped calls will return `true` regardless of the reason that caused #run
 	 * to return.
-	 * Subsequent calls to will return immediately unless there is a prior call to #Service::reset.
-	 *
-	 * #Service::run should be called from only on thread. Typically the application will either execute it as part of the
-	 * application loop, or have 1 single network thread where it is called.
+	 * Subsequent calls to #run will return immediately unless there is a prior call to #reset.
 	 *
 	 * @returns The number of handlers that were executed.
+	 *
+	 * @warning
+	 * #run should be called from only on thread. Typically the application will either execute it as part of the
+	 * application loop, or have 1 single network thread where it is called from.
+	 *
 	 */
 	size_t run();
 
 	/**
 	 * Asks the Service to execute the specified handler, but without calling it from inside this function.
 	 *
-	 * It guarantees the handler will only be called from inside a `run()` call.
-	 * The function signature of the handle must be `void handler()`
+	 * It guarantees the handler will only be called from inside a #run call.
+	 * The signature of the handler must be `void handler()`
+	 *
+	 * Typically, the application will use this function to "post" work to the thread that is running #run.
 	 *
 	 * @note This is thread safe.
 	 */
@@ -875,25 +874,29 @@ public:
 	}
 
 	/**
-	 * Signals the `Service` to stop. If `run()` is currently executing, it will return as soon as possible.
+	 * Signals the Service to stop. If #run is currently executing, it will return as soon as possible.
 	 *
-	 * A call to `stop()` will put the `Service` into the stopped status regardless if there is an ongoing `run()` call or if
-	 * there is an existing `Service::Work` instance.
+	 * A call to #stop will put the Service into the stopped status regardless if there is an ongoing #run call or if
+	 * there is an existing #Service::Work instance.
 	 *
-	 * Subsequent calls to `run()` will return immediately until `reset()` is called
+	 * Subsequent calls to #run will return immediately until #reset is called.
+	 *
+	 * @note This is thread safe.
 	 */
 	void stop();
 
 	/**
-	 * Checks if the service has been stopped, either through an explicit `stop()`, or due to running out of work.
-	 * When a `Service` is stopped, calls to `run()` will return immediately without invoking any handlers.
+	 * Checks if the Service has been stopped, either through an explicit #stop, or due to running out of work.
+	 * When a Service is stopped, calls to #run will return immediately without invoking any handlers.
+	 *
+	 * @note This is thread safe.
 	 */
 	bool isStopped() const;
 
 	/**
-	 * Resets the `Service` in preparation for a subsequent `run()` invocation.
+	 * Resets the Service in preparation for a subsequent #run invocation.
 	 *
-	 * This is necessary after a `run()` is explicitly stopped or it runs out of work.
+	 * This is necessary after a call to #run returns and you wish to call #run again.
 	 *
 	 * @warning This function must not be called while there is an unfinished call to run().
 	 */
@@ -928,6 +931,7 @@ private:
 //////////////////////////////////////////////////////////////////////////
 //	Socket interface
 //////////////////////////////////////////////////////////////////////////
+
 class Socket
 {
 public:
@@ -1120,7 +1124,7 @@ public:
 	 * @param h
 	 *	Operation handler. This will be called from inside a #Service::run call when the operation completes (successfully or not)
 	 * 
-	 * @warning There can be only 1 asyncAccept per Acceptor instance.
+	 * @warning There can be only 1 pending asyncAccept per Acceptor instance.
 	 */
 	template< typename H, typename = detail::IsConnectHandler<H> >
 	void asyncAccept(Socket& sock, int timeoutMs, H&& h)
@@ -1132,6 +1136,11 @@ public:
 		getService().addReactorOperation(m_base.s, detail::Reactor::EventType::Read, std::move(op), timeoutMs);
 	}
 
+	/**
+	 * Asynchronously waits for a client to connect
+	 *
+	 * This is the same as calling `asyncAccept(sock, -1, handler)`;
+	 */
 	template< typename H, typename = detail::IsConnectHandler<H> >
 	void asyncAccept(Socket& sock, H&& h)
 	{
