@@ -28,7 +28,7 @@ SOFTWARE.
 Random notes/links I use/used during development
 ------------------------------------------------
 
-Version of Asion czspas was based on
+Version of Asio czspas was based on
 	https://think-async.com/Asio/asio-1.10.6/doc/index.html
 
 Excellent BSD socket tutorial:
@@ -1095,7 +1095,7 @@ public:
 	/**
 	 * Synchronously waits for a client to connect.
 	 *
-	 * You need to call #Acceptor::listen before calling this.
+	 * You need to call #listen before calling this.
 	 *
 	 * @param sock
 	 *	Socket to initialize with the new connection, if a connection is accepted.

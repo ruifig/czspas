@@ -616,6 +616,9 @@ TEST_CASE("Acceptor::listen", "[Acceptor][Acceptor::getLocalAddr]")
 			CHECK(addr.first == "0.0.0.0"); // Listening on all interfaces
 			CHECK(addr.second == SERVER_PORT); // Listening on the port we asked
 
+			//
+			// Test connecting through two interfaces. Both should succeed because we are listening on all interfaces
+			//
 			{
 				Socket s(io);
 				Error err = s.connect("127.0.0.1", SERVER_PORT);
@@ -639,6 +642,9 @@ TEST_CASE("Acceptor::listen", "[Acceptor][Acceptor::getLocalAddr]")
 			CHECK(addr.second != SERVER_PORT);
 			CHECK(addr.second != 0);
 
+			//
+			// Test connecting through two interfaces. Both should succeed because we are listening on all interfaces
+			//
 			{
 				Socket s(io);
 				Error err = s.connect("127.0.0.1", addr.second);
@@ -661,12 +667,12 @@ TEST_CASE("Acceptor::listen", "[Acceptor][Acceptor::getLocalAddr]")
 		Error ec = ac.listen(localIP, SERVER_PORT, 2, false);
 		CHECK(ec.code == Error::Code::Success);
 		auto addr = ac.getLocalAddr();
-		CHECK(addr.first == localIP); // Listening on all interfaces
+		CHECK(addr.first == localIP); // Listening on the specified interface
 		CHECK(addr.second == SERVER_PORT); // Listening on the port we asked
 
 		{
 			Socket s(io);
-			// Should fail, because the acceptor is listening on the internet connected interface
+			// Should fail, because the acceptor is not listening on his interface
 			Error err = s.connect("127.0.0.1", SERVER_PORT);
 			CHECK(err);
 		}
@@ -732,7 +738,10 @@ TEST_CASE("Acceptor::accept", "[Acceptor]")
 			TEST_ASSERT(!err);
 		});
 
-		auto testAccept = [&io, &ac](int timeoutMs, Error::Code expectedCode, int expectedWait)
+		// timeoutMs - How long the acceptor should wait
+		// expectedCode - What the accept call should return
+		// expectedWaitMs - How long we expect the accept call to block for.
+		auto testAccept = [&io, &ac](int timeoutMs, Error::Code expectedCode, int expectedWaitMs)
 		{
 			std::pair<float, Error> res = measureTimeMs([&]()
 			{
@@ -740,13 +749,14 @@ TEST_CASE("Acceptor::accept", "[Acceptor]")
 				return ac.accept(client, timeoutMs);
 			});
 
-			CHECK_THAT(res.first,  Catch::Matchers::WithinAbs(expectedWait, 20));
+			CHECK_THAT(res.first,  Catch::Matchers::WithinAbs(expectedWaitMs, 20));
 			CHECK(res.second.code == expectedCode);
 		};
 
-		// First accept should happen quick, because the connect above doesn't have a delay.
+		// First accept should happen quickly, because we didn't put a delay before connect.
 		testAccept(-1, Error::Code::Success, 0);
 		// Second accept should wait a bit, because the connect above has a delay
+		// The acceptor will wait for a maximum of 500ms, but we know the client will be connecting within 200ms
 		testAccept(500, Error::Code::Success, 200);
 		// Next ones should fail with a timeout, because there isn't a client connecting
 		testAccept(0, Error::Code::Timeout, 0);
@@ -756,60 +766,90 @@ TEST_CASE("Acceptor::accept", "[Acceptor]")
 
 TEST_CASE("Acceptor::asyncAccept", "[Acceptor]")
 {
-	Service io;
-	Acceptor ac(io);
-	ac.listen(SERVER_PORT);
-
-	auto testAccept = [&io, &ac](int timeoutMs, Error::Code expectedCode, int expectedWait)
+	SECTION("")
 	{
-		io.reset(); // Since the test is reusing the Service, we need to reset, otherwise run() returns straight away
+		Service io;
+		Acceptor ac(io);
+		ac.listen(SERVER_PORT);
 
-		int count = 0;
-		Socket client(io);
-		ac.asyncAccept(client, timeoutMs, [&](Error ec)
+		auto testAccept = [&io, &ac](int timeoutMs, Error::Code expectedCode, int expectedWait)
 		{
-			count++;
-			CHECK(ec.code == expectedCode);
-		});
+			io.reset(); // Since the test is reusing the Service, we need to reset, otherwise run() returns straight away
 
-		float ms = measureTimeMs([&]
+			int count = 0;
+			Socket client(io);
+			ac.asyncAccept(client, timeoutMs, [&](Error ec)
+			{
+				count++;
+				CHECK(ec.code == expectedCode);
+			});
+
+			float ms = measureTimeMs([&]
+			{
+				io.run();
+			});
+
+			CHECK_THAT(ms,  Catch::Matchers::WithinAbs(expectedWait, 20));
+			CHECK(count == 1);
+		};
+
+		SECTION("timeout")
 		{
-			io.run();
-		});
+			testAccept(100, Error::Code::Timeout, 100); // A timeout should happen
+			testAccept(0, Error::Code::Timeout, 0); // It should fail straight away
+		}
 
-		CHECK_THAT(ms,  Catch::Matchers::WithinAbs(expectedWait, 20));
-		CHECK(count == 1);
-	};
-
-	SECTION("timeout")
-	{
-		testAccept(100, Error::Code::Timeout, 100); // A timeout should happen
-		testAccept(0, Error::Code::Timeout, 0); // It should fail straight away
-	}
-
-	SECTION("Ok")
-	{
-		Socket s(io);
-		Error ec = s.connect("127.0.0.1", SERVER_PORT);
-		CHECK(!ec);
-		// The client is already in the connect queue, so it should succeed straight away
-		testAccept(0, Error::Code::Success, 0);
-	}
-
-	SECTION("Ok, but with client delay")
-	{
-		std::future<Error> ft = std::async(std::launch::async, [&io]()
+		SECTION("Ok")
 		{
 			Socket s(io);
-			std::this_thread::sleep_for(100ms);
-			return s.connect("127.0.0.1", SERVER_PORT);
-		});
+			Error ec = s.connect("127.0.0.1", SERVER_PORT);
+			CHECK(!ec);
+			// The client is already in the connect queue, so it should succeed straight away
+			testAccept(0, Error::Code::Success, 0);
+		}
 
-		// The client is already in the connect queue, so it should succeed straight away
-		testAccept(500, Error::Code::Success, 100);
-		CHECK(ft.get().code == Error::Code::Success);
+		SECTION("Ok, but with client delay")
+		{
+			std::future<Error> ft = std::async(std::launch::async, [&io]()
+			{
+				Socket s(io);
+				std::this_thread::sleep_for(100ms);
+				return s.connect("127.0.0.1", SERVER_PORT);
+			});
+
+			// We start the accept, and the client only connects after a delay.
+			// This tests if the acceptor correctly waits for a client to connect
+			testAccept(500, Error::Code::Success, 100);
+			CHECK(ft.get().code == Error::Code::Success);
+		}
 	}
 
+	SECTION("Operation should be aborted when the I/O object is destroyed")
+	{
+		Service io;
+
+		int count = 0;
+		{
+			Acceptor ac(io);
+			ac.listen(SERVER_PORT);
+			Socket client(io);
+			ac.asyncAccept(client, [&count](Error ec)
+			{
+				count++;
+				CHECK(ec.code == Error::Code::Aborted);
+			});
+
+			ac.asyncAccept(client, [&count](Error ec)
+			{
+				count++;
+				CHECK(ec.code == Error::Code::Aborted);
+			});
+		}
+
+		// Acceptor went out of scope, so the operation must abort
+		io.run();
+		CHECK(count == 1);
+	}
 }
 
 #if 0

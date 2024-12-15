@@ -74,9 +74,8 @@ Also, similar to Asio, the API expects the following from the user code:
 
 All functions/methods that initiate asynchronous work take as a parameter a callback that is executed when the work in question is completed (successfully, in error, or aborted).
 
-In order to make it easier to deal with compile errors due wrong handler signature, the API is not as heavily templated as Asio.
-This is an intentional design.
-
+For simplicity and to make it easier to understand when something goes wrong, the API is ot as heavily templated as Asio.
+This is an intentional design choice.
 
 * PostHandler: ```void ()```
 	* Handler type for work explicitly queued with [Service::post](#service-post)
