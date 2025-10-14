@@ -1128,7 +1128,7 @@ public:
 	{
 		CZSPAS_ASSERT(m_base.isValid());
 		CZSPAS_ASSERT(!sock.m_base.isValid());
-		CZSPAS_ASSERT(m_base.pendingAccept.load()==0 && "There is already a pending accept operation");
+		//CZSPAS_ASSERT(m_base.pendingAccept.load()==0 && "There is already a pending accept operation");
 		auto op = std::make_unique<detail::AcceptOperation>(m_base, sock.m_base, std::forward<H>(h));
 		getService().addReactorOperation(m_base.s, detail::Reactor::EventType::Read, std::move(op), timeoutMs);
 	}

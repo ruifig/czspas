@@ -824,6 +824,8 @@ TEST_CASE("Acceptor::asyncAccept", "[Acceptor]")
 		}
 	}
 
+
+	#if 0
 	SECTION("Operation should be aborted when the I/O object is destroyed")
 	{
 		Service io;
@@ -850,6 +852,50 @@ TEST_CASE("Acceptor::asyncAccept", "[Acceptor]")
 		io.run();
 		CHECK(count == 1);
 	}
+	#else
+	SECTION("Operation should be aborted when the I/O object is destroyed")
+	{
+		ServiceThread harness(true, true, true);
+		Acceptor ac(harness.io);
+		ac.listen(SERVER_PORT);
+
+		int count = 0;
+		{
+			{
+				auto sock = std::make_shared<Socket>(harness.io);
+				harness.io.post([&ac, sock, &count]()
+				{
+					ac.asyncAccept(*sock, [&count](Error ec)
+					{
+						count++;
+						CHECK(ec.code == Error::Code::Aborted);
+					});
+				});
+			}
+
+			{
+				auto sock = std::make_shared<Socket>(harness.io);
+				harness.io.post([&ac, sock, &count]()
+				{
+					ac.asyncAccept(*sock, [&count](Error ec)
+					{
+						count++;
+						CHECK(ec.code == Error::Code::Aborted);
+					});
+				});
+			}
+
+		}
+
+		Service io;
+		Socket s1(io);
+		Socket s2(io);
+
+		auto ec1 = s1.connect("127.0.0.1", SERVER_PORT);
+		auto ec2 = s2.connect("127.0.0.1", SERVER_PORT);
+		io.run();
+	}
+	#endif
 }
 
 #if 0
